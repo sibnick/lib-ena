@@ -1,0 +1,24 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.d
+/test_*
+
+# Fossil SCM internal files and local binary
+.fossil
+.fslckout
+.fossil-settings
+fossil
+
+# Agent instructions and session cache
+skills/
+AGENTS.md
+opencode.session
+
+# IDE and Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

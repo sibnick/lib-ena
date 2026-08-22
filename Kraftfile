@@ -1,0 +1,17 @@
+spec: v0.6
+
+type: library
+name: lib-ena
+version: 0.1.0
+description: AWS Elastic Network Adapter (ENA) native driver for Unikraft
+
+license: BSD-3-Clause
+authors:
+  - Nik <sibnick@gmail.com> (@sibnick)
+
+source:
+  url: https://github.com/sibnick/lib-ena.git
+
+dependencies:
+  unikraft:
+    version: ">=0.17.0"

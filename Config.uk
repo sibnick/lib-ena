@@ -1,0 +1,21 @@
+menuconfig LIBENA
+	bool "ena: AWS Elastic Network Adapter (ENA) native driver"
+	default n
+	depends on LIBUKBUS_PCI && LIBUKNETDEV
+	select LIBUKALLOC
+	select LIBUKNETDEV
+
+if LIBENA
+config LIBENA_LLQ
+	bool "Enable Low Latency Queue (LLQ) push mode"
+	default y
+	help
+	  Enables direct MMIO push of TX descriptors and packet headers
+	  on supported AWS EC2 instance types.
+
+config LIBENA_MAX_QUEUES
+	int "Maximum IO Queues per Device"
+	default 8
+	help
+	  Maximum number of TX and RX queue pairs allocated per device.
+endif

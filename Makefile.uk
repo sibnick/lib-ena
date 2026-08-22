@@ -1,0 +1,32 @@
+$(eval $(call addlib_s,libena,$(CONFIG_LIBENA)))
+
+CINCLUDES-$(CONFIG_LIBENA) += -I$(LIBENA_BASE)/include
+
+# Phase 1 sources.
+LIBENA_SRCS-y += $(LIBENA_BASE)/src/ena_pci.c
+LIBENA_SRCS-y += $(LIBENA_BASE)/src/ena_com.c
+
+# Phase 2 sources (Admin Queue and AENQ subsystem).
+LIBENA_SRCS-y += $(LIBENA_BASE)/src/ena_admin.c
+LIBENA_SRCS-y += $(LIBENA_BASE)/src/ena_plat.c
+
+# Phase 3 sources (device initialization and capability negotiation).
+LIBENA_SRCS-y += $(LIBENA_BASE)/src/ena_init.c
+
+# Phase 4 sources (DMA memory management and circular ring buffers).
+LIBENA_SRCS-y += $(LIBENA_BASE)/src/ena_datapath.c
+
+# Phase 5 sources (Transmit datapath and packet processing).
+LIBENA_SRCS-y += $(LIBENA_BASE)/src/ena_tx.c
+
+# Phase 6 sources (Receive datapath and buffer replenishment).
+LIBENA_SRCS-y += $(LIBENA_BASE)/src/ena_rx.c
+
+# Phase 7 sources (Unikraft uknetdev interface integration).
+LIBENA_SRCS-y += $(LIBENA_BASE)/src/ena_netdev.c
+
+# Phase 8 sources (Interrupt handling and polling engine).
+LIBENA_SRCS-y += $(LIBENA_BASE)/src/ena_intr.c
+
+# Phase 9 sources (Low Latency Queue direct push mode).
+LIBENA_SRCS-$(CONFIG_LIBENA_LLQ) += $(LIBENA_BASE)/src/ena_llq.c

@@ -1,0 +1,101 @@
+/* SPDX-License-Identifier: BSD-3-Clause */
+/*
+ * Authors: Unikraft ENA Driver Maintainers
+ * Copyright (c) 2026, Unikraft ENA Contributors. All rights reserved.
+ */
+
+#ifndef LIBENA_ENA_PLAT_H
+#define LIBENA_ENA_PLAT_H
+
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+
+#ifdef __Unikraft__
+#include <uk/print.h>
+#include <uk/alloc.h>
+#include <uk/bus/pci.h>
+#include <uk/netdev.h>
+
+#define ena_info(fmt, ...)   uk_pr_info("ena: " fmt, ##__VA_ARGS__)
+#define ena_warn(fmt, ...)   uk_pr_warn("ena: " fmt, ##__VA_ARGS__)
+#define ena_err(fmt, ...)    uk_pr_err("ena: " fmt, ##__VA_ARGS__)
+#define ena_debug(fmt, ...)  uk_pr_debug("ena: " fmt, ##__VA_ARGS__)
+#else
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* Logging (implemented in src/ena_plat.c). These are functions, not macros,
+ * so a call with no dynamic arguments is valid C99 under -pedantic. */
+void ena_info(const char *fmt, ...);
+void ena_warn(const char *fmt, ...);
+void ena_err(const char *fmt, ...);
+void ena_debug(const char *fmt, ...);
+#endif
+
+/* Memory barrier macros */
+#if defined(__x86_64__) || defined(_M_X64)
+#define ena_mb()    __asm__ __volatile__("mfence" ::: "memory")
+#define ena_rmb()   __asm__ __volatile__("lfence" ::: "memory")
+#define ena_wmb()   __asm__ __volatile__("sfence" ::: "memory")
+#elif defined(__aarch64__)
+#define ena_mb()    __asm__ __volatile__("dmb sy" ::: "memory")
+#define ena_rmb()   __asm__ __volatile__("dmb ld" ::: "memory")
+#define ena_wmb()   __asm__ __volatile__("dmb st" ::: "memory")
+#else
+#define ena_mb()    __asm__ __volatile__("" ::: "memory")
+#define ena_rmb()   __asm__ __volatile__("" ::: "memory")
+#define ena_wmb()   __asm__ __volatile__("" ::: "memory")
+#endif
+
+#define READ_ONCE32(var) \
+	({ _Static_assert(sizeof(var) == 4, "READ_ONCE32 requires a 32-bit variable"); \
+	   (*(const volatile uint32_t *)&(var)); })
+
+#define WRITE_ONCE32(var, val) \
+	({ _Static_assert(sizeof(var) == 4, "WRITE_ONCE32 requires a 32-bit variable"); \
+	   (*(volatile uint32_t *)&(var) = (val)); })
+
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#define ena_le16_to_cpu(x) ((uint16_t)(x))
+#define ena_cpu_to_le16(x) ((uint16_t)(x))
+#define ena_le32_to_cpu(x) ((uint32_t)(x))
+#define ena_cpu_to_le32(x) ((uint32_t)(x))
+#else
+#define ena_le16_to_cpu(x) __builtin_bswap16(x)
+#define ena_cpu_to_le16(x) __builtin_bswap16(x)
+#define ena_le32_to_cpu(x) __builtin_bswap32(x)
+#define ena_cpu_to_le32(x) __builtin_bswap32(x)
+#endif
+
+/* MMIO Register accessors */
+static inline uint32_t ena_reg_read32(const volatile void *addr)
+{
+	uint32_t val = *(const volatile uint32_t *)addr;
+	ena_rmb();
+	return val;
+}
+
+static inline void ena_reg_write32(volatile void *addr, uint32_t val)
+{
+	ena_wmb();
+	*(volatile uint32_t *)addr = val;
+	ena_mb();
+}
+
+/* Platform services (implemented in src/ena_plat.c) */
+
+/* Allocate a DMA-capable buffer of 'size' bytes.
+ * Returns the virtual address, or NULL on failure.
+ * On success, stores the physical address in *phys_out (if not NULL). */
+void *ena_dma_alloc(size_t size, uint64_t *phys_out);
+
+/* Free a buffer previously returned by ena_dma_alloc(). */
+void ena_dma_free(void *virt, uint64_t phys);
+
+/* Bounded delay of 'us' microseconds.
+ * In the host build this is a light spin that keeps poll loops fast. */
+void ena_delay_us(unsigned int us);
+
+#endif /* LIBENA_ENA_PLAT_H */
