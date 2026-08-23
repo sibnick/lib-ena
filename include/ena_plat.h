@@ -17,10 +17,10 @@
 #include <uk/bus/pci.h>
 #include <uk/netdev.h>
 
-#define ena_info(fmt, ...)   uk_pr_info("ena: " fmt, ##__VA_ARGS__)
-#define ena_warn(fmt, ...)   uk_pr_warn("ena: " fmt, ##__VA_ARGS__)
+#define ena_info(fmt, ...)   uk_pr_err("ena: " fmt, ##__VA_ARGS__)
+#define ena_warn(fmt, ...)   uk_pr_err("ena: " fmt, ##__VA_ARGS__)
 #define ena_err(fmt, ...)    uk_pr_err("ena: " fmt, ##__VA_ARGS__)
-#define ena_debug(fmt, ...)  uk_pr_debug("ena: " fmt, ##__VA_ARGS__)
+#define ena_debug(fmt, ...)  uk_pr_err("ena: " fmt, ##__VA_ARGS__)
 #else
 #include <stdio.h>
 #include <stdlib.h>

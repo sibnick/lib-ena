@@ -88,7 +88,8 @@ static void test_rx_refill_batch(void)
 
 	assert(ena_rx_refill(ring, 8, mock_alloc_netbuf_helper, NULL, &refilled) == 8);
 	assert(refilled == 8);
-	assert(ring->sq_tail == 0);
+	assert(ring->sq_tail == 8);
+	assert((ring->sq_tail & (ring->sq_depth - 1)) == 0);
 	assert(ring->sq_phase == 0); /* flipped phase on ring wrap */
 	assert(ena_rx_free_space(ring) == 0);
 
@@ -259,26 +260,30 @@ static void test_rx_phase_flip_multicycle(void)
 
 	/* Cycle 1: Submit 4 buffers (phase = 1) */
 	assert(ena_rx_refill(ring, 4, mock_alloc_netbuf_helper, NULL, &refilled) == 4);
-	assert(ring->sq_tail == 0);
+	assert(ring->sq_tail == 4);
+	assert((ring->sq_tail & (ring->sq_depth - 1)) == 0);
 	assert(ring->sq_phase == 0); /* flipped */
 
 	/* Complete 4 packets (phase = 1) */
 	mock_ena_hw_emulate_rx(&hw, ring, 4, 100, 0, 0);
 	assert(ena_rx_poll(ring, pkts, 4) == 4);
-	assert(ring->cq_head == 0);
+	assert(ring->cq_head == 4);
+	assert((ring->cq_head & (ring->cq_depth - 1)) == 0);
 	assert(ring->cq_phase == 0); /* flipped */
 
 	/* Cycle 2: Submit 4 buffers (phase = 0) */
 	assert(ena_rx_refill(ring, 4, mock_alloc_netbuf_helper, NULL, &refilled) == 4);
 	desc = (const struct ena_eth_io_rx_desc *)ring->sq_virt;
 	assert(!(desc[0].ctrl & ENA_ETH_IO_RX_DESC_PHASE_MASK)); /* Phase 0 */
-	assert(ring->sq_tail == 0);
+	assert(ring->sq_tail == 8);
+	assert((ring->sq_tail & (ring->sq_depth - 1)) == 0);
 	assert(ring->sq_phase == 1); /* flipped back to 1 */
 
 	/* Complete 4 packets (phase = 0) */
 	mock_ena_hw_emulate_rx(&hw, ring, 4, 200, 0, 0);
 	assert(ena_rx_poll(ring, pkts, 4) == 4);
-	assert(ring->cq_head == 0);
+	assert(ring->cq_head == 8);
+	assert((ring->cq_head & (ring->cq_depth - 1)) == 0);
 	assert(ring->cq_phase == 1); /* flipped back to 1 */
 
 	assert(ena_ring_destroy_hw(ring) == 0);

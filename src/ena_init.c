@@ -9,8 +9,8 @@
 #include <errno.h>
 #include <string.h>
 
-/* Bounded poll budget for init commands. */
-#define ENA_INIT_MAX_POLLS 100
+/* Bounded poll budget for init commands (500ms at 1us per poll). */
+#define ENA_INIT_MAX_POLLS 500000
 
 static size_t ena_copy_str(char *dst, size_t cap, const char *src)
 {
@@ -112,6 +112,9 @@ int ena_init_get_queue_limits(struct ena_adapter *adapter)
 	adapter->max_packet_tx_descs = q->max_packet_tx_descs;
 	adapter->max_packet_rx_descs = q->max_packet_rx_descs;
 
+	ena_info("queue feature: max_tx_q=%u max_rx_q=%u max_tx_depth=%u max_rx_depth=%u",
+		 max_tx_q, max_rx_q, max_tx_depth, max_rx_depth);
+
 	return 0;
 }
 
@@ -209,6 +212,71 @@ int ena_init_get_mac_addr(struct ena_adapter *adapter, uint8_t mac[6])
 	return 0;
 }
 
+int ena_init_config_llq(struct ena_adapter *adapter)
+{
+	struct ena_admin_get_feat_inline get_req;
+	struct ena_admin_feature_llq_desc llq;
+	int ret;
+
+	if (!adapter)
+		return -EINVAL;
+
+	memset(&get_req, 0, sizeof(get_req));
+	get_req.feat_common.flags = ENA_ADMIN_FEAT_SELECT_CURRENT;
+	get_req.feat_common.feature_id = ENA_ADMIN_LLQ;
+
+	ret = ena_init_exec(adapter, ENA_ADMIN_GET_FEATURE, &get_req, sizeof(get_req),
+			    &llq, sizeof(llq));
+	if (ret) {
+		ena_info("LLQ: not supported by device (%d)", ret);
+		return 0;
+	}
+
+	ena_info("LLQ: max_llq_num=%u max_llq_depth=%u header_loc=0x%x entry_size=0x%x",
+		 llq.max_llq_num, llq.max_llq_depth,
+		 llq.header_location_ctrl_supported, llq.entry_size_ctrl_supported);
+
+	if (llq.max_llq_num == 0)
+		return 0;
+
+	struct {
+		struct ena_admin_ctrl_buff_info control_buffer;
+		struct ena_admin_get_set_feature_common_desc feat_common;
+		struct ena_admin_feature_llq_desc llq;
+	} set_req;
+
+	memset(&set_req, 0, sizeof(set_req));
+	set_req.feat_common.flags = ENA_ADMIN_FEAT_SELECT_CURRENT;
+	set_req.feat_common.feature_id = ENA_ADMIN_LLQ;
+	set_req.llq = llq;
+
+	if (llq.header_location_ctrl_supported & 1)
+		set_req.llq.header_location_ctrl_enabled = 1;
+	if (llq.entry_size_ctrl_supported & 1)
+		set_req.llq.entry_size_ctrl_enabled = 1;
+	if (llq.desc_num_before_header_supported & 1)
+		set_req.llq.desc_num_before_header_enabled = 1;
+	if (llq.descriptors_stride_ctrl_supported & 1)
+		set_req.llq.descriptors_stride_ctrl_enabled = 1;
+
+	ret = ena_init_exec(adapter, ENA_ADMIN_SET_FEATURE, &set_req, sizeof(set_req),
+			    NULL, 0);
+	if (ret) {
+		ena_warn("LLQ: set feature failed (%d)", ret);
+		return 0;
+	}
+
+	adapter->llq_info.supported = true;
+	adapter->llq_info.enabled = true;
+	adapter->llq_info.max_llq_num = llq.max_llq_num;
+	adapter->llq_info.max_llq_depth = llq.max_llq_depth;
+	adapter->llq_info.entry_size = 128;
+	adapter->llq_info.header_len = 96;
+
+	ena_info("LLQ: enabled (entry_size=128)");
+	return 0;
+}
+
 int ena_init_run(struct ena_adapter *adapter, uint32_t mtu)
 {
 	int ret;
@@ -225,6 +293,10 @@ int ena_init_run(struct ena_adapter *adapter, uint32_t mtu)
 		return ret;
 
 	ret = ena_init_set_host_info(adapter);
+	if (ret)
+		return ret;
+
+	ret = ena_init_config_llq(adapter);
 	if (ret)
 		return ret;
 

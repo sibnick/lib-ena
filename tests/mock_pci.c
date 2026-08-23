@@ -311,6 +311,8 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 						(uint8_t *)(uintptr_t)os_phys;
 					hw->host_info_debug_size = feat->raw[4];
 				}
+			} else if (feat->feature_id == ENA_ADMIN_LLQ) {
+				filled = 1;
 			} else {
 				status = ENA_ADMIN_ILLEGAL_PARAMETER;
 			}
@@ -334,19 +336,24 @@ uint16_t mock_ena_hw_settle_acq_head(struct mock_ena_hw *hw)
 {
 	uint16_t mask;
 	uint16_t reg;
+	uint16_t depth;
+	uint16_t delta;
 
-	if (!hw || hw->dev_acq_depth == 0)
-		return hw ? hw->drv_acq_head : 0;
+	if (!hw)
+		return 0;
 
-	mask = hw->dev_acq_depth - 1;
-	reg = (uint16_t)(mock_ena_hw_get_reg32(hw, ENA_REGS_ACQ_TAIL_OFF) &
-			 mask);
+	depth = (uint16_t)(mock_ena_hw_get_reg32(hw, ENA_REGS_ACQ_CAPS_OFF) & 0xFFFFu);
+	if (depth == 0)
+		depth = 8;
+
+	mask = depth - 1;
+	reg = (uint16_t)(mock_ena_hw_get_reg32(hw, ENA_REGS_ACQ_TAIL_OFF) & mask);
 
 	if (reg != hw->last_acq_tail_reg) {
-		hw->drv_acq_head =
-			(uint16_t)(hw->drv_acq_head +
-				   (uint16_t)((reg - hw->last_acq_tail_reg) &
-					      mask));
+		delta = (uint16_t)((reg + depth - hw->last_acq_tail_reg) & mask);
+		if (delta == 0)
+			delta = depth;
+		hw->drv_acq_head = (uint16_t)(hw->drv_acq_head + delta);
 		hw->last_acq_tail_reg = reg;
 	}
 
@@ -369,6 +376,8 @@ void mock_ena_hw_aq_doorbell_hook(void *cookie, uint16_t tail)
 	if (hw->admin_hang)
 		return;
 
+	mock_ena_hw_settle_acq_head(hw);
+
 	/* Learn the rings and depths from BAR0. */
 	aq_phys = mock_read_phys(hw, ENA_REGS_AQ_BASE_LO_OFF,
 				 ENA_REGS_AQ_BASE_HI_OFF);
@@ -384,12 +393,8 @@ void mock_ena_hw_aq_doorbell_hook(void *cookie, uint16_t tail)
 	if (hw->dev_aq_depth == 0 || hw->dev_acq_depth == 0)
 		return;
 
-	/* No free completion slot: the queue is exhausted. */
-	if (mock_ena_hw_settle_acq_head(hw) < hw->dev_acq_tail)
-		return;
-
 	/* Consume the requested AQ entry. */
-	aq_idx = tail & (hw->dev_aq_depth - 1);
+	aq_idx = (tail - 1) & (hw->dev_aq_depth - 1);
 	req = (const struct ena_admin_aq_entry *)
 	      (hw->dev_aq_base + (size_t)aq_idx * sizeof(*req));
 	hw->last_opcode = req->aq_common_desc.opcode;

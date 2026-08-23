@@ -11,7 +11,8 @@
 #include <string.h>
 #include <stdlib.h>
 
-#define ENA_DATAPATH_MAX_POLLS 100
+/* Bounded poll budget for queue creation/destruction commands (500ms at 1us per poll). */
+#define ENA_DATAPATH_MAX_POLLS 500000
 
 static int ena_is_power_of_two(uint16_t val)
 {
@@ -116,6 +117,20 @@ int ena_ring_alloc(struct ena_adapter *adapter, uint16_t qid,
 		return -ENOMEM;
 	}
 
+	if (ring_type == ENA_RING_TYPE_TX) {
+		ring->sq_head_wb_virt = ena_dma_alloc(64, &ring->sq_head_wb_phys);
+		if (!ring->sq_head_wb_virt) {
+			ena_err("ring alloc: failed to allocate sq_head_wb");
+			free(ring->buffers.raw_bufs);
+			free(ring->free_req_ids);
+			ena_dma_free(ring->cq_virt, ring->cq_phys);
+			ena_dma_free(ring->sq_virt, ring->sq_phys);
+			free(ring);
+			return -ENOMEM;
+		}
+		memset(ring->sq_head_wb_virt, 0, 64);
+	}
+
 	*out_ring = ring;
 	return 0;
 }
@@ -124,6 +139,11 @@ void ena_ring_free(struct ena_ring *ring)
 {
 	if (!ring)
 		return;
+
+	if (ring->sq_head_wb_virt) {
+		ena_dma_free(ring->sq_head_wb_virt, ring->sq_head_wb_phys);
+		ring->sq_head_wb_virt = NULL;
+	}
 
 	if (ring->buffers.raw_bufs) {
 		free(ring->buffers.raw_bufs);
@@ -190,6 +210,7 @@ int ena_ring_req_id_free(struct ena_ring *ring, uint16_t req_id)
 
 int ena_admin_create_cq(struct ena_adapter *adapter, uint16_t cq_depth,
 			uint64_t cq_phys, uint32_t msix_vector,
+			uint8_t entry_size_words,
 			uint16_t *out_cq_idx, uint32_t *out_db_offset)
 {
 	struct ena_admin_aq_create_cq_cmd cmd;
@@ -200,11 +221,11 @@ int ena_admin_create_cq(struct ena_adapter *adapter, uint16_t cq_depth,
 		return -EINVAL;
 
 	memset(&cmd, 0, sizeof(cmd));
-	cmd.cq_caps_2 = 4; /* 4 words = 16 bytes entry size */
+	cmd.cq_caps_2 = entry_size_words ? entry_size_words : 4;
 	cmd.cq_depth = cq_depth;
 	cmd.msix_vector = msix_vector;
-	cmd.cq_ba.mem_addr_low = (uint32_t)cq_phys;
-	cmd.cq_ba.mem_addr_high = (uint16_t)(cq_phys >> 32);
+	cmd.cq_ba.mem_addr_low = (uint32_t)(cq_phys & 0xFFFFFFFFu);
+	cmd.cq_ba.mem_addr_high = (uint16_t)((cq_phys >> 32) & 0xFFFFu);
 
 	ret = ena_admin_exec_cmd(adapter, ENA_ADMIN_CREATE_CQ,
 				 &cmd.cq_caps_1,
@@ -212,11 +233,15 @@ int ena_admin_create_cq(struct ena_adapter *adapter, uint16_t cq_depth,
 				 &resp.cq_idx,
 				 sizeof(resp) - sizeof(resp.acq_common_desc),
 				 NULL, ENA_DATAPATH_MAX_POLLS);
-	if (ret)
+	if (ret) {
+		ena_err("create_cq: failed (%d)", ret);
 		return ret;
+	}
 
 	*out_cq_idx = resp.cq_idx;
 	*out_db_offset = resp.cq_head_db_register_offset;
+	ena_info("create_cq: ok cq_idx=%u depth=%u actual_depth=%u db_offset=0x%x",
+		 resp.cq_idx, cq_depth, resp.cq_actual_depth, resp.cq_head_db_register_offset);
 	return 0;
 }
 
@@ -238,7 +263,8 @@ int ena_admin_destroy_cq(struct ena_adapter *adapter, uint16_t cq_idx)
 }
 
 int ena_admin_create_sq(struct ena_adapter *adapter, uint16_t sq_depth,
-			uint64_t sq_phys, uint16_t cq_idx, uint8_t direction,
+			uint64_t sq_phys, uint64_t sq_head_wb_phys,
+			uint16_t cq_idx, uint8_t direction,
 			uint16_t *out_sq_idx, uint32_t *out_db_offset)
 {
 	struct ena_admin_aq_create_sq_cmd cmd;
@@ -250,13 +276,16 @@ int ena_admin_create_sq(struct ena_adapter *adapter, uint16_t sq_depth,
 
 	memset(&cmd, 0, sizeof(cmd));
 	cmd.sq_identity = (uint8_t)((direction & 0x07u) << 5);
-	cmd.sq_caps_2 = (uint8_t)(ENA_ADMIN_PLACEMENT_POLICY_HOST |
-				  (ENA_ADMIN_COMPLETION_POLICY_CQE << 4));
-	cmd.sq_caps_3 = 1; /* physically contiguous */
+	cmd.sq_caps_2 = 0x01; /* Host placement, CQE */
+	cmd.sq_caps_3 = 1;    /* physically contiguous */
 	cmd.cq_idx = cq_idx;
 	cmd.sq_depth = sq_depth;
-	cmd.sq_ba.mem_addr_low = (uint32_t)sq_phys;
-	cmd.sq_ba.mem_addr_high = (uint16_t)(sq_phys >> 32);
+	cmd.sq_ba.mem_addr_low = (uint32_t)(sq_phys & 0xFFFFFFFFu);
+	cmd.sq_ba.mem_addr_high = (uint16_t)((sq_phys >> 32) & 0xFFFFu);
+	if (sq_head_wb_phys != 0) {
+		cmd.sq_head_writeback.mem_addr_low = (uint32_t)(sq_head_wb_phys & 0xFFFFFFFFu);
+		cmd.sq_head_writeback.mem_addr_high = (uint16_t)((sq_head_wb_phys >> 32) & 0xFFFFu);
+	}
 
 	ret = ena_admin_exec_cmd(adapter, ENA_ADMIN_CREATE_SQ,
 				 &cmd.sq_identity,
@@ -264,11 +293,15 @@ int ena_admin_create_sq(struct ena_adapter *adapter, uint16_t sq_depth,
 				 &resp.sq_idx,
 				 sizeof(resp) - sizeof(resp.acq_common_desc),
 				 NULL, ENA_DATAPATH_MAX_POLLS);
-	if (ret)
+	if (ret) {
+		ena_err("create_sq: failed (%d)", ret);
 		return ret;
+	}
 
 	*out_sq_idx = resp.sq_idx;
 	*out_db_offset = resp.sq_doorbell_offset;
+	ena_info("create_sq: SUCCESS dir=%u sq_idx=%u db_offset=0x%x",
+		 direction, resp.sq_idx, resp.sq_doorbell_offset);
 	return 0;
 }
 
@@ -301,8 +334,9 @@ int ena_ring_create_hw(struct ena_ring *ring, uint32_t msix_vector)
 		    ENA_ADMIN_SQ_DIRECTION_TX : ENA_ADMIN_SQ_DIRECTION_RX;
 
 	/* 1. Create Completion Queue */
+	uint8_t cq_entry_words = (ring->ring_type == ENA_RING_TYPE_TX) ? 2 : 4;
 	ret = ena_admin_create_cq(ring->adapter, ring->cq_depth, ring->cq_phys,
-				  msix_vector, &ring->cq_idx, &ring->cq_db_offset);
+				  msix_vector, cq_entry_words, &ring->cq_idx, &ring->cq_db_offset);
 	if (ret) {
 		ena_err("ring create hw: failed to create CQ (%d)", ret);
 		return ret;
@@ -315,8 +349,8 @@ int ena_ring_create_hw(struct ena_ring *ring, uint32_t msix_vector)
 
 	/* 2. Create Submission Queue associated with CQ */
 	ret = ena_admin_create_sq(ring->adapter, ring->sq_depth, ring->sq_phys,
-				  ring->cq_idx, direction, &ring->sq_idx,
-				  &ring->sq_db_offset);
+				  ring->sq_head_wb_phys, ring->cq_idx, direction,
+				  &ring->sq_idx, &ring->sq_db_offset);
 	if (ret) {
 		ena_err("ring create hw: failed to create SQ (%d)", ret);
 		ena_admin_destroy_cq(ring->adapter, ring->cq_idx);

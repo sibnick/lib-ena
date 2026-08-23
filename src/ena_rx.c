@@ -50,7 +50,7 @@ int ena_rx_submit_one(struct ena_ring *ring, void *netbuf, uint64_t phys_addr,
 
 	/* Format RX Submission Queue descriptor */
 	desc_ring = (struct ena_eth_io_rx_desc *)ring->sq_virt;
-	desc = &desc_ring[ring->sq_tail];
+	desc = &desc_ring[ring->sq_tail & (ring->sq_depth - 1)];
 	memset(desc, 0, sizeof(*desc));
 
 	desc->length = ena_cpu_to_le16((uint16_t)buf_len);
@@ -63,9 +63,9 @@ int ena_rx_submit_one(struct ena_ring *ring, void *netbuf, uint64_t phys_addr,
 	desc->buff_addr_lo = ena_cpu_to_le32((uint32_t)phys_addr);
 	desc->buff_addr_hi = ena_cpu_to_le16((uint16_t)(phys_addr >> 32));
 
-	/* Advance producer tail index */
-	ring->sq_tail = (uint16_t)((ring->sq_tail + 1) & (ring->sq_depth - 1));
-	if (ring->sq_tail == 0)
+	/* Advance producer tail index (monotonic unmasked counter) */
+	ring->sq_tail++;
+	if ((ring->sq_tail & (ring->sq_depth - 1)) == 0)
 		ring->sq_phase ^= 1;
 
 	if (out_req_id)
@@ -142,7 +142,7 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 		volatile const uint32_t *status_ptr;
 		uint32_t status_val;
 
-		cdesc = &cdesc_ring[ring->cq_head];
+		cdesc = &cdesc_ring[ring->cq_head & (ring->cq_depth - 1)];
 		status_ptr = (volatile const uint32_t *)&cdesc->status;
 		status_val = ena_le32_to_cpu(*status_ptr);
 
@@ -175,9 +175,9 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 		/* Return request ID back to free pool */
 		ena_ring_req_id_free(ring, req_id);
 
-		/* Advance CQ consumer head index */
-		ring->cq_head = (uint16_t)((ring->cq_head + 1) & (ring->cq_depth - 1));
-		if (ring->cq_head == 0)
+		/* Advance CQ consumer head index (monotonic unmasked counter) */
+		ring->cq_head++;
+		if ((ring->cq_head & (ring->cq_depth - 1)) == 0)
 			ring->cq_phase ^= 1;
 
 		rcvd++;

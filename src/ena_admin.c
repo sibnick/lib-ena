@@ -151,14 +151,16 @@ int ena_admin_init(struct ena_adapter *adapter, uint16_t aq_depth,
 	ena_reg_write32(adapter->bar0_base + ENA_REGS_ACQ_BASE_LO_OFF,
 			(uint32_t)(acq_phys & 0xFFFFFFFFu));
 	ena_reg_write32(adapter->bar0_base + ENA_REGS_ACQ_BASE_HI_OFF,
-			(uint32_t)((acq_phys >> 32) & 0xFFFFu));
+			(uint32_t)(acq_phys >> 32));
 	ena_reg_write32(adapter->bar0_base + ENA_REGS_ACQ_CAPS_OFF, acq_caps);
+	ena_reg_write32(adapter->bar0_base + ENA_REGS_ACQ_TAIL_OFF, 0);
 
 	ena_reg_write32(adapter->bar0_base + ENA_REGS_AENQ_BASE_LO_OFF,
 			(uint32_t)(aenq_phys & 0xFFFFFFFFu));
 	ena_reg_write32(adapter->bar0_base + ENA_REGS_AENQ_BASE_HI_OFF,
-			(uint32_t)((aenq_phys >> 32) & 0xFFFFu));
+			(uint32_t)(aenq_phys >> 32));
 	ena_reg_write32(adapter->bar0_base + ENA_REGS_AENQ_CAPS_OFF, aenq_caps);
+	ena_reg_write32(adapter->bar0_base + ENA_REGS_AENQ_HEAD_DB_OFF, 0);
 	ena_mb();
 
 	adapter->state = ENA_STATE_ADMIN_READY;
@@ -268,7 +270,7 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 	if ((adapter->aq_tail & aq_mask) == 0)
 		adapter->aq_phase ^= 1;
 
-	ena_admin_ring_aq_db(adapter, idx);
+	ena_admin_ring_aq_db(adapter, adapter->aq_tail);
 
 	/* Poll the ACQ for the matching completion. */
 	acq = (struct ena_admin_acq_entry *)adapter->acq_base +
@@ -328,8 +330,10 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 	}
 
 	if (acq->acq_common_desc.status != 0) {
-		ena_warn("exec_cmd: device status %u for command %u",
+		ena_err("exec_cmd: device status %u, ext_status %u for opcode %u command %u",
 			 acq->acq_common_desc.status,
+			 acq->acq_common_desc.extended_status,
+			 opcode,
 			 acq->acq_common_desc.command & ENA_ADMIN_COMMAND_ID_MASK);
 		return -(int)acq->acq_common_desc.status;
 	}

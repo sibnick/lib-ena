@@ -265,13 +265,15 @@ static void test_tx_phase_flip_wrap(void)
 	for (i = 0; i < 4; i++)
 		assert(ena_tx_submit(ring, &pkt, &req_id) == 0);
 
-	assert(ring->sq_tail == 0);
+	assert(ring->sq_tail == 4);
+	assert((ring->sq_tail & (ring->sq_depth - 1)) == 0);
 	assert(ring->sq_phase == 0); /* flipped to 0 on wrap */
 
 	/* Complete 4 packets */
 	mock_ena_hw_emulate_tx(&hw, ring, 4);
 	assert(ena_tx_poll_completions(ring, 4, &cleaned) == 4);
-	assert(ring->cq_head == 0);
+	assert(ring->cq_head == 4);
+	assert((ring->cq_head & (ring->cq_depth - 1)) == 0);
 	assert(ring->cq_phase == 0); /* flipped to 0 on wrap */
 
 	/* Cycle 2: Submit next packet with phase = 0 */
@@ -282,7 +284,7 @@ static void test_tx_phase_flip_wrap(void)
 	/* Complete the 5th packet */
 	mock_ena_hw_emulate_tx(&hw, ring, 1);
 	assert(ena_tx_poll_completions(ring, 4, &cleaned) == 1);
-	assert(ring->cq_head == 1);
+	assert(ring->cq_head == 5);
 
 	assert(ena_ring_destroy_hw(ring) == 0);
 	ena_ring_free(ring);

@@ -1,8 +1,8 @@
 menuconfig LIBENA
 	bool "ena: AWS Elastic Network Adapter (ENA) native driver"
 	default n
-	depends on LIBUKBUS_PCI && LIBUKNETDEV
 	select LIBUKALLOC
+	select LIBUKBUS_PCI
 	select LIBUKNETDEV
 
 if LIBENA

@@ -7,6 +7,10 @@
 #include "ena.h"
 #include "ena_datapath.h"
 
+#ifdef __Unikraft__
+#include <uk/netbuf.h>
+#endif
+
 #include <errno.h>
 #include <string.h>
 
@@ -52,7 +56,7 @@ int ena_tx_submit(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 
 	/* Format TX submission descriptor */
 	desc_ring = (struct ena_eth_io_tx_desc *)ring->sq_virt;
-	desc = &desc_ring[ring->sq_tail];
+	desc = &desc_ring[ring->sq_tail & (ring->sq_depth - 1)];
 	memset(desc, 0, sizeof(*desc));
 
 	/* Word 0: len_ctrl */
@@ -86,9 +90,9 @@ int ena_tx_submit(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 	desc->buff_addr_lo = ena_cpu_to_le32((uint32_t)pkt->phys_addr);
 	desc->buff_addr_hi_hdr_sz = ena_cpu_to_le32((uint32_t)((pkt->phys_addr >> 32) & 0xFFFFu));
 
-	/* Advance producer tail index */
-	ring->sq_tail = (uint16_t)((ring->sq_tail + 1) & (ring->sq_depth - 1));
-	if (ring->sq_tail == 0)
+	/* Advance producer tail index (monotonic unmasked counter) */
+	ring->sq_tail++;
+	if ((ring->sq_tail & (ring->sq_depth - 1)) == 0)
 		ring->sq_phase ^= 1;
 
 	ring->tx_packets++;
@@ -129,12 +133,12 @@ int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 	while (cleaned < budget) {
 		volatile const uint8_t *flags_ptr;
 
-		flags_ptr = (volatile const uint8_t *)&cdesc_ring[ring->cq_head].flags;
+		flags_ptr = (volatile const uint8_t *)&cdesc_ring[ring->cq_head & (ring->cq_depth - 1)].flags;
 		if ((*flags_ptr & ENA_ETH_IO_TX_CDESC_PHASE_MASK) != ring->cq_phase)
 			break;
 
 		ena_rmb();
-		cdesc = &cdesc_ring[ring->cq_head];
+		cdesc = &cdesc_ring[ring->cq_head & (ring->cq_depth - 1)];
 
 		req_id = ena_le16_to_cpu(cdesc->req_id);
 		if (req_id >= ring->sq_depth) {
@@ -158,9 +162,9 @@ int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 		/* Return request ID to free pool */
 		ena_ring_req_id_free(ring, req_id);
 
-		/* Advance CQ consumer head index */
-		ring->cq_head = (uint16_t)((ring->cq_head + 1) & (ring->cq_depth - 1));
-		if (ring->cq_head == 0)
+		/* Advance CQ consumer head index (monotonic unmasked counter) */
+		ring->cq_head++;
+		if ((ring->cq_head & (ring->cq_depth - 1)) == 0)
 			ring->cq_phase ^= 1;
 
 		cleaned++;

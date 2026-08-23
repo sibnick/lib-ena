@@ -75,7 +75,7 @@ int ena_device_wait_reset_complete(struct ena_adapter *adapter, unsigned int max
 		if (s_reset_poll_hook)
 			s_reset_poll_hook(s_reset_poll_cookie);
 #endif
-		ena_delay_us(1);
+		ena_delay_us(100);
 	}
 
 	return -ETIMEDOUT;

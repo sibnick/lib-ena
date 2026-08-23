@@ -156,6 +156,8 @@ struct ena_ring {
 	/* Submission Queue (SQ) */
 	void *sq_virt;             /* Virtual address of SQ DMA ring */
 	uint64_t sq_phys;          /* Physical address of SQ DMA ring */
+	void *sq_head_wb_virt;     /* Virtual address of SQ head writeback */
+	uint64_t sq_head_wb_phys;  /* Physical address of SQ head writeback */
 	uint16_t sq_depth;         /* SQ ring depth (must be power of 2) */
 	uint16_t sq_tail;          /* Producer tail index */
 	uint16_t sq_head;          /* Consumer head index */
@@ -192,46 +194,43 @@ struct ena_ring {
 	uint64_t tx_bytes;
 	uint64_t rx_packets;
 	uint64_t rx_bytes;
-	uint64_t tx_drops;
-	uint64_t rx_drops;
-
-	/* Phase 9: Low Latency Queue (LLQ) Push Buffer */
-	void *push_buf_virt;       /* Virtual address of BAR2 push buffer */
-	uint64_t push_buf_phys;    /* Physical address of push buffer */
-	bool is_llq;               /* Ring is operating in LLQ direct push mode */
+	/* Phase 9: Low Latency Queue (LLQ) metadata */
+	bool is_llq;
+	void *push_buf_virt;
+	uint64_t push_buf_phys;
+	uint32_t push_buf_size;
+	uint32_t llq_header_len;
 };
 
 /* -------------------------------------------------------------------------
- * Ring & Datapath Management Functions (Phase 4)
+ * Datapath Ring Lifecycle & Allocation Prototypes
  * ------------------------------------------------------------------------- */
 
-/* Allocate and initialize software ring structures, DMA memory, and req_id pool */
 int ena_ring_alloc(struct ena_adapter *adapter, uint16_t qid,
 		   enum ena_ring_type ring_type, uint16_t sq_depth,
 		   uint16_t cq_depth, struct ena_ring **out_ring);
 
-/* Free ring DMA memory, tracking buffers, and software context */
 void ena_ring_free(struct ena_ring *ring);
 
-/* Issue Admin Queue commands to create hardware CQ and SQ for this ring */
 int ena_ring_create_hw(struct ena_ring *ring, uint32_t msix_vector);
 
-/* Issue Admin Queue commands to destroy hardware SQ and CQ for this ring */
 int ena_ring_destroy_hw(struct ena_ring *ring);
 
-/* Request ID pool helpers */
 int ena_ring_req_id_alloc(struct ena_ring *ring, uint16_t *out_req_id);
+
 int ena_ring_req_id_free(struct ena_ring *ring, uint16_t req_id);
 
 /* Admin command helpers for CQ and SQ */
 int ena_admin_create_cq(struct ena_adapter *adapter, uint16_t cq_depth,
 			uint64_t cq_phys, uint32_t msix_vector,
+			uint8_t entry_size_words,
 			uint16_t *out_cq_idx, uint32_t *out_db_offset);
 
 int ena_admin_destroy_cq(struct ena_adapter *adapter, uint16_t cq_idx);
 
 int ena_admin_create_sq(struct ena_adapter *adapter, uint16_t sq_depth,
-			uint64_t sq_phys, uint16_t cq_idx, uint8_t direction,
+			uint64_t sq_phys, uint64_t sq_head_wb_phys,
+			uint16_t cq_idx, uint8_t direction,
 			uint16_t *out_sq_idx, uint32_t *out_db_offset);
 
 int ena_admin_destroy_sq(struct ena_adapter *adapter, uint16_t sq_idx);

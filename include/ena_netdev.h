@@ -14,9 +14,48 @@
 #include <stddef.h>
 
 #ifdef __Unikraft__
+#include <uk/alloc.h>
+#include <uk/bus/pci.h>
 #include <uk/netdev.h>
+#include <uk/netdev_core.h>
+#include <uk/netdev_driver.h>
 #include <uk/netbuf.h>
-#else
+
+struct uk_netdev_rx_queue {
+	struct ena_ring *ring;
+	uint16_t queue_id;
+	struct ena_adapter *adapter;
+	struct uk_alloc *allocator;
+	uk_netdev_alloc_rxpkts alloc_rxpkts;
+	void *alloc_rxpkts_argp;
+};
+
+struct uk_netdev_tx_queue {
+	struct ena_ring *ring;
+	uint16_t queue_id;
+	struct ena_adapter *adapter;
+	struct uk_alloc *allocator;
+};
+
+struct ena_uk_device {
+	struct uk_netdev netdev;
+	struct ena_adapter adapter;
+	struct uk_pci_device *pdev;
+	void *bar0_vaddr;
+	void *bar2_vaddr;
+	struct uk_netdev_rx_queue rx_queues[8];
+	struct uk_netdev_tx_queue tx_queues[8];
+	uint16_t uid;
+};
+
+#define to_enadevice(ndev) \
+	__containerof(ndev, struct ena_uk_device, netdev)
+
+extern const struct uk_netdev_ops ena_ops;
+int ena_netdev_rx_one(struct uk_netdev *dev, struct uk_netdev_rx_queue *queue, struct uk_netbuf **pkt);
+int ena_netdev_tx_one(struct uk_netdev *dev, struct uk_netdev_tx_queue *queue, struct uk_netbuf *pkt);
+
+#else /* !__Unikraft__ */
 
 #define UK_NETDEV_MAC_ADDR_LEN 6
 
@@ -99,7 +138,6 @@ struct uk_netdev {
 	struct ena_adapter *adapter;
 	void *rx_allocator_arg;
 };
-#endif /* !__Unikraft__ */
 
 /* Allocate and initialize netdev structure for an ENA adapter */
 struct uk_netdev *ena_netdev_alloc(struct ena_adapter *adapter);
@@ -109,5 +147,7 @@ void ena_netdev_free(struct uk_netdev *netdev);
 
 /* Register netdev structure with driver operations table */
 int ena_netdev_register(struct uk_netdev *netdev);
+
+#endif /* !__Unikraft__ */
 
 #endif /* LIBENA_ENA_NETDEV_H */

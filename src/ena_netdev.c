@@ -12,6 +12,273 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef __Unikraft__
+
+static void ena_netdev_info_get(struct uk_netdev *dev, struct uk_netdev_info *info)
+{
+	struct ena_uk_device *edev = to_enadevice(dev);
+	struct ena_adapter *adapter = &edev->adapter;
+
+	info->max_rx_queues = adapter->max_rx_queues ? adapter->max_rx_queues : 1;
+	info->max_tx_queues = adapter->max_tx_queues ? adapter->max_tx_queues : 1;
+	info->max_mtu = adapter->max_mtu ? adapter->max_mtu : 1500;
+	info->nb_encap_tx = 0;
+	info->nb_encap_rx = 0;
+	info->ioalign = 64;
+	info->in_queue_pairs = 1;
+	info->features = 0;
+}
+
+static int ena_netdev_rxq_info_get(struct uk_netdev *dev, uint16_t queue_id __attribute__((unused)),
+				   struct uk_netdev_queue_info *queue_info)
+{
+	struct ena_uk_device *edev = to_enadevice(dev);
+	queue_info->nb_min = 32;
+	queue_info->nb_max = edev->adapter.max_rx_ring_size ? edev->adapter.max_rx_ring_size : 256;
+	queue_info->nb_align = 1;
+	queue_info->nb_is_power_of_two = 1;
+	return 0;
+}
+
+static int ena_netdev_txq_info_get(struct uk_netdev *dev, uint16_t queue_id __attribute__((unused)),
+				   struct uk_netdev_queue_info *queue_info)
+{
+	struct ena_uk_device *edev = to_enadevice(dev);
+	queue_info->nb_min = 32;
+	queue_info->nb_max = edev->adapter.max_tx_ring_size ? edev->adapter.max_tx_ring_size : 256;
+	queue_info->nb_align = 1;
+	queue_info->nb_is_power_of_two = 1;
+	return 0;
+}
+
+static unsigned ena_netdev_promisc_get(struct uk_netdev *dev __attribute__((unused)))
+{
+	return 0;
+}
+
+static const struct uk_hwaddr *ena_netdev_mac_get(struct uk_netdev *dev)
+{
+	struct ena_uk_device *edev = to_enadevice(dev);
+	return (const struct uk_hwaddr *)edev->adapter.mac_addr;
+}
+
+static uint16_t ena_netdev_mtu_get(struct uk_netdev *dev)
+{
+	struct ena_uk_device *edev = to_enadevice(dev);
+	return edev->adapter.mtu ? edev->adapter.mtu : 1500;
+}
+
+static int ena_netdev_configure(struct uk_netdev *dev, const struct uk_netdev_conf *conf)
+{
+	struct ena_uk_device *edev = to_enadevice(dev);
+	struct ena_adapter *adapter = &edev->adapter;
+
+	if (!adapter->rx_rings) {
+		adapter->rx_rings = calloc(conf->nb_rx_queues, sizeof(struct ena_ring *));
+		if (!adapter->rx_rings)
+			return -ENOMEM;
+		adapter->num_rx_rings = conf->nb_rx_queues;
+	}
+
+	if (!adapter->tx_rings) {
+		adapter->tx_rings = calloc(conf->nb_tx_queues, sizeof(struct ena_ring *));
+		if (!adapter->tx_rings)
+			return -ENOMEM;
+		adapter->num_tx_rings = conf->nb_tx_queues;
+	}
+
+	return 0;
+}
+
+static struct uk_netdev_rx_queue *ena_netdev_rxq_configure(struct uk_netdev *dev, uint16_t queue_id,
+							    uint16_t nb_desc, struct uk_netdev_rxqueue_conf *conf)
+{
+	struct ena_uk_device *edev = to_enadevice(dev);
+	struct ena_adapter *adapter = &edev->adapter;
+	struct ena_ring *ring = NULL;
+	int ret;
+
+	ena_info("rxq_configure: qid=%u nb_desc=%u max_rx_ring_size=%u",
+		 queue_id, nb_desc, adapter->max_rx_ring_size);
+
+	if (nb_desc == 0)
+		nb_desc = 256;
+
+	ret = ena_ring_alloc(adapter, queue_id, ENA_RING_TYPE_RX, nb_desc, nb_desc, &ring);
+	if (ret)
+		return NULL;
+
+	if (adapter->rx_rings)
+		adapter->rx_rings[queue_id] = ring;
+
+	edev->rx_queues[queue_id].ring = ring;
+	edev->rx_queues[queue_id].queue_id = queue_id;
+	edev->rx_queues[queue_id].adapter = adapter;
+	edev->rx_queues[queue_id].allocator = conf->a;
+	edev->rx_queues[queue_id].alloc_rxpkts = conf->alloc_rxpkts;
+	edev->rx_queues[queue_id].alloc_rxpkts_argp = conf->alloc_rxpkts_argp;
+
+	return &edev->rx_queues[queue_id];
+}
+
+static struct uk_netdev_tx_queue *ena_netdev_txq_configure(struct uk_netdev *dev, uint16_t queue_id,
+							    uint16_t nb_desc, struct uk_netdev_txqueue_conf *conf)
+{
+	struct ena_uk_device *edev = to_enadevice(dev);
+	struct ena_adapter *adapter = &edev->adapter;
+	struct ena_ring *ring = NULL;
+	int ret;
+
+	if (queue_id >= 8)
+		return NULL;
+
+	ena_info("txq_configure: qid=%u nb_desc=%u max_tx_ring_size=%u",
+		 queue_id, nb_desc, adapter->max_tx_ring_size);
+
+	if (nb_desc == 0)
+		nb_desc = 256;
+
+	ret = ena_ring_alloc(adapter, queue_id, ENA_RING_TYPE_TX, nb_desc, nb_desc, &ring);
+	if (ret)
+		return NULL;
+
+	if (adapter->tx_rings)
+		adapter->tx_rings[queue_id] = ring;
+
+	edev->tx_queues[queue_id].ring = ring;
+	edev->tx_queues[queue_id].queue_id = queue_id;
+	return &edev->tx_queues[queue_id];
+}
+
+static void *ena_netbuf_alloc_helper(void *arg, uint64_t *phys_out, uint32_t *len_out)
+{
+	struct uk_netdev_rx_queue *rxq = (struct uk_netdev_rx_queue *)arg;
+	struct uk_netbuf *nb = NULL;
+
+	if (rxq && rxq->alloc_rxpkts) {
+		uint16_t n = rxq->alloc_rxpkts(rxq->alloc_rxpkts_argp, &nb, 1);
+		if (n == 0 || !nb)
+			return NULL;
+	} else {
+		struct uk_alloc *a = rxq ? rxq->allocator : uk_alloc_get_default();
+		nb = uk_netbuf_alloc_buf(a, 2048, 64, 0, 0, NULL);
+		if (!nb)
+			return NULL;
+	}
+
+	if (phys_out)
+		*phys_out = (uint64_t)(uintptr_t)nb->data;
+	if (len_out)
+		*len_out = (uint32_t)nb->buflen;
+
+	return nb;
+}
+
+static int ena_netdev_start(struct uk_netdev *dev)
+{
+	struct ena_uk_device *edev = to_enadevice(dev);
+	struct ena_adapter *adapter = &edev->adapter;
+	uint16_t q;
+
+	for (q = 0; q < adapter->num_tx_rings; q++) {
+		if (adapter->tx_rings && adapter->tx_rings[q])
+			ena_ring_create_hw(adapter->tx_rings[q], q);
+	}
+
+	for (q = 0; q < adapter->num_rx_rings; q++) {
+		if (adapter->rx_rings && adapter->rx_rings[q]) {
+			ena_ring_create_hw(adapter->rx_rings[q], q);
+			ena_rx_refill(adapter->rx_rings[q], adapter->rx_rings[q]->sq_depth - 1,
+				      ena_netbuf_alloc_helper, &edev->rx_queues[q], NULL);
+		}
+	}
+
+	return 0;
+}
+
+int ena_netdev_rx_one(struct uk_netdev *dev __attribute__((unused)),
+		      struct uk_netdev_rx_queue *queue,
+		      struct uk_netbuf **pkt)
+{
+	struct ena_rx_pkt rx_pkt;
+	struct ena_ring *ring;
+	int ret;
+
+	if (!queue || !queue->ring || !pkt)
+		return -EINVAL;
+
+	ring = queue->ring;
+	ret = ena_rx_poll(ring, &rx_pkt, 1);
+	if (ret <= 0)
+		return 0;
+
+	if (rx_pkt.netbuf) {
+		*pkt = (struct uk_netbuf *)rx_pkt.netbuf;
+		(*pkt)->len = rx_pkt.len;
+		ena_rx_refill(ring, 1, ena_netbuf_alloc_helper, queue, NULL);
+		return UK_NETDEV_STATUS_SUCCESS;
+	}
+
+	return 0;
+}
+
+static void *tx_bounce_buf = NULL;
+static uint64_t tx_bounce_phys = 0;
+
+int ena_netdev_tx_one(struct uk_netdev *dev __attribute__((unused)),
+		      struct uk_netdev_tx_queue *queue,
+		      struct uk_netbuf *pkt)
+{
+	struct ena_tx_pkt tx_pkt;
+	struct ena_ring *ring;
+	uint64_t phys;
+	int ret;
+
+	if (!queue || !queue->ring || !pkt)
+		return -EINVAL;
+
+	ring = queue->ring;
+	ena_tx_poll_completions(ring, 32, NULL);
+
+	phys = (uint64_t)(uintptr_t)pkt->data;
+	if (phys < 0x100000ULL) {
+		if (!tx_bounce_buf)
+			tx_bounce_buf = ena_dma_alloc(4096, &tx_bounce_phys);
+		if (tx_bounce_buf && pkt->len <= 4096) {
+			memcpy(tx_bounce_buf, pkt->data, pkt->len);
+			phys = tx_bounce_phys;
+		}
+	}
+
+	memset(&tx_pkt, 0, sizeof(tx_pkt));
+	tx_pkt.netbuf = pkt;
+	tx_pkt.len = pkt->len;
+	tx_pkt.phys_addr = phys;
+
+	ret = ena_tx_submit(ring, &tx_pkt, NULL);
+	if (ret == 0) {
+		ena_tx_doorbell(ring);
+		return UK_NETDEV_STATUS_SUCCESS;
+	}
+
+	return ret;
+}
+
+const struct uk_netdev_ops ena_ops = {
+	.info_get        = ena_netdev_info_get,
+	.rxq_info_get    = ena_netdev_rxq_info_get,
+	.txq_info_get    = ena_netdev_txq_info_get,
+	.promiscuous_get = ena_netdev_promisc_get,
+	.hwaddr_get      = ena_netdev_mac_get,
+	.mtu_get         = ena_netdev_mtu_get,
+	.configure       = ena_netdev_configure,
+	.rxq_configure   = ena_netdev_rxq_configure,
+	.txq_configure   = ena_netdev_txq_configure,
+	.start           = ena_netdev_start,
+};
+
+#else /* !__Unikraft__ (Standalone Test Suite) */
+
 static int ena_netdev_info_get(struct uk_netdev *dev, struct uk_netdev_info *info)
 {
 	if (!dev || !info || !dev->adapter)
@@ -410,3 +677,5 @@ int ena_netdev_register(struct uk_netdev *netdev)
 	netdev->ops = &ena_ops;
 	return 0;
 }
+
+#endif /* !__Unikraft__ */
