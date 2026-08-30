@@ -34,12 +34,22 @@ int ena_rx_submit_one(struct ena_ring *ring, void *netbuf, uint64_t phys_addr,
 	if (buf_len == 0 || buf_len > 0xFFFFu)
 		return -EINVAL;
 
-	if (ring->free_req_count == 0)
+	ena_ring_lock(ring);
+
+	if (ring->free_req_count == 0) {
+		ena_ring_unlock(ring);
 		return -EBUSY;
+	}
 
 	ret = ena_ring_req_id_alloc(ring, &req_id);
-	if (ret)
+	if (ret) {
+		ena_ring_unlock(ring);
 		return ret;
+	}
+
+	/* Mark request as in-flight */
+	if (ring->req_in_flight)
+		ring->req_in_flight[req_id] = 1;
 
 	/* Save receive buffer tracking metadata */
 	rx_buf = &ring->buffers.rx_bufs[req_id];
@@ -71,6 +81,7 @@ int ena_rx_submit_one(struct ena_ring *ring, void *netbuf, uint64_t phys_addr,
 	if (out_req_id)
 		*out_req_id = req_id;
 
+	ena_ring_unlock(ring);
 	return 0;
 }
 
@@ -131,10 +142,13 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 	struct ena_rx_buffer *rx_buf;
 	unsigned int rcvd = 0;
 	uint16_t req_id;
+	uint16_t pkt_len;
 	uint8_t phase;
 
 	if (!ring || !pkts || ring->ring_type != ENA_RING_TYPE_RX || !ring->cq_virt || max_pkts == 0)
 		return -EINVAL;
+
+	ena_ring_lock(ring);
 
 	cdesc_ring = (const struct ena_eth_io_rx_cdesc_base *)ring->cq_virt;
 
@@ -159,9 +173,34 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 			break;
 		}
 
+		/* Validate in-flight request status */
+		if (!ring->req_in_flight || !ring->req_in_flight[req_id]) {
+			ena_err("rx poll: req_id %u not in-flight", req_id);
+			ring->cq_head++;
+			if ((ring->cq_head & (ring->cq_depth - 1)) == 0)
+				ring->cq_phase ^= 1;
+			continue;
+		}
+
 		rx_buf = &ring->buffers.rx_bufs[req_id];
+		pkt_len = ena_le16_to_cpu(cdesc->length);
+
+		/* Validate packet length against buffer capacity */
+		if (pkt_len > rx_buf->data_len) {
+			ena_err("rx poll: packet length %u exceeds buffer capacity %u",
+				pkt_len, rx_buf->data_len);
+			ring->req_in_flight[req_id] = 0;
+			ena_ring_req_id_free(ring, req_id);
+			ring->cq_head++;
+			if ((ring->cq_head & (ring->cq_depth - 1)) == 0)
+				ring->cq_phase ^= 1;
+			continue;
+		}
+
+		ring->req_in_flight[req_id] = 0;
+
 		pkts[rcvd].netbuf = rx_buf->netbuf;
-		pkts[rcvd].len = ena_le16_to_cpu(cdesc->length);
+		pkts[rcvd].len = pkt_len;
 		pkts[rcvd].hash = ena_le32_to_cpu(cdesc->hash);
 		pkts[rcvd].req_id = req_id;
 		pkts[rcvd].l3_csum_err = !!(status_val & ENA_ETH_IO_RX_CDESC_BASE_L3_CSUM_ERR_MASK);
@@ -185,6 +224,8 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 
 	if (rcvd > 0 && ring->cq_db)
 		ena_reg_write32(ring->cq_db, ring->cq_head);
+
+	ena_ring_unlock(ring);
 
 	return (int)rcvd;
 }

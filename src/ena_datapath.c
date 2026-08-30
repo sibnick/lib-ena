@@ -117,10 +117,23 @@ int ena_ring_alloc(struct ena_adapter *adapter, uint16_t qid,
 		return -ENOMEM;
 	}
 
+	/* Allocate in-flight tracking array */
+	ring->req_in_flight = calloc(sq_depth, sizeof(uint8_t));
+	if (!ring->req_in_flight) {
+		ena_err("ring alloc: failed to allocate in-flight tracking array");
+		free(ring->buffers.raw_bufs);
+		free(ring->free_req_ids);
+		ena_dma_free(ring->cq_virt, ring->cq_phys);
+		ena_dma_free(ring->sq_virt, ring->sq_phys);
+		free(ring);
+		return -ENOMEM;
+	}
+
 	if (ring_type == ENA_RING_TYPE_TX) {
 		ring->sq_head_wb_virt = ena_dma_alloc(64, &ring->sq_head_wb_phys);
 		if (!ring->sq_head_wb_virt) {
 			ena_err("ring alloc: failed to allocate sq_head_wb");
+			free(ring->req_in_flight);
 			free(ring->buffers.raw_bufs);
 			free(ring->free_req_ids);
 			ena_dma_free(ring->cq_virt, ring->cq_phys);
@@ -143,6 +156,11 @@ void ena_ring_free(struct ena_ring *ring)
 	if (ring->sq_head_wb_virt) {
 		ena_dma_free(ring->sq_head_wb_virt, ring->sq_head_wb_phys);
 		ring->sq_head_wb_virt = NULL;
+	}
+
+	if (ring->req_in_flight) {
+		free(ring->req_in_flight);
+		ring->req_in_flight = NULL;
 	}
 
 	if (ring->buffers.raw_bufs) {
@@ -240,6 +258,17 @@ int ena_admin_create_cq(struct ena_adapter *adapter, uint16_t cq_depth,
 
 	*out_cq_idx = resp.cq_idx;
 	*out_db_offset = resp.cq_head_db_register_offset;
+
+	if (adapter->bar0_size && resp.cq_head_db_register_offset != 0) {
+		if (resp.cq_head_db_register_offset + sizeof(uint32_t) > adapter->bar0_size ||
+		    (resp.cq_head_db_register_offset & 3) != 0) {
+			ena_err("create_cq: invalid db_offset 0x%x (bar0_size 0x%zx)",
+				resp.cq_head_db_register_offset, adapter->bar0_size);
+			ena_admin_destroy_cq(adapter, resp.cq_idx);
+			return -EINVAL;
+		}
+	}
+
 	ena_info("create_cq: ok cq_idx=%u depth=%u actual_depth=%u db_offset=0x%x",
 		 resp.cq_idx, cq_depth, resp.cq_actual_depth, resp.cq_head_db_register_offset);
 	return 0;
@@ -300,6 +329,17 @@ int ena_admin_create_sq(struct ena_adapter *adapter, uint16_t sq_depth,
 
 	*out_sq_idx = resp.sq_idx;
 	*out_db_offset = resp.sq_doorbell_offset;
+
+	if (adapter->bar0_size && resp.sq_doorbell_offset != 0) {
+		if (resp.sq_doorbell_offset + sizeof(uint32_t) > adapter->bar0_size ||
+		    (resp.sq_doorbell_offset & 3) != 0) {
+			ena_err("create_sq: invalid db_offset 0x%x (bar0_size 0x%zx)",
+				resp.sq_doorbell_offset, adapter->bar0_size);
+			ena_admin_destroy_sq(adapter, resp.sq_idx);
+			return -EINVAL;
+		}
+	}
+
 	ena_info("create_sq: SUCCESS dir=%u sq_idx=%u db_offset=0x%x",
 		 direction, resp.sq_idx, resp.sq_doorbell_offset);
 	return 0;
@@ -343,6 +383,13 @@ int ena_ring_create_hw(struct ena_ring *ring, uint32_t msix_vector)
 	}
 
 	if (ring->cq_db_offset != 0) {
+		if (ring->cq_db_offset + sizeof(uint32_t) > ring->adapter->bar0_size ||
+		    (ring->cq_db_offset & 3) != 0) {
+			ena_err("ring create hw: invalid CQ db_offset 0x%x (bar0_size 0x%zx)",
+				ring->cq_db_offset, ring->adapter->bar0_size);
+			ena_admin_destroy_cq(ring->adapter, ring->cq_idx);
+			return -EINVAL;
+		}
 		ring->cq_db = (volatile uint32_t *)
 			(ring->adapter->bar0_base + ring->cq_db_offset);
 	}
@@ -358,6 +405,14 @@ int ena_ring_create_hw(struct ena_ring *ring, uint32_t msix_vector)
 	}
 
 	if (ring->sq_db_offset != 0) {
+		if (ring->sq_db_offset + sizeof(uint32_t) > ring->adapter->bar0_size ||
+		    (ring->sq_db_offset & 3) != 0) {
+			ena_err("ring create hw: invalid SQ db_offset 0x%x (bar0_size 0x%zx)",
+				ring->sq_db_offset, ring->adapter->bar0_size);
+			ena_admin_destroy_sq(ring->adapter, ring->sq_idx);
+			ena_admin_destroy_cq(ring->adapter, ring->cq_idx);
+			return -EINVAL;
+		}
 		ring->sq_db = (volatile uint32_t *)
 			(ring->adapter->bar0_base + ring->sq_db_offset);
 	}

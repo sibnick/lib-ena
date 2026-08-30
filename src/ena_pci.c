@@ -82,6 +82,20 @@ static inline uint64_t pci_read_bar0(const struct pci_address *addr)
 	return bar0;
 }
 
+static inline uint32_t pci_read_bar0_size(const struct pci_address *addr)
+{
+	uint32_t bar0_orig = pci_read32(addr, 0x10);
+	pci_write32(addr, 0x10, 0xFFFFFFFFu);
+	uint32_t mask = pci_read32(addr, 0x10);
+	pci_write32(addr, 0x10, bar0_orig);
+
+	uint32_t size_mask = mask & ~0x0Fu;
+	if (size_mask == 0)
+		return 0x4000;
+
+	return (~size_mask) + 1;
+}
+
 static const struct pci_device_id ena_pci_ids[] = {
 	{ PCI_DEVICE_ID(ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_RESERVED) },
 	{ PCI_DEVICE_ID(ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_PF) },
@@ -96,7 +110,7 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 	struct ena_uk_device *edev;
 	void *bar0;
 	uint64_t bar0_phys;
-	uint32_t bar0_size = 0x4000;
+	uint32_t bar0_size;
 	uint32_t sts;
 	int ret;
 
@@ -108,7 +122,11 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 		ena_info("PCI BAR%d = 0x%08x", b, bar_val);
 	}
 
-	/* 2. Read full 64-bit BAR0 MMIO address */
+	/* 2. Read full 64-bit BAR0 MMIO address and size */
+	bar0_size = pci_read_bar0_size(&pdev->addr);
+	if (bar0_size < 0x104)
+		bar0_size = 0x104;
+
 	bar0_phys = pci_read_bar0(&pdev->addr);
 	bar0 = (void *)(uintptr_t)bar0_phys;
 
@@ -129,8 +147,8 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 	}
 
 	sts = ena_reg_read32(edev->adapter.bar0_base + ENA_REGS_DEV_STS_OFF);
-	ena_info("probe: bar0=%p (phys=0x%lx) dev_sts=0x%x version=0x%x caps=0x%x",
-		 bar0, (unsigned long)bar0_phys, sts,
+	ena_info("probe: bar0=%p (phys=0x%lx, size=0x%x) dev_sts=0x%x version=0x%x caps=0x%x",
+		 bar0, (unsigned long)bar0_phys, bar0_size, sts,
 		 edev->adapter.version, edev->adapter.caps);
 
 	/* 4. Initialize Admin Queue & AENQ */
@@ -145,6 +163,7 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 	ret = ena_init_run(&edev->adapter, 1500);
 	if (ret) {
 		ena_err("probe: init run failed (%d)", ret);
+		ena_admin_fini(&edev->adapter);
 		uk_free(uk_alloc_get_default(), edev);
 		return ret;
 	}
@@ -156,6 +175,7 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 	ret = uk_netdev_drv_register(&edev->netdev, uk_alloc_get_default(), "ena");
 	if (ret < 0) {
 		ena_err("probe: failed to register uknetdev (%d)", ret);
+		ena_admin_fini(&edev->adapter);
 		uk_free(uk_alloc_get_default(), edev);
 		return ret;
 	}

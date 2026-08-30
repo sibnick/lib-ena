@@ -39,12 +39,22 @@ int ena_tx_submit(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 	if (pkt->len == 0 || pkt->len > 0xFFFFu)
 		return -EINVAL;
 
-	if (ring->free_req_count == 0)
+	ena_ring_lock(ring);
+
+	if (ring->free_req_count == 0) {
+		ena_ring_unlock(ring);
 		return -EBUSY;
+	}
 
 	ret = ena_ring_req_id_alloc(ring, &req_id);
-	if (ret)
+	if (ret) {
+		ena_ring_unlock(ring);
 		return ret;
+	}
+
+	/* Mark request as in-flight */
+	if (ring->req_in_flight)
+		ring->req_in_flight[req_id] = 1;
 
 	/* Save packet metadata into tracking buffer */
 	tx_buf = &ring->buffers.tx_bufs[req_id];
@@ -101,6 +111,7 @@ int ena_tx_submit(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 	if (out_req_id)
 		*out_req_id = req_id;
 
+	ena_ring_unlock(ring);
 	return 0;
 }
 
@@ -128,6 +139,8 @@ int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 	if (budget == 0)
 		budget = ring->cq_depth;
 
+	ena_ring_lock(ring);
+
 	cdesc_ring = (const struct ena_eth_io_tx_cdesc *)ring->cq_virt;
 
 	while (cleaned < budget) {
@@ -145,6 +158,17 @@ int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 			ena_err("tx poll: invalid req_id %u from device", req_id);
 			break;
 		}
+
+		/* Validate in-flight request status */
+		if (!ring->req_in_flight || !ring->req_in_flight[req_id]) {
+			ena_err("tx poll: req_id %u not in-flight", req_id);
+			ring->cq_head++;
+			if ((ring->cq_head & (ring->cq_depth - 1)) == 0)
+				ring->cq_phase ^= 1;
+			continue;
+		}
+
+		ring->req_in_flight[req_id] = 0;
 
 		/* Update SQ head index acknowledged by controller */
 		ring->sq_head = ena_le16_to_cpu(cdesc->sq_head_idx) & (ring->sq_depth - 1);
@@ -169,6 +193,8 @@ int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 
 		cleaned++;
 	}
+
+	ena_ring_unlock(ring);
 
 	if (cleaned_count)
 		*cleaned_count = cleaned;

@@ -436,6 +436,77 @@ static void test_validation_stress_aenq_recovery(void)
 	printf("[PASS] test_validation_stress_aenq_recovery passed\n");
 }
 
+/* 8. Audit Fixes Validation (Doorbell offsets, length checking, in-flight, clamping, llq) */
+static void test_validation_audit_security_fixes(void)
+{
+	printf("[TEST] Running test_validation_audit_security_fixes...\n");
+
+	struct mock_ena_hw hw;
+	struct ena_adapter adapter;
+	struct ena_ring *rx_ring = NULL;
+	struct ena_ring *tx_ring = NULL;
+	struct ena_rx_pkt rx_pkt;
+	struct ena_tx_pkt tx_pkt;
+	struct ena_eth_io_rx_cdesc_base *rcdesc;
+	struct ena_eth_io_tx_cdesc *tcdesc;
+	uint8_t buffer[512];
+	uint8_t huge_hdr[128];
+	uint16_t cq_idx = 0;
+	uint32_t cq_db = 0;
+	unsigned int cleaned = 0;
+
+	mock_ena_hw_init(&hw);
+	ena_admin_set_db_hook(mock_ena_hw_aq_doorbell_hook, &hw);
+	assert(ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0)) == 0);
+	assert(ena_admin_init(&adapter, 8, 8, 8) == 0);
+
+	/* AUDIT-H1: Doorbell offset out of bounds rejected */
+	hw.inject_bad_db_offset = 1;
+	hw.bad_db_offset = 0x5000;
+	assert(ena_admin_create_cq(&adapter, 8, 0x1000, 0, 2, &cq_idx, &cq_db) == -EINVAL);
+
+	/* Valid CQ creation */
+	hw.inject_bad_db_offset = 0;
+	assert(ena_admin_create_cq(&adapter, 8, 0x1000, 0, 2, &cq_idx, &cq_db) == 0);
+
+	/* AUDIT-H2: RX completion length exceeding buffer rejected */
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 8, 8, &rx_ring) == 0);
+	assert(ena_ring_create_hw(rx_ring, 0) == 0);
+	assert(ena_rx_submit_one(rx_ring, buffer, 0x1000, sizeof(buffer), NULL) == 0);
+
+	rcdesc = (struct ena_eth_io_rx_cdesc_base *)rx_ring->cq_virt;
+	memset(rcdesc, 0, sizeof(*rcdesc));
+	rcdesc->req_id = ena_cpu_to_le16(0);
+	rcdesc->length = ena_cpu_to_le16(1024); /* > 512 */
+	rcdesc->status = ena_cpu_to_le32((1u << ENA_ETH_IO_RX_CDESC_BASE_PHASE_SHIFT));
+	assert(ena_rx_poll(rx_ring, &rx_pkt, 1) == 0);
+
+	/* AUDIT-H3: TX completion with unsubmitted req_id dropped */
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8, &tx_ring) == 0);
+	assert(ena_ring_create_hw(tx_ring, 0) == 0);
+	tcdesc = (struct ena_eth_io_tx_cdesc *)tx_ring->cq_virt;
+	memset(tcdesc, 0, sizeof(*tcdesc));
+	tcdesc->req_id = ena_cpu_to_le16(5);
+	tcdesc->flags = (uint8_t)tx_ring->cq_phase;
+	cleaned = 0;
+	ena_tx_poll_completions(tx_ring, 1, &cleaned);
+	assert(cleaned == 0);
+	assert(tx_ring->free_req_count == 8);
+
+	/* AUDIT-M6: LLQ header length > 96 rejected */
+	memset(&tx_pkt, 0, sizeof(tx_pkt));
+	tx_pkt.len = 200;
+	assert(ena_llq_tx_push(tx_ring, &tx_pkt, huge_hdr, 110, NULL) == -EINVAL);
+
+	ena_ring_destroy_hw(rx_ring);
+	ena_ring_free(rx_ring);
+	ena_ring_destroy_hw(tx_ring);
+	ena_ring_free(tx_ring);
+	ena_admin_fini(&adapter);
+
+	printf("[PASS] test_validation_audit_security_fixes passed\n");
+}
+
 int main(void)
 {
 	printf("========================================\n");
@@ -449,9 +520,10 @@ int main(void)
 	test_validation_multi_queue_load();
 	test_validation_llq_vs_standard_perf();
 	test_validation_stress_aenq_recovery();
+	test_validation_audit_security_fixes();
 
 	printf("========================================\n");
-	printf("ALL PHASE 10 VALIDATION TESTS PASSED (7/7)\n");
+	printf("ALL PHASE 10 VALIDATION TESTS PASSED (8/8)\n");
 	printf("========================================\n");
 	return 0;
 }
