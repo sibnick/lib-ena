@@ -8,6 +8,7 @@
 #define LIBENA_ENA_NETDEV_H
 
 #include "ena.h"
+#include "ena_datapath.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -20,27 +21,40 @@
 #include <uk/netdev_core.h>
 #include <uk/netdev_driver.h>
 #include <uk/netbuf.h>
+#else
+struct uk_netbuf;
+typedef uint16_t (*uk_netdev_alloc_rxpkts)(void *argp, struct uk_netbuf *pkts[], uint16_t count);
+#endif
 
 struct uk_netdev_rx_queue {
 	struct ena_ring *ring;
 	uint16_t queue_id;
 	struct ena_adapter *adapter;
-	struct uk_alloc *allocator;
+	void *allocator;
 	uk_netdev_alloc_rxpkts alloc_rxpkts;
 	void *alloc_rxpkts_argp;
 	void *bounce_buf;
 	uint64_t bounce_phys;
+	uint16_t nb_desc;
+	uint16_t bounce_free_head;
+	uint16_t bounce_free_tail;
+	uint16_t bounce_free_count;
+	uint16_t *bounce_free_ids;
 };
 
 struct uk_netdev_tx_queue {
 	struct ena_ring *ring;
 	uint16_t queue_id;
 	struct ena_adapter *adapter;
-	struct uk_alloc *allocator;
+	void *allocator;
 	void *bounce_buf;
 	uint64_t bounce_phys;
 	bool bounce_in_use;
+	uint16_t bounce_req_id;
+	uint16_t nb_desc;
 };
+
+#ifdef __Unikraft__
 
 struct ena_uk_device {
 	struct uk_netdev netdev;
@@ -48,8 +62,8 @@ struct ena_uk_device {
 	struct uk_pci_device *pdev;
 	void *bar0_vaddr;
 	void *bar2_vaddr;
-	struct uk_netdev_rx_queue rx_queues[8];
-	struct uk_netdev_tx_queue tx_queues[8];
+	struct uk_netdev_rx_queue rx_queues[ENA_NETDEV_MAX_QUEUES];
+	struct uk_netdev_tx_queue tx_queues[ENA_NETDEV_MAX_QUEUES];
 	uint16_t uid;
 };
 
@@ -57,7 +71,25 @@ struct ena_uk_device {
 	__containerof(ndev, struct ena_uk_device, netdev)
 
 extern const struct uk_netdev_ops ena_ops;
+
+/**
+ * Receive a single packet from the specified RX queue (Unikraft native mode).
+ *
+ * @param dev Pointer to the network device.
+ * @param queue Pointer to the RX queue structure.
+ * @param pkt Pointer where the received network buffer is stored.
+ * @return Positive status flag on packet receipt, 0 if queue is empty, or negative errno on error.
+ */
 int ena_netdev_rx_one(struct uk_netdev *dev, struct uk_netdev_rx_queue *queue, struct uk_netbuf **pkt);
+
+/**
+ * Transmit a single packet on the specified TX queue (Unikraft native mode).
+ *
+ * @param dev Pointer to the network device.
+ * @param queue Pointer to the TX queue structure.
+ * @param pkt Pointer to the network buffer to transmit.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_netdev_tx_one(struct uk_netdev *dev, struct uk_netdev_tx_queue *queue, struct uk_netbuf *pkt);
 
 #else /* !__Unikraft__ */
@@ -97,6 +129,8 @@ struct uk_netdev_conf {
 struct uk_netdev_rxqueue_conf {
 	uint16_t nb_desc;
 	void *allocator;
+	uk_netdev_alloc_rxpkts alloc_rxpkts;
+	void *alloc_rxpkts_argp;
 };
 
 struct uk_netdev_txqueue_conf {
@@ -142,17 +176,34 @@ struct uk_netdev {
 	uint16_t nb_tx_queues;
 	struct ena_adapter *adapter;
 	void *rx_allocator_arg;
+	struct uk_netdev_rx_queue rx_queues[ENA_NETDEV_MAX_QUEUES];
+	struct uk_netdev_tx_queue tx_queues[ENA_NETDEV_MAX_QUEUES];
 };
 
-/* Allocate and initialize netdev structure for an ENA adapter */
+/**
+ * Allocate and initialize a network device structure for an ENA adapter.
+ *
+ * @param adapter Pointer to the master ENA adapter.
+ * @return Pointer to the allocated network device, or NULL on allocation failure.
+ */
 struct uk_netdev *ena_netdev_alloc(struct ena_adapter *adapter);
 
-/* Free netdev structure */
+/**
+ * Free a network device structure and release associated ring resources.
+ *
+ * @param netdev Pointer to the network device structure to free.
+ */
 void ena_netdev_free(struct uk_netdev *netdev);
 
-/* Register netdev structure with driver operations table */
+/**
+ * Register a network device with the driver operations table.
+ *
+ * @param netdev Pointer to the network device structure to register.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_netdev_register(struct uk_netdev *netdev);
 
 #endif /* !__Unikraft__ */
 
 #endif /* LIBENA_ENA_NETDEV_H */
+

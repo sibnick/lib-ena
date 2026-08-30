@@ -114,10 +114,49 @@ struct ena_adapter {
 };
 
 /* Function prototypes for Phase 1 */
+
+/**
+ * Check if a PCI vendor and device ID pair matches a supported ENA device.
+ *
+ * @param vendor_id PCI vendor identifier.
+ * @param device_id PCI device identifier.
+ * @return 1 if the ID pair matches an ENA device, 0 otherwise.
+ */
 int ena_pci_match_id(uint16_t vendor_id, uint16_t device_id);
+
+/**
+ * Trigger a hardware controller reset via the DEV_CTL register.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_device_reset(struct ena_adapter *adapter);
+
+/**
+ * Poll the DEV_STS register until the device finishes reset.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param max_polls Maximum number of polling iterations before timing out.
+ * @return 0 when reset completes, or -ETIMEDOUT if polling budget expires.
+ */
 int ena_device_wait_reset_complete(struct ena_adapter *adapter, unsigned int max_polls);
+
+/**
+ * Check if the device is in a ready state.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @return 0 if the device is ready, or -ENODEV if not ready.
+ */
 int ena_device_check_ready(const struct ena_adapter *adapter);
+
+/**
+ * Initialize base adapter structure and map BAR0 MMIO space.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param bar0_base Virtual memory address where BAR0 MMIO registers are mapped.
+ * @param bar0_size Size of the BAR0 MMIO address space in bytes.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_device_init_scaffold(struct ena_adapter *adapter, void *bar0_base, size_t bar0_size);
 
 #ifndef __Unikraft__
@@ -128,15 +167,63 @@ void ena_device_set_reset_poll_hook(ena_reset_poll_hook *hook, void *cookie);
 #endif
 
 /* Function prototypes for Phase 2 (Admin Queue and AENQ) */
+
+/**
+ * Initialize Admin Queue (AQ), Admin Completion Queue (ACQ), and AENQ.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param aq_depth Submission queue depth in entries (must be a power of two).
+ * @param acq_depth Completion queue depth in entries (must be a power of two).
+ * @param aenq_depth Event queue depth in entries (must be a power of two).
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_admin_init(struct ena_adapter *adapter, uint16_t aq_depth,
 		   uint16_t acq_depth, uint16_t aenq_depth);
+
+/**
+ * Release all Admin Queue, Completion Queue, and AENQ resources.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ */
 void ena_admin_fini(struct ena_adapter *adapter);
+
+/**
+ * Submit an admin command and poll synchronously for completion.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param opcode Admin command operation code.
+ * @param req Pointer to the command request payload buffer.
+ * @param req_len Size of the request payload buffer in bytes.
+ * @param resp Pointer to the buffer where response data is written.
+ * @param resp_cap Capacity of the response buffer in bytes.
+ * @param out_command_id Optional pointer to store the assigned command ID.
+ * @param max_polls Maximum polling loops to wait for command completion.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_admin_exec_cmd(struct ena_adapter *adapter, uint8_t opcode,
 		       const void *req, size_t req_len, void *resp,
 		       size_t resp_cap, uint16_t *out_command_id,
 		       unsigned int max_polls);
+
+/**
+ * Register a callback handler for Asynchronous Event Notifications (AENQ).
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param handler Function pointer to the event notification callback.
+ * @param arg User context pointer passed to the callback handler.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_admin_aenq_register(struct ena_adapter *adapter,
 			    ena_aenq_handler *handler, void *arg);
+
+/**
+ * Poll and dispatch pending asynchronous events from the AENQ ring.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param max_events Maximum number of event entries to process in this sweep.
+ * @return Number of processed events on success, or a negative errno value on error.
+ */
 int ena_admin_aenq_poll(struct ena_adapter *adapter, unsigned int max_events);
 
 #endif /* LIBENA_ENA_H */
+

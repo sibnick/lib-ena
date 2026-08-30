@@ -256,21 +256,25 @@ int ena_admin_create_cq(struct ena_adapter *adapter, uint16_t cq_depth,
 		return ret;
 	}
 
-	*out_cq_idx = resp.cq_idx;
-	*out_db_offset = resp.cq_head_db_register_offset;
+	uint16_t cq_idx = ena_le16_to_cpu(resp.cq_idx);
+	uint32_t cq_db_offset = ena_le32_to_cpu(resp.cq_head_db_register_offset);
+	uint16_t cq_actual_depth = ena_le16_to_cpu(resp.cq_actual_depth);
 
-	if (adapter->bar0_size && resp.cq_head_db_register_offset != 0) {
-		if (resp.cq_head_db_register_offset + sizeof(uint32_t) > adapter->bar0_size ||
-		    (resp.cq_head_db_register_offset & 3) != 0) {
+	*out_cq_idx = cq_idx;
+	*out_db_offset = cq_db_offset;
+
+	if (adapter->bar0_size && cq_db_offset != 0) {
+		if (cq_db_offset + sizeof(uint32_t) > adapter->bar0_size ||
+		    (cq_db_offset & 3) != 0) {
 			ena_err("create_cq: invalid db_offset 0x%x (bar0_size 0x%zx)",
-				resp.cq_head_db_register_offset, adapter->bar0_size);
-			ena_admin_destroy_cq(adapter, resp.cq_idx);
+				cq_db_offset, adapter->bar0_size);
+			ena_admin_destroy_cq(adapter, cq_idx);
 			return -EINVAL;
 		}
 	}
 
 	ena_info("create_cq: ok cq_idx=%u depth=%u actual_depth=%u db_offset=0x%x",
-		 resp.cq_idx, cq_depth, resp.cq_actual_depth, resp.cq_head_db_register_offset);
+		 cq_idx, cq_depth, cq_actual_depth, cq_db_offset);
 	return 0;
 }
 
@@ -327,21 +331,24 @@ int ena_admin_create_sq(struct ena_adapter *adapter, uint16_t sq_depth,
 		return ret;
 	}
 
-	*out_sq_idx = resp.sq_idx;
-	*out_db_offset = resp.sq_doorbell_offset;
+	uint16_t sq_idx = ena_le16_to_cpu(resp.sq_idx);
+	uint32_t sq_doorbell_offset = ena_le32_to_cpu(resp.sq_doorbell_offset);
 
-	if (adapter->bar0_size && resp.sq_doorbell_offset != 0) {
-		if (resp.sq_doorbell_offset + sizeof(uint32_t) > adapter->bar0_size ||
-		    (resp.sq_doorbell_offset & 3) != 0) {
+	*out_sq_idx = sq_idx;
+	*out_db_offset = sq_doorbell_offset;
+
+	if (adapter->bar0_size && sq_doorbell_offset != 0) {
+		if (sq_doorbell_offset + sizeof(uint32_t) > adapter->bar0_size ||
+		    (sq_doorbell_offset & 3) != 0) {
 			ena_err("create_sq: invalid db_offset 0x%x (bar0_size 0x%zx)",
-				resp.sq_doorbell_offset, adapter->bar0_size);
-			ena_admin_destroy_sq(adapter, resp.sq_idx);
+				sq_doorbell_offset, adapter->bar0_size);
+			ena_admin_destroy_sq(adapter, sq_idx);
 			return -EINVAL;
 		}
 	}
 
 	ena_info("create_sq: SUCCESS dir=%u sq_idx=%u db_offset=0x%x",
-		 direction, resp.sq_idx, resp.sq_doorbell_offset);
+		 direction, sq_idx, sq_doorbell_offset);
 	return 0;
 }
 

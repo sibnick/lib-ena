@@ -28,12 +28,14 @@ ENA_SRCS_P9 = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena
 ENA_SRCS_ALL = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena_init.c src/ena_datapath.c src/ena_tx.c src/ena_rx.c src/ena_netdev.c src/ena_intr.c src/ena_llq.c
 ENA_HDRS = include/ena.h include/ena_regs.h include/ena_plat.h include/ena_admin.h include/ena_init.h include/ena_datapath.h include/ena_netdev.h include/ena_intr.h include/ena_llq.h
 
-.PHONY: all test sanitize clean
+.PHONY: all test sanitize test-sanitize clean
 
 all: test
 
-sanitize: CFLAGS += -fsanitize=address -g
-sanitize: clean test
+sanitize: test-sanitize
+
+test-sanitize: CFLAGS += -fsanitize=address,undefined -g
+test-sanitize: clean test
 
 test: $(TEST1) $(TEST2) $(TEST3) $(TEST4) $(TEST5) $(TEST6) $(TEST7) $(TEST8) $(TEST9) $(TEST10)
 	./$(TEST1)

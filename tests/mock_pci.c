@@ -14,7 +14,7 @@
 #include <stdint.h>
 #include <string.h>
 
-/* Rebuild a 48-bit physical address from its LO/HI register pair. */
+/* Rebuild a 48-bit physical address from its LO/HI register pair */
 static uint64_t mock_read_phys(const struct mock_ena_hw *hw, uint32_t lo_off,
 			       uint32_t hi_off)
 {
@@ -26,6 +26,8 @@ static uint64_t mock_read_phys(const struct mock_ena_hw *hw, uint32_t lo_off,
 
 void mock_ena_hw_init(struct mock_ena_hw *hw)
 {
+	int i;
+
 	if (!hw)
 		return;
 
@@ -34,7 +36,7 @@ void mock_ena_hw_init(struct mock_ena_hw *hw)
 	hw->reset_polls = 0;
 	hw->reset_polls_to_finish = 0;
 
-	/* Phase 2: reset the emulated admin device. */
+	/* Phase 2: reset the emulated admin device */
 	hw->dev_aq_base = NULL;
 	hw->dev_acq_base = NULL;
 	hw->dev_aenq_base = NULL;
@@ -56,10 +58,12 @@ void mock_ena_hw_init(struct mock_ena_hw *hw)
 	hw->bad_db_offset = 0;
 	hw->inject_fake_req_id = 0;
 	hw->fake_req_id = 0;
+	hw->inject_corrupt_len = 0;
+	hw->corrupt_len = 0;
 	hw->last_opcode = 0;
 	hw->last_command_id = 0;
 
-	/* Phase 3: default emulated device attributes. */
+	/* Phase 3: default emulated device attributes */
 	hw->dev_impl_id = 0x1D0F;
 	hw->dev_device_version = 0x00020000;
 	hw->dev_supported_features = (1u << ENA_ADMIN_DEVICE_ATTRIBUTES) |
@@ -82,7 +86,7 @@ void mock_ena_hw_init(struct mock_ena_hw *hw)
 	hw->dev_max_cq_num = 16;
 	hw->dev_max_cq_depth = 1024;
 
-	/* Phase 3: negotiation records and controls. */
+	/* Phase 3: negotiation records and controls */
 	hw->attrs_read = 0;
 	hw->negotiated_mtu = 0;
 	hw->host_info_base = NULL;
@@ -103,6 +107,13 @@ void mock_ena_hw_init(struct mock_ena_hw *hw)
 	hw->sq_created_count = 0;
 	hw->cq_destroyed_count = 0;
 	hw->sq_destroyed_count = 0;
+
+	for (i = 0; i < MOCK_MAX_IO_QUEUES; i++) {
+		hw->io_tx_cq_state[i].cq_tail = 0;
+		hw->io_tx_cq_state[i].cq_phase = 1;
+		hw->io_rx_cq_state[i].cq_tail = 0;
+		hw->io_rx_cq_state[i].cq_phase = 1;
+	}
 
 	/* Default hardware version and controller values */
 	mock_ena_hw_set_reg32(hw, ENA_REGS_VERSION_OFF, (2 << 8) | 0); /* v2.0 */
@@ -133,7 +144,6 @@ void mock_ena_hw_trigger_reset_completion(struct mock_ena_hw *hw)
 		return;
 
 	hw->reset_count++;
-	/* Set status to reset finished and ready */
 	mock_ena_hw_set_reg32(hw, ENA_REGS_DEV_STS_OFF,
 			      ENA_DEV_STS_RESET_FIN_MASK | ENA_DEV_STS_READY_MASK);
 }
@@ -145,8 +155,7 @@ void mock_ena_hw_reset_poll_hook(void *cookie)
 	if (!hw)
 		return;
 
-	/* Count this poll. When the configured budget is reached, report
-	 * the reset as finished and ready, like real hardware would. */
+	/* Count this poll. Report reset finished when budget is reached */
 	hw->reset_polls++;
 	if (hw->reset_polls_to_finish != 0 &&
 	    hw->reset_polls >= hw->reset_polls_to_finish) {
@@ -156,7 +165,7 @@ void mock_ena_hw_reset_poll_hook(void *cookie)
 	}
 }
 
-/* Inline payload of a get/set feature command (60-byte AQ inline region). */
+/* Inline payload of a get/set feature command (60-byte AQ inline region) */
 struct mock_get_set_feat_inline {
 	uint32_t ctrl_len;
 	uint32_t ctrl_lo;
@@ -169,8 +178,7 @@ struct mock_get_set_feat_inline {
 	uint32_t raw[11];
 };
 
-/* Emulate the device reaction to get/set feature commands.
- * Fills the completion status and any feature specific response. */
+/* Emulate the device reaction to get/set feature commands */
 static void mock_dispatch_feature(struct mock_ena_hw *hw,
 				  const struct ena_admin_aq_entry *req,
 				  struct ena_admin_acq_entry *comp)
@@ -291,7 +299,7 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 				break;
 			}
 			case 0:
-				/* Legacy request without inline data. */
+				/* Legacy request without inline data */
 				break;
 			default:
 				status = ENA_ADMIN_ILLEGAL_PARAMETER;
@@ -332,14 +340,13 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 	comp->acq_common_desc.extended_status = status;
 
 	if (status == 0 && !filled) {
-		/* Default success payload: the Phase 2 test pattern. */
+		/* Default success payload */
 		for (i = 0; i < 14; i++)
 			comp->response_specific_data[i] = 0x5E5E0000u | (uint32_t)i;
 	}
 }
 
-/* Track driver ACQ consumption from the ACQ tail register (0x30). The
- * masked index advances by one per consumed completion. */
+/* Track driver ACQ consumption from the ACQ tail register (0x30) */
 uint16_t mock_ena_hw_settle_acq_head(struct mock_ena_hw *hw)
 {
 	uint16_t mask;
@@ -386,7 +393,7 @@ void mock_ena_hw_aq_doorbell_hook(void *cookie, uint16_t tail)
 
 	mock_ena_hw_settle_acq_head(hw);
 
-	/* Learn the rings and depths from BAR0. */
+	/* Learn rings and depths from BAR0 */
 	aq_phys = mock_read_phys(hw, ENA_REGS_AQ_BASE_LO_OFF,
 				 ENA_REGS_AQ_BASE_HI_OFF);
 	acq_phys = mock_read_phys(hw, ENA_REGS_ACQ_BASE_LO_OFF,
@@ -401,14 +408,14 @@ void mock_ena_hw_aq_doorbell_hook(void *cookie, uint16_t tail)
 	if (hw->dev_aq_depth == 0 || hw->dev_acq_depth == 0)
 		return;
 
-	/* Consume the requested AQ entry. */
+	/* Consume requested AQ entry */
 	aq_idx = (tail - 1) & (hw->dev_aq_depth - 1);
 	req = (const struct ena_admin_aq_entry *)
 	      (hw->dev_aq_base + (size_t)aq_idx * sizeof(*req));
 	hw->last_opcode = req->aq_common_desc.opcode;
 	hw->last_command_id = req->aq_common_desc.command_id & 0x0FFF;
 
-	/* Write the ACQ completion at the device tail. */
+	/* Write ACQ completion at device tail */
 	acq_idx = hw->dev_acq_tail & (hw->dev_acq_depth - 1);
 	comp = (struct ena_admin_acq_entry *)
 	       (hw->dev_acq_base + (size_t)acq_idx * sizeof(*comp));
@@ -420,7 +427,7 @@ void mock_ena_hw_aq_doorbell_hook(void *cookie, uint16_t tail)
 
 	mock_dispatch_feature(hw, req, comp);
 
-	/* Advance the device ACQ tail; flip phase on wrap. */
+	/* Advance device ACQ tail and flip phase on wrap */
 	hw->dev_acq_tail++;
 	if ((hw->dev_acq_tail & (hw->dev_acq_depth - 1)) == 0)
 		hw->dev_acq_phase ^= 1;
@@ -486,6 +493,63 @@ void mock_ena_hw_clear_fake_req_id(struct mock_ena_hw *hw)
 		hw->inject_fake_req_id = 0;
 }
 
+void mock_pci_inject_fault(struct mock_ena_hw *hw, enum mock_pci_fault_type type, uint64_t arg)
+{
+	if (!hw)
+		return;
+
+	switch (type) {
+	case MOCK_PCI_FAULT_NONE:
+		mock_pci_clear_faults(hw);
+		break;
+	case MOCK_PCI_FAULT_BAD_DB_OFFSET:
+		hw->inject_bad_db_offset = 1;
+		hw->bad_db_offset = (uint32_t)arg;
+		break;
+	case MOCK_PCI_FAULT_UNALIGNED_DB_OFFSET:
+		hw->inject_bad_db_offset = 1;
+		hw->bad_db_offset = (uint32_t)(arg | 1);
+		break;
+	case MOCK_PCI_FAULT_BAD_CMD_ID:
+		hw->inject_bad_cmd_id = 1;
+		hw->bad_cmd_id = (uint16_t)(arg & 0x0FFF);
+		break;
+	case MOCK_PCI_FAULT_FAKE_REQ_ID:
+		hw->inject_fake_req_id = 1;
+		hw->fake_req_id = (uint16_t)arg;
+		break;
+	case MOCK_PCI_FAULT_CORRUPT_LENGTH:
+		hw->inject_corrupt_len = 1;
+		hw->corrupt_len = (uint16_t)arg;
+		break;
+	case MOCK_PCI_FAULT_ADMIN_HANG:
+		hw->admin_hang = 1;
+		break;
+	case MOCK_PCI_FAULT_ADMIN_STATUS:
+		hw->admin_status = (uint8_t)arg;
+		break;
+	default:
+		break;
+	}
+}
+
+void mock_pci_clear_faults(struct mock_ena_hw *hw)
+{
+	if (!hw)
+		return;
+
+	hw->inject_bad_db_offset = 0;
+	hw->bad_db_offset = 0;
+	hw->inject_bad_cmd_id = 0;
+	hw->bad_cmd_id = 0;
+	hw->inject_fake_req_id = 0;
+	hw->fake_req_id = 0;
+	hw->inject_corrupt_len = 0;
+	hw->corrupt_len = 0;
+	hw->admin_hang = 0;
+	hw->admin_status = 0;
+}
+
 void mock_ena_hw_require_attrs_first(struct mock_ena_hw *hw, int on)
 {
 	if (hw)
@@ -521,7 +585,7 @@ void mock_ena_hw_inject_aenq(struct mock_ena_hw *hw, uint16_t group,
 	ev->aenq_common_desc.timestamp_low = hw->dev_aenq_seq++;
 	ev->aenq_common_desc.timestamp_high = 0;
 
-	/* Advance the device AENQ tail; flip phase on wrap. */
+	/* Advance device AENQ tail and flip phase on wrap */
 	hw->dev_aenq_tail++;
 	if ((hw->dev_aenq_tail & (hw->dev_aenq_depth - 1)) == 0)
 		hw->dev_aenq_phase ^= 1;
@@ -536,9 +600,14 @@ void mock_ena_hw_emulate_tx(struct mock_ena_hw *hw, struct ena_ring *ring,
 	uint16_t sq_idx;
 	uint16_t cq_idx;
 	uint16_t req_id;
+	uint16_t qid;
 
 	if (!hw || !ring || !ring->sq_virt || !ring->cq_virt || count == 0)
 		return;
+
+	qid = ring->qid;
+	if (qid >= MOCK_MAX_IO_QUEUES)
+		qid = 0;
 
 	sq_descs = (struct ena_eth_io_tx_desc *)ring->sq_virt;
 	cq_descs = (struct ena_eth_io_tx_cdesc *)ring->cq_virt;
@@ -553,13 +622,17 @@ void mock_ena_hw_emulate_tx(struct mock_ena_hw *hw, struct ena_ring *ring,
 		if (hw->inject_fake_req_id)
 			req_id = hw->fake_req_id;
 
-		cq_idx = (ring->cq_head + (uint16_t)i) & (ring->cq_depth - 1);
+		cq_idx = hw->io_tx_cq_state[qid].cq_tail & (ring->cq_depth - 1);
 		memset(&cq_descs[cq_idx], 0, sizeof(cq_descs[cq_idx]));
 		cq_descs[cq_idx].req_id = req_id;
 		cq_descs[cq_idx].status = 0;
-		cq_descs[cq_idx].flags = ring->cq_phase;
+		cq_descs[cq_idx].flags = hw->io_tx_cq_state[qid].cq_phase;
 		cq_descs[cq_idx].sub_qid = ring->qid;
 		cq_descs[cq_idx].sq_head_idx = (sq_idx + 1) & (ring->sq_depth - 1);
+
+		hw->io_tx_cq_state[qid].cq_tail++;
+		if ((hw->io_tx_cq_state[qid].cq_tail & (ring->cq_depth - 1)) == 0)
+			hw->io_tx_cq_state[qid].cq_phase ^= 1;
 	}
 }
 
@@ -574,9 +647,14 @@ void mock_ena_hw_emulate_rx(struct mock_ena_hw *hw, struct ena_ring *ring,
 	uint16_t cq_idx;
 	uint16_t req_id;
 	uint32_t status;
+	uint16_t qid;
 
 	if (!hw || !ring || !ring->sq_virt || !ring->cq_virt || count == 0)
 		return;
+
+	qid = ring->qid;
+	if (qid >= MOCK_MAX_IO_QUEUES)
+		qid = 0;
 
 	sq_descs = (struct ena_eth_io_rx_desc *)ring->sq_virt;
 	cq_descs = (struct ena_eth_io_rx_cdesc_base *)ring->cq_virt;
@@ -588,19 +666,23 @@ void mock_ena_hw_emulate_rx(struct mock_ena_hw *hw, struct ena_ring *ring,
 		if (hw->inject_fake_req_id)
 			req_id = hw->fake_req_id;
 
-		cq_idx = (ring->cq_head + (uint16_t)i) & (ring->cq_depth - 1);
+		cq_idx = hw->io_rx_cq_state[qid].cq_tail & (ring->cq_depth - 1);
 		memset(&cq_descs[cq_idx], 0, sizeof(cq_descs[cq_idx]));
 
-		status = ((uint32_t)ring->cq_phase << ENA_ETH_IO_RX_CDESC_BASE_PHASE_SHIFT);
+		status = ((uint32_t)hw->io_rx_cq_state[qid].cq_phase << ENA_ETH_IO_RX_CDESC_BASE_PHASE_SHIFT);
 		status |= ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK |
 			  ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK |
 			  status_flags;
 
 		cq_descs[cq_idx].status = status;
-		cq_descs[cq_idx].length = pkt_len;
+		cq_descs[cq_idx].length = hw->inject_corrupt_len ? hw->corrupt_len : pkt_len;
 		cq_descs[cq_idx].req_id = req_id;
 		cq_descs[cq_idx].hash = hash;
 		cq_descs[cq_idx].sub_qid = ring->qid;
+
+		hw->io_rx_cq_state[qid].cq_tail++;
+		if ((hw->io_rx_cq_state[qid].cq_tail & (ring->cq_depth - 1)) == 0)
+			hw->io_rx_cq_state[qid].cq_phase ^= 1;
 	}
 
 	ring->sq_head = (uint16_t)((ring->sq_head + (uint16_t)count) & (ring->sq_depth - 1));

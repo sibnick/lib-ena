@@ -57,6 +57,18 @@ void ena_debug(const char *fmt, ...);
 	({ _Static_assert(sizeof(var) == 4, "WRITE_ONCE32 requires a 32-bit variable"); \
 	   (*(volatile uint32_t *)&(var) = (val)); })
 
+/* CPU pause helper for spinlock loops */
+static inline void ena_pause(void)
+{
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__)
+	__asm__ __volatile__("pause" ::: "memory");
+#elif defined(__aarch64__)
+	__asm__ __volatile__("yield" ::: "memory");
+#else
+	__asm__ __volatile__("" ::: "memory");
+#endif
+}
+
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 #define ena_le16_to_cpu(x) ((uint16_t)(x))
 #define ena_cpu_to_le16(x) ((uint16_t)(x))
@@ -86,16 +98,29 @@ static inline void ena_reg_write32(volatile void *addr, uint32_t val)
 
 /* Platform services (implemented in src/ena_plat.c) */
 
-/* Allocate a DMA-capable buffer of 'size' bytes.
- * Returns the virtual address, or NULL on failure.
- * On success, stores the physical address in *phys_out (if not NULL). */
+/**
+ * Allocate a physically contiguous DMA buffer.
+ *
+ * @param size Allocation size in bytes.
+ * @param phys_out Output pointer where the physical address is stored.
+ * @return Virtual pointer to the allocated buffer, or NULL on failure.
+ */
 void *ena_dma_alloc(size_t size, uint64_t *phys_out);
 
-/* Free a buffer previously returned by ena_dma_alloc(). */
+/**
+ * Free a contiguous DMA buffer previously allocated with ena_dma_alloc.
+ *
+ * @param virt Virtual address of the buffer to free.
+ * @param phys Physical address of the buffer to free.
+ */
 void ena_dma_free(void *virt, uint64_t phys);
 
-/* Bounded delay of 'us' microseconds.
- * In the host build this is a light spin that keeps poll loops fast. */
+/**
+ * Delay execution for a specified duration in microseconds.
+ *
+ * @param us Duration to delay in microseconds.
+ */
 void ena_delay_us(unsigned int us);
 
 #endif /* LIBENA_ENA_PLAT_H */
+

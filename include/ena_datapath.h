@@ -17,6 +17,18 @@
 /* Forward declaration */
 struct ena_adapter;
 
+/* Buffer sizes and memory limits */
+#define ENA_RX_BUF_SIZE         2048
+#define ENA_TX_BOUNCE_SIZE      4096
+#define ENA_DMA_LOW_MEM_LIMIT   0x100000ULL
+#define ENA_NETDEV_IOALIGN      64
+#define ENA_NETDEV_MAX_QUEUES   8
+#define ENA_MIN_RING_DESC       4
+#define ENA_DEFAULT_RING_DESC   256
+#define ENA_MAX_RING_DESC       4096
+#define ENA_DEFAULT_MTU         1500
+#define ENA_MIN_MTU_LEN         68
+
 /* Ring Types */
 enum ena_ring_type {
 	ENA_RING_TYPE_TX = 1,
@@ -207,7 +219,7 @@ struct ena_ring {
 static inline void ena_ring_lock(struct ena_ring *ring)
 {
 	while (__sync_lock_test_and_set(&ring->ring_lock, 1u) != 0u)
-		ena_delay_us(1);
+		ena_pause();
 }
 
 static inline void ena_ring_unlock(struct ena_ring *ring)
@@ -219,33 +231,116 @@ static inline void ena_ring_unlock(struct ena_ring *ring)
  * Datapath Ring Lifecycle & Allocation Prototypes
  * ------------------------------------------------------------------------- */
 
+/**
+ * Allocate and initialize host memory structures for an IO ring pair.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param qid Hardware queue index to assign.
+ * @param ring_type Direction of the ring (TX or RX).
+ * @param sq_depth Submission queue depth in entries (must be a power of two).
+ * @param cq_depth Completion queue depth in entries (must be a power of two).
+ * @param out_ring Output pointer where the allocated ring pointer is stored.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_ring_alloc(struct ena_adapter *adapter, uint16_t qid,
 		   enum ena_ring_type ring_type, uint16_t sq_depth,
 		   uint16_t cq_depth, struct ena_ring **out_ring);
 
+/**
+ * Release host memory and buffer tracking structures for an IO ring.
+ *
+ * @param ring Pointer to the ring structure to free.
+ */
 void ena_ring_free(struct ena_ring *ring);
 
+/**
+ * Create hardware SQ and CQ instances on the device for this ring.
+ *
+ * @param ring Pointer to the initialized ring structure.
+ * @param msix_vector MSI-X interrupt vector index to bind to the completion queue.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_ring_create_hw(struct ena_ring *ring, uint32_t msix_vector);
 
+/**
+ * Destroy hardware SQ and CQ instances on the device for this ring.
+ *
+ * @param ring Pointer to the active ring structure.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_ring_destroy_hw(struct ena_ring *ring);
 
+/**
+ * Allocate an available request ID from the ring free pool.
+ *
+ * @param ring Pointer to the ring structure.
+ * @param out_req_id Output pointer where the allocated request ID is stored.
+ * @return 0 on success, or -ENOSPC if no free request IDs remain.
+ */
 int ena_ring_req_id_alloc(struct ena_ring *ring, uint16_t *out_req_id);
 
+/**
+ * Return an in-flight request ID back to the ring free pool.
+ *
+ * @param ring Pointer to the ring structure.
+ * @param req_id Request ID to release.
+ * @return 0 on success, or -EINVAL if the request ID is invalid or not in-flight.
+ */
 int ena_ring_req_id_free(struct ena_ring *ring, uint16_t req_id);
 
 /* Admin command helpers for CQ and SQ */
+
+/**
+ * Issue a CREATE_CQ admin command to register a Completion Queue with the device.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param cq_depth Completion queue depth in entries.
+ * @param cq_phys Physical base address of the CQ descriptor ring.
+ * @param msix_vector MSI-X vector index for completion interrupts.
+ * @param entry_size_words Size of each CQ entry in 32-bit words.
+ * @param out_cq_idx Output pointer for the device-assigned CQ hardware index.
+ * @param out_db_offset Output pointer for the doorbell register byte offset.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_admin_create_cq(struct ena_adapter *adapter, uint16_t cq_depth,
 			uint64_t cq_phys, uint32_t msix_vector,
 			uint8_t entry_size_words,
 			uint16_t *out_cq_idx, uint32_t *out_db_offset);
 
+/**
+ * Issue a DESTROY_CQ admin command to remove a Completion Queue from the device.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param cq_idx Device hardware index of the CQ to destroy.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_admin_destroy_cq(struct ena_adapter *adapter, uint16_t cq_idx);
 
+/**
+ * Issue a CREATE_SQ admin command to register a Submission Queue with the device.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param sq_depth Submission queue depth in entries.
+ * @param sq_phys Physical base address of the SQ descriptor ring.
+ * @param sq_head_wb_phys Physical address for SQ head pointer writeback.
+ * @param cq_idx Hardware index of the paired Completion Queue.
+ * @param direction Queue traffic direction (1 for TX, 2 for RX).
+ * @param out_sq_idx Output pointer for the device-assigned SQ hardware index.
+ * @param out_db_offset Output pointer for the doorbell register byte offset.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_admin_create_sq(struct ena_adapter *adapter, uint16_t sq_depth,
 			uint64_t sq_phys, uint64_t sq_head_wb_phys,
 			uint16_t cq_idx, uint8_t direction,
 			uint16_t *out_sq_idx, uint32_t *out_db_offset);
 
+/**
+ * Issue a DESTROY_SQ admin command to remove a Submission Queue from the device.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param sq_idx Device hardware index of the SQ to destroy.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_admin_destroy_sq(struct ena_adapter *adapter, uint16_t sq_idx);
 
 /* Protocol Indexes (matching reference/ena_eth_io_defs.h) */
@@ -281,17 +376,40 @@ struct ena_tx_pkt {
  * Transmit (TX) Datapath Functions (Phase 5)
  * ------------------------------------------------------------------------- */
 
-/* Return number of available submission slots in the TX ring */
+/**
+ * Calculate the number of unused descriptor slots in the TX Submission Queue.
+ *
+ * @param ring Pointer to the TX ring structure.
+ * @return Number of available descriptor slots.
+ */
 uint16_t ena_tx_free_space(const struct ena_ring *ring);
 
-/* Serialize a transmit packet into the TX Submission Queue */
+/**
+ * Write a transmit packet descriptor into the TX Submission Queue.
+ *
+ * @param ring Pointer to the TX ring structure.
+ * @param pkt Pointer to the transmit packet metadata and buffer info.
+ * @param out_req_id Output pointer for the assigned request ID.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_tx_submit(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 		  uint16_t *out_req_id);
 
-/* Ring the hardware TX MMIO doorbell */
+/**
+ * Write the updated TX SQ tail index to the hardware MMIO doorbell register.
+ *
+ * @param ring Pointer to the TX ring structure.
+ */
 void ena_tx_doorbell(struct ena_ring *ring);
 
-/* Poll TX Completion Queue for finished packets and recycle buffers */
+/**
+ * Poll the TX Completion Queue for completed packets and release buffers.
+ *
+ * @param ring Pointer to the TX ring structure.
+ * @param budget Maximum number of completions to process in this call.
+ * @param cleaned_count Output pointer storing the count of processed completions.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 			    unsigned int *cleaned_count);
 
@@ -311,23 +429,58 @@ struct ena_rx_pkt {
  * Receive (RX) Datapath Functions (Phase 6)
  * ------------------------------------------------------------------------- */
 
-/* Return number of free slots available in the RX Submission Queue */
+/**
+ * Calculate the number of empty slots in the RX Submission Queue.
+ *
+ * @param ring Pointer to the RX ring structure.
+ * @return Number of available descriptor slots.
+ */
 uint16_t ena_rx_free_space(const struct ena_ring *ring);
 
-/* Enqueue a single empty receive buffer into the RX Submission Queue */
+/**
+ * Enqueue a single empty receive buffer descriptor into the RX Submission Queue.
+ *
+ * @param ring Pointer to the RX ring structure.
+ * @param netbuf Pointer to the allocated network buffer object.
+ * @param phys_addr Physical DMA address of the receive data buffer.
+ * @param buf_len Usable capacity of the receive data buffer in bytes.
+ * @param out_req_id Output pointer for the assigned request ID.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_rx_submit_one(struct ena_ring *ring, void *netbuf, uint64_t phys_addr,
 		      uint32_t buf_len, uint16_t *out_req_id);
 
-/* Batch-replenish empty receive buffers into the RX Submission Queue */
+/**
+ * Batch-refill empty receive buffers into the RX Submission Queue.
+ *
+ * @param ring Pointer to the RX ring structure.
+ * @param count Number of empty buffers to allocate and enqueue.
+ * @param alloc_netbuf Callback function to allocate a network buffer.
+ * @param alloc_arg User context pointer passed to the allocator callback.
+ * @param refilled_count Output pointer storing the number of enqueued buffers.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_rx_refill(struct ena_ring *ring, unsigned int count,
 		  void *(*alloc_netbuf)(void *arg, uint64_t *phys_out, uint32_t *len_out),
 		  void *alloc_arg, unsigned int *refilled_count);
 
-/* Ring the hardware RX MMIO doorbell */
+/**
+ * Write the updated RX SQ tail index to the hardware MMIO doorbell register.
+ *
+ * @param ring Pointer to the RX ring structure.
+ */
 void ena_rx_doorbell(struct ena_ring *ring);
 
-/* Poll the RX Completion Queue for incoming packets */
+/**
+ * Poll the RX Completion Queue for incoming packets and extract metadata.
+ *
+ * @param ring Pointer to the RX ring structure.
+ * @param pkts Array of packet structures where received packet info is written.
+ * @param max_pkts Maximum number of received packets to process.
+ * @return Number of packets received, or a negative errno value on error.
+ */
 int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 		unsigned int max_pkts);
 
 #endif /* LIBENA_ENA_DATAPATH_H */
+

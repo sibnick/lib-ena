@@ -354,8 +354,7 @@ static void test_admin_acq_tail_register(void)
 					 100) == 0);
 
 		/* The driver publishes the next slot it will read. */
-		assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_ACQ_TAIL_OFF) ==
-		       (uint32_t)(i & (adapter.acq_depth - 1)));
+		assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_ACQ_TAIL_OFF) == (uint32_t)i);
 	}
 
 	/* All 8 slots were released, so the device never saw a full ring. */
@@ -429,10 +428,10 @@ static void test_admin_cmd_id_wrap(void)
 			assert(hw.last_command_id == 0x0FFF);
 	}
 
-	/* Command 4096 wrapped to id 0; the next id is 1 again. */
-	assert(hw.last_command_id == 0x000);
+	/* Command 4096 skipped reserved id 0 and wrapped to id 1; the next id is 2. */
+	assert(hw.last_command_id == 1);
 	assert(adapter.acq_head == 4096);
-	assert(adapter.next_command_id == 1);
+	assert(adapter.next_command_id == 2);
 
 	ena_admin_fini(&adapter);
 	printf("[PASS] test_admin_cmd_id_wrap passed\n");

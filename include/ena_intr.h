@@ -13,6 +13,7 @@
 #include <stdbool.h>
 
 #define ENA_MAX_MSIX_VECTORS 32
+#define ENA_INTR_UNMASK_MASK 0x1u
 
 /* MSI-X Interrupt Vector descriptor */
 struct ena_irq_vector {
@@ -37,25 +38,73 @@ struct ena_poll_ctx {
 	void *rx_arg;
 };
 
-/* Initialize MSI-X interrupt vector table */
+/**
+ * Allocate and initialize the MSI-X interrupt vector table on the adapter.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param num_vectors Number of MSI-X interrupt vectors to allocate.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_intr_msix_init(struct ena_adapter *adapter, uint32_t num_vectors);
 
-/* Free MSI-X interrupt vector table */
+/**
+ * Free the MSI-X interrupt vector table on the adapter.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ */
 void ena_intr_msix_fini(struct ena_adapter *adapter);
 
-/* Mask or unmask an individual MSI-X vector */
+/**
+ * Mask an individual MSI-X interrupt vector.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param vector_id Index of the MSI-X vector to mask.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_intr_mask_vector(struct ena_adapter *adapter, uint32_t vector_id);
+
+/**
+ * Unmask an individual MSI-X interrupt vector.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param vector_id Index of the MSI-X vector to unmask.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_intr_unmask_vector(struct ena_adapter *adapter, uint32_t vector_id);
 
-/* Mask or unmask all configured MSI-X vectors */
+/**
+ * Mask all configured MSI-X interrupt vectors on the adapter.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ */
 void ena_intr_mask_all(struct ena_adapter *adapter);
+
+/**
+ * Unmask all configured MSI-X interrupt vectors on the adapter.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ */
 void ena_intr_unmask_all(struct ena_adapter *adapter);
 
-/* Set interrupt moderation coalescing interval in microseconds */
+/**
+ * Set the interrupt moderation coalescing timer for an MSI-X vector.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param vector_id Index of the MSI-X vector to configure.
+ * @param usecs Moderation interval in microseconds.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_intr_set_coalesce(struct ena_adapter *adapter, uint32_t vector_id,
 			  uint32_t usecs);
 
-/* Execute one non-blocking polling sweep across all active TX and RX queues */
+/**
+ * Execute one non-blocking polling sweep across all active TX and RX queues.
+ *
+ * @param ctx Pointer to the polling engine execution context.
+ * @param work_done Output pointer storing the total number of processed packets.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_poll_step(struct ena_poll_ctx *ctx, unsigned int *work_done);
 
 #endif /* LIBENA_ENA_INTR_H */
+

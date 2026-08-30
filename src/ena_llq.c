@@ -84,8 +84,9 @@ int ena_llq_tx_push(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 	if (hdr_len > 96)
 		return -EINVAL;
 
-	/* Fall back to standard host-memory submission if LLQ is not enabled */
-	if (!ring->is_llq || !ring->push_buf_virt) {
+	/* Fall back to standard host-memory submission if LLQ is not enabled or push buffer is too small */
+	if (!ring->is_llq || !ring->push_buf_virt ||
+	    (ring->push_buf_size > 0 && (size_t)ring->sq_depth * 128 > ring->push_buf_size)) {
 		struct ena_tx_pkt fallback_pkt = *pkt;
 		if (hdr_data && hdr_len > 0 && fallback_pkt.netbuf) {
 			struct uk_netbuf *nb = (struct uk_netbuf *)fallback_pkt.netbuf;
@@ -106,10 +107,6 @@ int ena_llq_tx_push(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 	}
 
 	slot_idx = (size_t)(ring->sq_tail & (ring->sq_depth - 1));
-	if (ring->push_buf_size > 0 && (slot_idx + 1) * 128 > ring->push_buf_size) {
-		ena_ring_unlock(ring);
-		return -ENOMEM;
-	}
 
 	ret = ena_ring_req_id_alloc(ring, &req_id);
 	if (ret) {
@@ -160,14 +157,19 @@ int ena_llq_tx_push(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 	desc.buff_addr_hi_hdr_sz = ena_cpu_to_le32(buff_hi_hdr);
 
 	/* Build aligned 128-byte cache-line entry (desc + header + zero pad) */
-	uint8_t entry_buf[128];
+	uint8_t entry_buf[128] __attribute__((aligned(8)));
 	memset(entry_buf, 0, sizeof(entry_buf));
 	memcpy(entry_buf, &desc, sizeof(desc));
 	if (hdr_data && hdr_len > 0)
 		memcpy(entry_buf + sizeof(desc), hdr_data, hdr_len);
 
 	push_dest = (uint8_t *)ring->push_buf_virt + (slot_idx * 128);
-	memcpy(push_dest, entry_buf, sizeof(entry_buf));
+
+	/* Copy 128 bytes to MMIO write-combining memory with 64-bit word writes */
+	volatile uint64_t *dst64 = (volatile uint64_t *)push_dest;
+	const uint64_t *src64 = (const uint64_t *)entry_buf;
+	for (size_t i = 0; i < 128 / sizeof(uint64_t); i++)
+		dst64[i] = src64[i];
 
 	/* Advance producer tail index (monotonic unmasked counter) */
 	ring->sq_tail++;
@@ -178,6 +180,7 @@ int ena_llq_tx_push(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 	ring->tx_bytes += pkt->len;
 
 	/* Ring MMIO doorbell */
+	ena_wmb();
 	ena_tx_doorbell(ring);
 
 	if (out_req_id)

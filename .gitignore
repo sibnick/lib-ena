@@ -7,6 +7,8 @@ build/
 
 # Fossil SCM internal files and local binary
 .fossil
+.fossil-home/
+*.fossil
 .fslckout
 .fossil-settings
 fossil
