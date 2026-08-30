@@ -108,14 +108,38 @@ static void test_intr_mask_unmask(void)
 	printf("[TEST] Running test_intr_mask_unmask...\n");
 
 	struct ena_adapter adapter;
+	struct ena_ring tx_ring;
+	struct ena_ring rx_ring;
+	struct ena_ring *tx_rings[1] = { &tx_ring };
+	struct ena_ring *rx_rings[1] = { &rx_ring };
+	uint32_t bar0_dummy[64];
+	uint32_t tx_cq_db_val = 0;
+	uint32_t rx_cq_db_val = 0;
+
 	memset(&adapter, 0, sizeof(adapter));
+	memset(&tx_ring, 0, sizeof(tx_ring));
+	memset(&rx_ring, 0, sizeof(rx_ring));
+	memset(bar0_dummy, 0, sizeof(bar0_dummy));
+
+	adapter.bar0_base = (volatile uint8_t *)bar0_dummy;
+	adapter.bar0_size = sizeof(bar0_dummy);
+	tx_ring.cq_db = &tx_cq_db_val;
+	tx_ring.cq_head = 4;
+	rx_ring.cq_db = &rx_cq_db_val;
+	rx_ring.cq_head = 6;
+	adapter.tx_rings = tx_rings;
+	adapter.rx_rings = rx_rings;
+	adapter.num_tx_rings = 1;
+	adapter.num_rx_rings = 1;
 
 	assert(ena_intr_msix_init(&adapter, 4) == 0);
 
-	/* Unmask vector 1 */
+	/* Unmask vector 1 (queue 0) */
 	assert(ena_intr_unmask_vector(&adapter, 1) == 0);
 	assert(adapter.irq_vectors[1].masked == false);
 	assert(adapter.irq_vectors[0].masked == true);
+	assert(tx_cq_db_val == (4 | ENA_INTR_UNMASK_MASK));
+	assert(rx_cq_db_val == (6 | ENA_INTR_UNMASK_MASK));
 
 	/* Mask vector 1 */
 	assert(ena_intr_mask_vector(&adapter, 1) == 0);

@@ -11,7 +11,7 @@ set -euo pipefail
 
 # Configuration parameters with defaults
 AWS_REGION="${AWS_REGION:-us-east-1}"
-INSTANCE_TYPE="${INSTANCE_TYPE:-t3.nano}" # Cheapest ENA instance (~$0.0052/hr)
+INSTANCE_TYPE="${INSTANCE_TYPE:-t3.nano}"
 AMI_ID="${AMI_ID:-}"
 KEY_NAME="${KEY_NAME:-}"
 SUBNET_ID="${SUBNET_ID:-}"
@@ -19,6 +19,36 @@ SECURITY_GROUP_ID="${SECURITY_GROUP_ID:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-reports}"
 REPORT_MD="${OUTPUT_DIR}/benchmark_report.md"
 REPORT_HTML="${OUTPUT_DIR}/benchmark_report.html"
+
+# Validate input parameters to prevent injection
+validate_inputs() {
+    if [[ ! "${AWS_REGION}" =~ ^[a-z0-9-]+$ ]]; then
+        echo "[ERROR] Invalid AWS_REGION format: ${AWS_REGION}" >&2
+        exit 1
+    fi
+
+    if [[ ! "${INSTANCE_TYPE}" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        echo "[ERROR] Invalid INSTANCE_TYPE format: ${INSTANCE_TYPE}" >&2
+        exit 1
+    fi
+
+    if [[ ! "${OUTPUT_DIR}" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+        echo "[ERROR] Invalid OUTPUT_DIR format: ${OUTPUT_DIR}" >&2
+        exit 1
+    fi
+}
+
+escape_html() {
+    local str="${1}"
+    str="${str//&/&amp;}"
+    str="${str//</&lt;}"
+    str="${str//>/&gt;}"
+    str="${str//\"/&quot;}"
+    str="${str//\'/&#39;}"
+    echo "${str}"
+}
+
+validate_inputs
 
 mkdir -p "${OUTPUT_DIR}"
 
@@ -33,6 +63,11 @@ run_mock_benchmarks() {
     echo "[INFO] Running benchmark suite for instance ${INSTANCE_TYPE}..."
     local timestamp
     timestamp=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+
+    local safe_instance_type
+    safe_instance_type=$(escape_html "${INSTANCE_TYPE}")
+    local safe_timestamp
+    safe_timestamp=$(escape_html "${timestamp}")
 
     cat <<EOF > "${REPORT_MD}"
 # Unikraft ENA Performance Benchmark Report
@@ -103,9 +138,9 @@ EOF
 <body>
     <h1>Unikraft ENA Performance Benchmark Report</h1>
     <div class="summary-card">
-        <strong>Instance:</strong> ${INSTANCE_TYPE} (Cheapest ENA instance, ~\$0.0052/hr)<br>
+        <strong>Instance:</strong> ${safe_instance_type} (Cheapest ENA instance, ~\$0.0052/hr)<br>
         <strong>vCPUs:</strong> 2 | <strong>Memory:</strong> 0.5 GiB | <strong>Max Bandwidth:</strong> 5.0 Gbps<br>
-        <strong>Report Date:</strong> ${timestamp}
+        <strong>Report Date:</strong> ${safe_timestamp}
     </div>
 
     <h2>1. Throughput Benchmarks (iperf3)</h2>

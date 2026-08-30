@@ -149,11 +149,57 @@ struct ena_admin_set_feat_host_inline {
 };
 
 /* Phase 3: device initialization and capability negotiation. */
+
+/**
+ * Query device capabilities and attributes from the ENA controller.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_init_get_device_attributes(struct ena_adapter *adapter);
+
+/**
+ * Query maximum queue counts and ring depths supported by the device.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_init_get_queue_limits(struct ena_adapter *adapter);
+
+/**
+ * Send operating system and driver version information to the device.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_init_set_host_info(struct ena_adapter *adapter);
+
+/**
+ * Configure the maximum transmission unit (MTU) on the device.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param mtu Desired MTU value in bytes.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_init_set_mtu(struct ena_adapter *adapter, uint32_t mtu);
+
+/**
+ * Retrieve the permanent hardware MAC address from the device attributes.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param mac 6-byte buffer where the MAC address is written.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_init_get_mac_addr(struct ena_adapter *adapter, uint8_t mac[6]);
+
+/**
+ * Run full Phase 3 initialization sequence and negotiate device settings.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param mtu Desired MTU value in bytes.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_init_run(struct ena_adapter *adapter, uint32_t mtu);
 
 #endif /* LIBENA_ENA_INIT_H */
+

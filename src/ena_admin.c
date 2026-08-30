@@ -243,12 +243,14 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 	idx = adapter->aq_tail & aq_mask;
 	entry = (struct ena_admin_aq_entry *)adapter->aq_base + idx;
 
-	/* Command ids occupy a 12-bit space; mask after each increment. */
+	/* Command ids occupy a 12-bit space (1..4095). Skip 0 before assigning. */
+	if (adapter->next_command_id == 0)
+		adapter->next_command_id = 1;
 	command_id = adapter->next_command_id;
 	adapter->next_command_id =
 		(uint16_t)((adapter->next_command_id + 1) &
 			   ENA_ADMIN_COMMAND_ID_MASK);
-	if (command_id == 0)
+	if (adapter->next_command_id == 0)
 		adapter->next_command_id = 1;
 
 	memset(entry, 0, sizeof(*entry));
@@ -290,10 +292,15 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 	}
 
 	if (!found) {
+		int reset_ret;
+
 		ena_err("exec_cmd: timeout after %u polls (resetting device)", max_polls);
 		adapter->state = ENA_STATE_ERROR;
 		ena_device_reset(adapter);
-		if (ena_device_wait_reset_complete(adapter, 1000) == 0) {
+		ena_admin_lock_drop(&adapter->admin_lock);
+		reset_ret = ena_device_wait_reset_complete(adapter, 1000);
+		ena_admin_lock_take(&adapter->admin_lock);
+		if (reset_ret == 0) {
 			uint16_t aq_d = adapter->aq_depth ? adapter->aq_depth : 32;
 			uint16_t acq_d = adapter->acq_depth ? adapter->acq_depth : 32;
 			uint16_t aenq_d = adapter->aenq_depth ? adapter->aenq_depth : 32;
@@ -309,7 +316,7 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 		adapter->acq_phase ^= 1;
 	ena_wmb();
 	ena_reg_write32(adapter->bar0_base + ENA_REGS_ACQ_TAIL_OFF,
-			adapter->acq_head & acq_mask);
+			adapter->acq_head);
 	ena_mb();
 
 	/* Reject a stale completion that does not match the command id of
@@ -417,7 +424,7 @@ int ena_admin_aenq_poll(struct ena_adapter *adapter, unsigned int max_events)
 		/* Acknowledge the event to the device. */
 		ena_wmb();
 		ena_reg_write32(adapter->bar0_base + ENA_REGS_AENQ_HEAD_DB_OFF,
-				adapter->aenq_head & aenq_mask);
+				adapter->aenq_head);
 		ena_mb();
 
 		/* Dispatch to the handler (if one is registered). */
@@ -431,4 +438,40 @@ int ena_admin_aenq_poll(struct ena_adapter *adapter, unsigned int max_events)
 	}
 
 	return dispatched;
+}
+
+int ena_admin_get_device_attr(struct ena_adapter *adapter,
+			      struct ena_admin_device_attr_feature_desc *attr)
+{
+	struct {
+		struct ena_admin_ctrl_buff_info control_buffer;
+		struct {
+			uint8_t flags;
+			uint8_t feature_id;
+			uint8_t feature_version;
+			uint8_t reserved8;
+		} feat_common;
+		uint32_t raw[11];
+	} req;
+	uint32_t resp[14];
+	uint16_t cmd_id = 0;
+	int ret;
+
+	if (!adapter || !attr)
+		return -EINVAL;
+
+	memset(&req, 0, sizeof(req));
+	req.feat_common.flags = 0x1;
+	req.feat_common.feature_id = ENA_ADMIN_DEVICE_ATTRIBUTES;
+
+	memset(resp, 0, sizeof(resp));
+	ret = ena_admin_exec_cmd(adapter, ENA_ADMIN_GET_FEATURE,
+				 &req, sizeof(req),
+				 resp, sizeof(resp),
+				 &cmd_id, 100);
+	if (ret)
+		return ret;
+
+	memcpy(attr, resp, sizeof(*attr));
+	return 0;
 }

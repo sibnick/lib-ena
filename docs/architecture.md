@@ -95,3 +95,34 @@ The driver interacts directly with the Unikraft architecture:
 - **Interrupt Mode**:
   - MSI-X vectors handle RX packet events and AENQ notifications.
   - Fallback to polling mode for minimal interrupt overhead under load.
+
+---
+
+## 5. Security Architecture & Threat Model
+
+The driver treats the hardware device as an untrusted input source.
+A faulty or compromised device can return invalid descriptor fields or register offsets.
+The driver implements defensive controls across all control and data paths:
+
+1. **Doorbell Bounds Validation**:
+   - The driver validates doorbell offsets against BAR0 size before MMIO access.
+   - The driver enforces 4-byte alignment on all MMIO offsets.
+
+2. **RX Length Clamping**:
+   - The driver validates RX packet completion lengths against buffer capacity.
+   - Malformed packets exceeding buffer capacity are dropped immediately.
+
+3. **In-Flight Request Tracking**:
+   - Each ring tracks active request IDs with an in-flight bitmap.
+   - The driver drops stale or duplicate completion IDs to prevent use-after-free conditions.
+
+4. **DMA Address Isolation**:
+   - The driver checks buffer physical addresses against safe memory regions.
+   - Per-queue bounce buffers isolate memory when buffers reside outside DMA-safe ranges.
+
+5. **Loop and Queue Bounds**:
+   - Queue counts and depths are clamped to specification limits at configuration time.
+   - Polling loops iterate only over configured queues.
+
+See [docs/security_audit.md](security_audit.md) for the complete security audit report.
+

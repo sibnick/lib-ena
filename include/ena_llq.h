@@ -53,12 +53,27 @@ struct ena_llq_info {
 	uint16_t entry_size;
 };
 
-/* Negotiate LLQ feature with the controller */
+/**
+ * Negotiate Low Latency Queue (LLQ) features and entry size with the device.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_llq_negotiate(struct ena_adapter *adapter);
 
-/* Transmit packet directly using LLQ push buffer */
+/**
+ * Push a transmit packet descriptor and inline header directly to BAR2 MMIO.
+ *
+ * @param ring Pointer to the active TX ring structure.
+ * @param pkt Pointer to the transmit packet metadata and payload info.
+ * @param hdr_data Pointer to the inline packet header bytes.
+ * @param hdr_len Length of the inline packet header in bytes.
+ * @param out_req_id Output pointer for the assigned request ID.
+ * @return 0 on success, or a negative errno value on error.
+ */
 int ena_llq_tx_push(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 		    const void *hdr_data, uint16_t hdr_len,
 		    uint16_t *out_req_id);
 
 #endif /* LIBENA_ENA_LLQ_H */
+

@@ -13,6 +13,85 @@
 #include <stdbool.h>
 #include <string.h>
 
+typedef void (*test_hook_fn)(void);
+
+static test_hook_fn g_test_setup_hook = NULL;
+static test_hook_fn g_test_teardown_hook = NULL;
+static size_t g_test_active_allocs = 0;
+static size_t g_test_total_alloc_bytes = 0;
+
+static inline void test_register_setup(test_hook_fn fn)
+{
+	g_test_setup_hook = fn;
+}
+
+static inline void test_register_teardown(test_hook_fn fn)
+{
+	g_test_teardown_hook = fn;
+}
+
+static inline void test_track_alloc(void *ptr, size_t sz)
+{
+	if (ptr) {
+		g_test_active_allocs++;
+		g_test_total_alloc_bytes += sz;
+	}
+}
+
+static inline void test_track_free(void *ptr)
+{
+	if (ptr && g_test_active_allocs > 0)
+		g_test_active_allocs--;
+}
+
+static inline size_t test_get_active_allocs(void)
+{
+	return g_test_active_allocs;
+}
+
+static inline void test_reset_alloc_tracking(void)
+{
+	g_test_active_allocs = 0;
+	g_test_total_alloc_bytes = 0;
+}
+
+static inline void *test_malloc(size_t sz)
+{
+	void *ptr = malloc(sz);
+	test_track_alloc(ptr, sz);
+	return ptr;
+}
+
+static inline void *test_calloc(size_t nmemb, size_t sz)
+{
+	void *ptr = calloc(nmemb, sz);
+	test_track_alloc(ptr, nmemb * sz);
+	return ptr;
+}
+
+static inline void test_free(void *ptr)
+{
+	test_track_free(ptr);
+	free(ptr);
+}
+
+#define RUN_TEST(fn) do { \
+	if (g_test_setup_hook) \
+		g_test_setup_hook(); \
+	size_t _alloc_before = g_test_active_allocs; \
+	printf("[TEST] Running %s...\n", #fn); \
+	fn(); \
+	if (g_test_teardown_hook) \
+		g_test_teardown_hook(); \
+	size_t _alloc_after = g_test_active_allocs; \
+	if (_alloc_after > _alloc_before) { \
+		fprintf(stderr, "[FAIL] %s leaked memory: %zu unfreed allocations\n", \
+			#fn, _alloc_after - _alloc_before); \
+		abort(); \
+	} \
+	printf("[PASS] %s passed\n", #fn); \
+} while (0)
+
 #define TEST_ASSERT(cond) do { \
 	if (!(cond)) { \
 		fprintf(stderr, "[FAIL] %s:%d: assertion failed: %s\n", \

@@ -10,6 +10,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
+struct ena_adapter;
+
 /* 48-bit physical memory address (low 32 bits + high 16 bits). */
 struct ena_common_mem_addr {
 	uint32_t mem_addr_low;
@@ -204,9 +206,31 @@ enum ena_admin_aenq_group {
 	ENA_ADMIN_KEEP_ALIVE	= 4,
 };
 
-/* AENQ event handler. Return 0 to accept the event. */
+/**
+ * Asynchronous Event Notification Queue (AENQ) callback handler signature.
+ *
+ * @param arg User context pointer passed during handler registration.
+ * @param group Event group identifier.
+ * @param syndrome Event syndrome code.
+ * @param entry Pointer to the raw AENQ entry.
+ * @return 0 to acknowledge and accept the event, or non-zero on processing error.
+ */
 typedef int ena_aenq_handler(void *arg, uint16_t group, uint16_t syndrome,
 			     const struct ena_admin_aenq_entry *entry);
+
+struct ena_adapter;
+struct ena_admin_device_attr_feature_desc;
+
+
+/**
+ * Retrieve device attributes using the Admin Queue.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param attr Pointer to the feature descriptor where attributes are stored.
+ * @return 0 on success, or a negative errno value on error.
+ */
+int ena_admin_get_device_attr(struct ena_adapter *adapter,
+			      struct ena_admin_device_attr_feature_desc *attr);
 
 #ifndef __Unikraft__
 /* Host test hook: the mock registers a callback to emulate the device

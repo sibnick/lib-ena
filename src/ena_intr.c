@@ -72,6 +72,7 @@ int ena_intr_mask_vector(struct ena_adapter *adapter, uint32_t vector_id)
 
 int ena_intr_unmask_vector(struct ena_adapter *adapter, uint32_t vector_id)
 {
+	uint16_t num_tx;
 	uint16_t num_rx;
 	uint16_t qid;
 
@@ -85,11 +86,17 @@ int ena_intr_unmask_vector(struct ena_adapter *adapter, uint32_t vector_id)
 			ena_reg_write32(adapter->bar0_base + ENA_REGS_INTR_MASK_OFF, 1);
 		} else {
 			qid = adapter->irq_vectors[vector_id].queue_id;
+			num_tx = adapter->num_tx_rings ? adapter->num_tx_rings : adapter->max_tx_queues;
 			num_rx = adapter->num_rx_rings ? adapter->num_rx_rings : adapter->max_rx_queues;
 			if (adapter->rx_rings && qid < num_rx &&
 			    adapter->rx_rings[qid] && adapter->rx_rings[qid]->cq_db) {
 				ena_reg_write32(adapter->rx_rings[qid]->cq_db,
-						adapter->rx_rings[qid]->cq_head);
+						adapter->rx_rings[qid]->cq_head | ENA_INTR_UNMASK_MASK);
+			}
+			if (adapter->tx_rings && qid < num_tx &&
+			    adapter->tx_rings[qid] && adapter->tx_rings[qid]->cq_db) {
+				ena_reg_write32(adapter->tx_rings[qid]->cq_db,
+						adapter->tx_rings[qid]->cq_head | ENA_INTR_UNMASK_MASK);
 			}
 		}
 	}

@@ -5,6 +5,7 @@
  */
 
 #include "ena_plat.h"
+#include "ena_datapath.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -100,7 +101,7 @@ void *ena_dma_alloc(size_t size, uint64_t *phys_out)
 		void *p = uk_malloc(uk_alloc_get_default(), 4096);
 		if (!p)
 			break;
-		if ((uintptr_t)p >= 0x100000ULL) {
+		if ((uintptr_t)p >= ENA_DMA_LOW_MEM_LIMIT) {
 			uk_free(uk_alloc_get_default(), p);
 			break;
 		}

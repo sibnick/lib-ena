@@ -54,6 +54,32 @@ make clean
 make test
 ```
 
+## AWS EC2 Deployment
+
+Deploy Unikraft images with ENA support to Amazon EC2:
+
+1. Build the KVM image with KraftKit:
+   ```bash
+   kraft build --target kvm --plat qemu --arch x86_64
+   ```
+2. Convert the image to a raw disk and upload it to Amazon S3.
+3. Import the snapshot and register an AMI with the `--ena-support` flag.
+4. Launch an ENA-enabled instance (such as `t3.nano` or `c6i.large`).
+
+See [docs/ec2_deployment.md](docs/ec2_deployment.md) for complete deployment guidelines.
+
+## Security Considerations and Audit
+
+The driver operates under a strict threat model where hardware device input is untrusted:
+
+- **MMIO Boundary Checks**: Validates doorbell offsets against BAR0 boundaries and 4-byte alignment before MMIO access.
+- **Buffer Safety**: Checks RX completion lengths against allocated buffer capacity to prevent heap overflow.
+- **In-Flight Request Tracking**: Tracks active request IDs to stop use-after-free and duplicate descriptor recycling.
+- **DMA Isolation**: Uses per-queue bounce buffers for non-DMA-safe memory addresses.
+- **Bounded Iteration**: Clamps queue counts and depths to device and specification limits.
+
+All 18 security audit findings are resolved. See [docs/security_audit.md](docs/security_audit.md) for full audit records.
+
 ## Performance Benchmark Summary
 
 The driver was validated on an AWS `t3.nano` instance (`i-04ac6e142c9989dc4`):
@@ -68,3 +94,4 @@ See [docs/benchmark_report.md](docs/benchmark_report.md) for full benchmark deta
 ## License
 
 This project is licensed under the BSD-3-Clause License. See [COPYING.md](COPYING.md) for details.
+
