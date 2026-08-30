@@ -72,6 +72,7 @@ int ena_intr_mask_vector(struct ena_adapter *adapter, uint32_t vector_id)
 
 int ena_intr_unmask_vector(struct ena_adapter *adapter, uint32_t vector_id)
 {
+	uint16_t num_rx;
 	uint16_t qid;
 
 	if (!adapter || !adapter->irq_vectors || vector_id >= adapter->num_irq_vectors)
@@ -84,7 +85,8 @@ int ena_intr_unmask_vector(struct ena_adapter *adapter, uint32_t vector_id)
 			ena_reg_write32(adapter->bar0_base + ENA_REGS_INTR_MASK_OFF, 1);
 		} else {
 			qid = adapter->irq_vectors[vector_id].queue_id;
-			if (adapter->rx_rings && qid < adapter->max_rx_queues &&
+			num_rx = adapter->num_rx_rings ? adapter->num_rx_rings : adapter->max_rx_queues;
+			if (adapter->rx_rings && qid < num_rx &&
 			    adapter->rx_rings[qid] && adapter->rx_rings[qid]->cq_db) {
 				ena_reg_write32(adapter->rx_rings[qid]->cq_db,
 						adapter->rx_rings[qid]->cq_head);
@@ -132,6 +134,8 @@ int ena_poll_step(struct ena_poll_ctx *ctx, unsigned int *work_done)
 	struct ena_rx_pkt rx_pkts[32];
 	unsigned int total = 0;
 	unsigned int cleaned = 0;
+	uint16_t num_tx;
+	uint16_t num_rx;
 	int count;
 	int i;
 	uint16_t q;
@@ -144,9 +148,12 @@ int ena_poll_step(struct ena_poll_ctx *ctx, unsigned int *work_done)
 	if (ctx->rx_budget == 0)
 		ctx->rx_budget = 32;
 
+	num_tx = ctx->adapter->num_tx_rings ? ctx->adapter->num_tx_rings : ctx->adapter->max_tx_queues;
+	num_rx = ctx->adapter->num_rx_rings ? ctx->adapter->num_rx_rings : ctx->adapter->max_rx_queues;
+
 	/* TX completion polling */
 	if (ctx->adapter->tx_rings) {
-		for (q = 0; q < ctx->adapter->max_tx_queues; q++) {
+		for (q = 0; q < num_tx; q++) {
 			if (!ctx->adapter->tx_rings[q])
 				continue;
 
@@ -160,7 +167,7 @@ int ena_poll_step(struct ena_poll_ctx *ctx, unsigned int *work_done)
 
 	/* RX packet polling */
 	if (ctx->adapter->rx_rings) {
-		for (q = 0; q < ctx->adapter->max_rx_queues; q++) {
+		for (q = 0; q < num_rx; q++) {
 			if (!ctx->adapter->rx_rings[q])
 				continue;
 

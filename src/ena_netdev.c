@@ -26,7 +26,7 @@ static void ena_netdev_info_get(struct uk_netdev *dev, struct uk_netdev_info *in
 	info->nb_encap_rx = 0;
 	info->ioalign = 64;
 	info->in_queue_pairs = 1;
-	info->features = 0;
+	info->features = UK_NETDEV_F_RX_CSUM | UK_NETDEV_F_TX_CSUM;
 }
 
 static int ena_netdev_rxq_info_get(struct uk_netdev *dev, uint16_t queue_id __attribute__((unused)),
@@ -73,6 +73,15 @@ static int ena_netdev_configure(struct uk_netdev *dev, const struct uk_netdev_co
 	struct ena_uk_device *edev = to_enadevice(dev);
 	struct ena_adapter *adapter = &edev->adapter;
 
+	if (!conf)
+		return -EINVAL;
+
+	if (conf->nb_rx_queues == 0 || (adapter->max_rx_queues && conf->nb_rx_queues > adapter->max_rx_queues) || conf->nb_rx_queues > 8)
+		return -EINVAL;
+
+	if (conf->nb_tx_queues == 0 || (adapter->max_tx_queues && conf->nb_tx_queues > adapter->max_tx_queues) || conf->nb_tx_queues > 8)
+		return -EINVAL;
+
 	if (!adapter->rx_rings) {
 		adapter->rx_rings = calloc(conf->nb_rx_queues, sizeof(struct ena_ring *));
 		if (!adapter->rx_rings)
@@ -98,11 +107,21 @@ static struct uk_netdev_rx_queue *ena_netdev_rxq_configure(struct uk_netdev *dev
 	struct ena_ring *ring = NULL;
 	int ret;
 
+	if (queue_id >= 8 || (adapter->num_rx_rings && queue_id >= adapter->num_rx_rings))
+		return NULL;
+
 	ena_info("rxq_configure: qid=%u nb_desc=%u max_rx_ring_size=%u",
 		 queue_id, nb_desc, adapter->max_rx_ring_size);
 
 	if (nb_desc == 0)
-		nb_desc = 256;
+		nb_desc = adapter->max_rx_ring_size ? adapter->max_rx_ring_size : 256;
+
+	if (adapter->max_rx_ring_size && nb_desc > adapter->max_rx_ring_size)
+		nb_desc = adapter->max_rx_ring_size;
+	if (nb_desc > 4096)
+		nb_desc = 4096;
+	if (nb_desc < 4)
+		nb_desc = 4;
 
 	ret = ena_ring_alloc(adapter, queue_id, ENA_RING_TYPE_RX, nb_desc, nb_desc, &ring);
 	if (ret)
@@ -114,9 +133,12 @@ static struct uk_netdev_rx_queue *ena_netdev_rxq_configure(struct uk_netdev *dev
 	edev->rx_queues[queue_id].ring = ring;
 	edev->rx_queues[queue_id].queue_id = queue_id;
 	edev->rx_queues[queue_id].adapter = adapter;
-	edev->rx_queues[queue_id].allocator = conf->a;
-	edev->rx_queues[queue_id].alloc_rxpkts = conf->alloc_rxpkts;
-	edev->rx_queues[queue_id].alloc_rxpkts_argp = conf->alloc_rxpkts_argp;
+	edev->rx_queues[queue_id].allocator = conf ? conf->a : NULL;
+	edev->rx_queues[queue_id].alloc_rxpkts = conf ? conf->alloc_rxpkts : NULL;
+	edev->rx_queues[queue_id].alloc_rxpkts_argp = conf ? conf->alloc_rxpkts_argp : NULL;
+
+	if (!edev->rx_queues[queue_id].bounce_buf)
+		edev->rx_queues[queue_id].bounce_buf = ena_dma_alloc(2048, &edev->rx_queues[queue_id].bounce_phys);
 
 	return &edev->rx_queues[queue_id];
 }
@@ -129,14 +151,23 @@ static struct uk_netdev_tx_queue *ena_netdev_txq_configure(struct uk_netdev *dev
 	struct ena_ring *ring = NULL;
 	int ret;
 
-	if (queue_id >= 8)
+	(void)conf;
+
+	if (queue_id >= 8 || (adapter->num_tx_rings && queue_id >= adapter->num_tx_rings))
 		return NULL;
 
 	ena_info("txq_configure: qid=%u nb_desc=%u max_tx_ring_size=%u",
 		 queue_id, nb_desc, adapter->max_tx_ring_size);
 
 	if (nb_desc == 0)
-		nb_desc = 256;
+		nb_desc = adapter->max_tx_ring_size ? adapter->max_tx_ring_size : 256;
+
+	if (adapter->max_tx_ring_size && nb_desc > adapter->max_tx_ring_size)
+		nb_desc = adapter->max_tx_ring_size;
+	if (nb_desc > 4096)
+		nb_desc = 4096;
+	if (nb_desc < 4)
+		nb_desc = 4;
 
 	ret = ena_ring_alloc(adapter, queue_id, ENA_RING_TYPE_TX, nb_desc, nb_desc, &ring);
 	if (ret)
@@ -147,6 +178,12 @@ static struct uk_netdev_tx_queue *ena_netdev_txq_configure(struct uk_netdev *dev
 
 	edev->tx_queues[queue_id].ring = ring;
 	edev->tx_queues[queue_id].queue_id = queue_id;
+	edev->tx_queues[queue_id].adapter = adapter;
+	edev->tx_queues[queue_id].bounce_in_use = false;
+
+	if (!edev->tx_queues[queue_id].bounce_buf)
+		edev->tx_queues[queue_id].bounce_buf = ena_dma_alloc(4096, &edev->tx_queues[queue_id].bounce_phys);
+
 	return &edev->tx_queues[queue_id];
 }
 
@@ -154,6 +191,7 @@ static void *ena_netbuf_alloc_helper(void *arg, uint64_t *phys_out, uint32_t *le
 {
 	struct uk_netdev_rx_queue *rxq = (struct uk_netdev_rx_queue *)arg;
 	struct uk_netbuf *nb = NULL;
+	uint64_t phys;
 
 	if (rxq && rxq->alloc_rxpkts) {
 		uint16_t n = rxq->alloc_rxpkts(rxq->alloc_rxpkts_argp, &nb, 1);
@@ -166,10 +204,18 @@ static void *ena_netbuf_alloc_helper(void *arg, uint64_t *phys_out, uint32_t *le
 			return NULL;
 	}
 
-	if (phys_out)
-		*phys_out = (uint64_t)(uintptr_t)nb->data;
-	if (len_out)
-		*len_out = (uint32_t)nb->buflen;
+	phys = (uint64_t)(uintptr_t)nb->data;
+	if (phys < 0x100000ULL && rxq && rxq->bounce_buf) {
+		if (phys_out)
+			*phys_out = rxq->bounce_phys;
+		if (len_out)
+			*len_out = 2048;
+	} else {
+		if (phys_out)
+			*phys_out = phys;
+		if (len_out)
+			*len_out = (uint32_t)nb->buflen;
+	}
 
 	return nb;
 }
@@ -196,6 +242,32 @@ static int ena_netdev_start(struct uk_netdev *dev)
 	return 0;
 }
 
+static int ena_netdev_stop(struct uk_netdev *dev)
+{
+	struct ena_uk_device *edev = to_enadevice(dev);
+	struct ena_adapter *adapter = &edev->adapter;
+	uint16_t q;
+
+	/* Drain in-flight TX completions */
+	for (q = 0; q < adapter->num_tx_rings; q++) {
+		if (adapter->tx_rings && adapter->tx_rings[q])
+			ena_tx_poll_completions(adapter->tx_rings[q], 0, NULL);
+	}
+
+	/* Destroy hardware queues */
+	for (q = 0; q < adapter->num_rx_rings; q++) {
+		if (adapter->rx_rings && adapter->rx_rings[q])
+			ena_ring_destroy_hw(adapter->rx_rings[q]);
+	}
+
+	for (q = 0; q < adapter->num_tx_rings; q++) {
+		if (adapter->tx_rings && adapter->tx_rings[q])
+			ena_ring_destroy_hw(adapter->tx_rings[q]);
+	}
+
+	return 0;
+}
+
 int ena_netdev_rx_one(struct uk_netdev *dev __attribute__((unused)),
 		      struct uk_netdev_rx_queue *queue,
 		      struct uk_netbuf **pkt)
@@ -215,15 +287,14 @@ int ena_netdev_rx_one(struct uk_netdev *dev __attribute__((unused)),
 	if (rx_pkt.netbuf) {
 		*pkt = (struct uk_netbuf *)rx_pkt.netbuf;
 		(*pkt)->len = rx_pkt.len;
+		if (queue->bounce_buf && (uint64_t)(uintptr_t)(*pkt)->data < 0x100000ULL)
+			memcpy((*pkt)->data, queue->bounce_buf, rx_pkt.len);
 		ena_rx_refill(ring, 1, ena_netbuf_alloc_helper, queue, NULL);
 		return UK_NETDEV_STATUS_SUCCESS;
 	}
 
 	return 0;
 }
-
-static void *tx_bounce_buf = NULL;
-static uint64_t tx_bounce_phys = 0;
 
 int ena_netdev_tx_one(struct uk_netdev *dev __attribute__((unused)),
 		      struct uk_netdev_tx_queue *queue,
@@ -239,14 +310,16 @@ int ena_netdev_tx_one(struct uk_netdev *dev __attribute__((unused)),
 
 	ring = queue->ring;
 	ena_tx_poll_completions(ring, 32, NULL);
+	queue->bounce_in_use = false;
 
 	phys = (uint64_t)(uintptr_t)pkt->data;
 	if (phys < 0x100000ULL) {
-		if (!tx_bounce_buf)
-			tx_bounce_buf = ena_dma_alloc(4096, &tx_bounce_phys);
-		if (tx_bounce_buf && pkt->len <= 4096) {
-			memcpy(tx_bounce_buf, pkt->data, pkt->len);
-			phys = tx_bounce_phys;
+		if (!queue->bounce_buf)
+			queue->bounce_buf = ena_dma_alloc(4096, &queue->bounce_phys);
+		if (queue->bounce_buf && pkt->len <= 4096) {
+			memcpy(queue->bounce_buf, pkt->data, pkt->len);
+			phys = queue->bounce_phys;
+			queue->bounce_in_use = true;
 		}
 	}
 
@@ -275,6 +348,7 @@ const struct uk_netdev_ops ena_ops = {
 	.rxq_configure   = ena_netdev_rxq_configure,
 	.txq_configure   = ena_netdev_txq_configure,
 	.start           = ena_netdev_start,
+	.stop            = ena_netdev_stop,
 };
 
 #else /* !__Unikraft__ (Standalone Test Suite) */
@@ -345,7 +419,14 @@ static int ena_netdev_rxq_configure(struct uk_netdev *dev, uint16_t queue_id,
 		return -EBUSY;
 
 	if (nb_desc == 0)
+		nb_desc = dev->adapter->max_rx_ring_size ? dev->adapter->max_rx_ring_size : 256;
+
+	if (dev->adapter->max_rx_ring_size && nb_desc > dev->adapter->max_rx_ring_size)
 		nb_desc = dev->adapter->max_rx_ring_size;
+	if (nb_desc > 4096)
+		nb_desc = 4096;
+	if (nb_desc < 4)
+		nb_desc = 4;
 
 	if (dev->adapter->rx_rings && dev->adapter->rx_rings[queue_id]) {
 		ena_ring_free(dev->adapter->rx_rings[queue_id]);
@@ -378,7 +459,14 @@ static int ena_netdev_txq_configure(struct uk_netdev *dev, uint16_t queue_id,
 		return -EBUSY;
 
 	if (nb_desc == 0)
+		nb_desc = dev->adapter->max_tx_ring_size ? dev->adapter->max_tx_ring_size : 256;
+
+	if (dev->adapter->max_tx_ring_size && nb_desc > dev->adapter->max_tx_ring_size)
 		nb_desc = dev->adapter->max_tx_ring_size;
+	if (nb_desc > 4096)
+		nb_desc = 4096;
+	if (nb_desc < 4)
+		nb_desc = 4;
 
 	if (dev->adapter->tx_rings && dev->adapter->tx_rings[queue_id]) {
 		ena_ring_free(dev->adapter->tx_rings[queue_id]);

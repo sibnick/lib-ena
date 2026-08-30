@@ -75,9 +75,13 @@ int ena_llq_tx_push(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 	uint32_t len_ctrl;
 	uint32_t meta_ctrl;
 	uint32_t buff_hi_hdr;
+	size_t slot_idx;
 	int ret;
 
 	if (!ring || !pkt || ring->ring_type != ENA_RING_TYPE_TX)
+		return -EINVAL;
+
+	if (hdr_len > 96)
 		return -EINVAL;
 
 	/* Fall back to standard host-memory submission if LLQ is not enabled */
@@ -94,15 +98,27 @@ int ena_llq_tx_push(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 		return ret;
 	}
 
-	if (hdr_len > 96)
-		return -EINVAL;
+	ena_ring_lock(ring);
 
-	if (ring->free_req_count == 0)
+	if (ring->free_req_count == 0) {
+		ena_ring_unlock(ring);
 		return -EBUSY;
+	}
+
+	slot_idx = (size_t)(ring->sq_tail & (ring->sq_depth - 1));
+	if (ring->push_buf_size > 0 && (slot_idx + 1) * 128 > ring->push_buf_size) {
+		ena_ring_unlock(ring);
+		return -ENOMEM;
+	}
 
 	ret = ena_ring_req_id_alloc(ring, &req_id);
-	if (ret)
+	if (ret) {
+		ena_ring_unlock(ring);
 		return ret;
+	}
+
+	if (ring->req_in_flight)
+		ring->req_in_flight[req_id] = 1;
 
 	/* Save packet tracking metadata */
 	tx_buf = &ring->buffers.tx_bufs[req_id];
@@ -150,12 +166,12 @@ int ena_llq_tx_push(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 	if (hdr_data && hdr_len > 0)
 		memcpy(entry_buf + sizeof(desc), hdr_data, hdr_len);
 
-	push_dest = (uint8_t *)ring->push_buf_virt + ((size_t)ring->sq_tail * 128);
+	push_dest = (uint8_t *)ring->push_buf_virt + (slot_idx * 128);
 	memcpy(push_dest, entry_buf, sizeof(entry_buf));
 
-	/* Advance SQ producer tail */
-	ring->sq_tail = (uint16_t)((ring->sq_tail + 1) & (ring->sq_depth - 1));
-	if (ring->sq_tail == 0)
+	/* Advance producer tail index (monotonic unmasked counter) */
+	ring->sq_tail++;
+	if ((ring->sq_tail & (ring->sq_depth - 1)) == 0)
 		ring->sq_phase ^= 1;
 
 	ring->tx_packets++;
@@ -167,5 +183,6 @@ int ena_llq_tx_push(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 	if (out_req_id)
 		*out_req_id = req_id;
 
+	ena_ring_unlock(ring);
 	return 0;
 }

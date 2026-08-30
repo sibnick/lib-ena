@@ -52,6 +52,10 @@ void mock_ena_hw_init(struct mock_ena_hw *hw)
 	hw->admin_hang = 0;
 	hw->inject_bad_cmd_id = 0;
 	hw->bad_cmd_id = 0;
+	hw->inject_bad_db_offset = 0;
+	hw->bad_db_offset = 0;
+	hw->inject_fake_req_id = 0;
+	hw->fake_req_id = 0;
 	hw->last_opcode = 0;
 	hw->last_command_id = 0;
 
@@ -192,7 +196,9 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 				hw->last_cq_phys = cmd->cq_ba.mem_addr_low;
 				resp->cq_idx = hw->next_cq_id++;
 				resp->cq_actual_depth = cmd->cq_depth;
-				resp->cq_head_db_register_offset = 0x30;
+				resp->cq_head_db_register_offset =
+					hw->inject_bad_db_offset ?
+					hw->bad_db_offset : 0x30;
 				resp->cq_interrupt_unmask_register_offset = 0x4C;
 				filled = 1;
 			}
@@ -215,7 +221,9 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 				hw->last_sq_direction = (cmd->sq_identity >> 5) & 0x7;
 				hw->last_sq_cq_idx = cmd->cq_idx;
 				resp->sq_idx = hw->next_sq_id++;
-				resp->sq_doorbell_offset = 0x2C;
+				resp->sq_doorbell_offset =
+					hw->inject_bad_db_offset ?
+					hw->bad_db_offset : 0x2C;
 				filled = 1;
 			}
 		} else if (req->aq_common_desc.opcode == ENA_ADMIN_DESTROY_SQ) {
@@ -450,6 +458,34 @@ void mock_ena_hw_clear_bad_cmd_id(struct mock_ena_hw *hw)
 		hw->inject_bad_cmd_id = 0;
 }
 
+void mock_ena_hw_inject_bad_db_offset(struct mock_ena_hw *hw, uint32_t offset)
+{
+	if (hw) {
+		hw->bad_db_offset = offset;
+		hw->inject_bad_db_offset = 1;
+	}
+}
+
+void mock_ena_hw_clear_bad_db_offset(struct mock_ena_hw *hw)
+{
+	if (hw)
+		hw->inject_bad_db_offset = 0;
+}
+
+void mock_ena_hw_inject_fake_req_id(struct mock_ena_hw *hw, uint16_t id)
+{
+	if (hw) {
+		hw->fake_req_id = id;
+		hw->inject_fake_req_id = 1;
+	}
+}
+
+void mock_ena_hw_clear_fake_req_id(struct mock_ena_hw *hw)
+{
+	if (hw)
+		hw->inject_fake_req_id = 0;
+}
+
 void mock_ena_hw_require_attrs_first(struct mock_ena_hw *hw, int on)
 {
 	if (hw)
@@ -514,6 +550,9 @@ void mock_ena_hw_emulate_tx(struct mock_ena_hw *hw, struct ena_ring *ring,
 				    ((sq_descs[sq_idx].meta_ctrl & ENA_ETH_IO_TX_DESC_REQ_ID_LO_MASK) >>
 				     ENA_ETH_IO_TX_DESC_REQ_ID_LO_SHIFT));
 
+		if (hw->inject_fake_req_id)
+			req_id = hw->fake_req_id;
+
 		cq_idx = (ring->cq_head + (uint16_t)i) & (ring->cq_depth - 1);
 		memset(&cq_descs[cq_idx], 0, sizeof(cq_descs[cq_idx]));
 		cq_descs[cq_idx].req_id = req_id;
@@ -545,6 +584,9 @@ void mock_ena_hw_emulate_rx(struct mock_ena_hw *hw, struct ena_ring *ring,
 	for (i = 0; i < count; i++) {
 		sq_idx = (ring->sq_head + (uint16_t)i) & (ring->sq_depth - 1);
 		req_id = sq_descs[sq_idx].req_id;
+
+		if (hw->inject_fake_req_id)
+			req_id = hw->fake_req_id;
 
 		cq_idx = (ring->cq_head + (uint16_t)i) & (ring->cq_depth - 1);
 		memset(&cq_descs[cq_idx], 0, sizeof(cq_descs[cq_idx]));

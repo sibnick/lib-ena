@@ -64,6 +64,32 @@ int ena_init_get_device_attributes(struct ena_adapter *adapter)
 	return 0;
 }
 
+#define ENA_SPEC_MAX_QUEUES 256
+#define ENA_SPEC_MAX_DEPTH  4096
+#define ENA_SPEC_MIN_DEPTH  4
+
+static uint16_t clamp_queue_depth(uint32_t raw_depth)
+{
+	uint32_t d = raw_depth;
+	if (d > ENA_SPEC_MAX_DEPTH)
+		d = ENA_SPEC_MAX_DEPTH;
+	if (d < ENA_SPEC_MIN_DEPTH)
+		d = ENA_SPEC_MIN_DEPTH;
+	/* Round down to power of two */
+	while ((d & (d - 1)) != 0)
+		d = d & (d - 1);
+	return (uint16_t)d;
+}
+
+static uint16_t clamp_queue_num(uint32_t raw_num)
+{
+	if (raw_num > ENA_SPEC_MAX_QUEUES)
+		return ENA_SPEC_MAX_QUEUES;
+	if (raw_num == 0)
+		return 1;
+	return (uint16_t)raw_num;
+}
+
 int ena_init_get_queue_limits(struct ena_adapter *adapter)
 {
 	struct ena_admin_get_feat_inline req;
@@ -87,22 +113,37 @@ int ena_init_get_queue_limits(struct ena_adapter *adapter)
 	uint16_t max_rx_q;
 	uint16_t max_tx_depth;
 	uint16_t max_rx_depth;
+	uint32_t raw_sq_num;
+	uint32_t raw_cq_num;
+	uint32_t raw_sq_depth;
+	uint32_t raw_cq_depth;
 
 	q = (const struct ena_admin_queue_feature_desc *)resp;
 
-	max_tx_q = (uint16_t)ena_le32_to_cpu(q->max_sq_num);
-	max_rx_q = (uint16_t)ena_le32_to_cpu(q->max_sq_num);
-	if ((uint16_t)ena_le32_to_cpu(q->max_cq_num) < max_tx_q)
-		max_tx_q = (uint16_t)ena_le32_to_cpu(q->max_cq_num);
-	if ((uint16_t)ena_le32_to_cpu(q->max_cq_num) < max_rx_q)
-		max_rx_q = (uint16_t)ena_le32_to_cpu(q->max_cq_num);
+	raw_sq_num = ena_le32_to_cpu(q->max_sq_num);
+	raw_cq_num = ena_le32_to_cpu(q->max_cq_num);
+	raw_sq_depth = ena_le32_to_cpu(q->max_sq_depth);
+	raw_cq_depth = ena_le32_to_cpu(q->max_cq_depth);
 
-	max_tx_depth = (uint16_t)ena_le32_to_cpu(q->max_sq_depth);
-	max_rx_depth = (uint16_t)ena_le32_to_cpu(q->max_sq_depth);
-	if ((uint16_t)ena_le32_to_cpu(q->max_cq_depth) < max_tx_depth)
-		max_tx_depth = (uint16_t)ena_le32_to_cpu(q->max_cq_depth);
-	if ((uint16_t)ena_le32_to_cpu(q->max_cq_depth) < max_rx_depth)
-		max_rx_depth = (uint16_t)ena_le32_to_cpu(q->max_cq_depth);
+	max_tx_q = clamp_queue_num(raw_sq_num);
+	max_rx_q = clamp_queue_num(raw_sq_num);
+	if (clamp_queue_num(raw_cq_num) < max_tx_q)
+		max_tx_q = clamp_queue_num(raw_cq_num);
+	if (clamp_queue_num(raw_cq_num) < max_rx_q)
+		max_rx_q = clamp_queue_num(raw_cq_num);
+
+	max_tx_depth = clamp_queue_depth(raw_sq_depth);
+	max_rx_depth = clamp_queue_depth(raw_sq_depth);
+	if (clamp_queue_depth(raw_cq_depth) < max_tx_depth)
+		max_tx_depth = clamp_queue_depth(raw_cq_depth);
+	if (clamp_queue_depth(raw_cq_depth) < max_rx_depth)
+		max_rx_depth = clamp_queue_depth(raw_cq_depth);
+
+	if (raw_sq_num > ENA_SPEC_MAX_QUEUES || raw_cq_num > ENA_SPEC_MAX_QUEUES ||
+	    raw_sq_depth > ENA_SPEC_MAX_DEPTH || raw_cq_depth > ENA_SPEC_MAX_DEPTH) {
+		ena_info("queue limits clamped from raw sq_num=%u cq_num=%u sq_depth=%u cq_depth=%u",
+			 raw_sq_num, raw_cq_num, raw_sq_depth, raw_cq_depth);
+	}
 
 	adapter->max_tx_queues = max_tx_q;
 	adapter->max_rx_queues = max_rx_q;

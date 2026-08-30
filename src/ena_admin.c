@@ -248,6 +248,8 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 	adapter->next_command_id =
 		(uint16_t)((adapter->next_command_id + 1) &
 			   ENA_ADMIN_COMMAND_ID_MASK);
+	if (command_id == 0)
+		adapter->next_command_id = 1;
 
 	memset(entry, 0, sizeof(*entry));
 
@@ -291,6 +293,12 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 		ena_err("exec_cmd: timeout after %u polls (resetting device)", max_polls);
 		adapter->state = ENA_STATE_ERROR;
 		ena_device_reset(adapter);
+		if (ena_device_wait_reset_complete(adapter, 1000) == 0) {
+			uint16_t aq_d = adapter->aq_depth ? adapter->aq_depth : 32;
+			uint16_t acq_d = adapter->acq_depth ? adapter->acq_depth : 32;
+			uint16_t aenq_d = adapter->aenq_depth ? adapter->aenq_depth : 32;
+			ena_admin_init(adapter, aq_d, acq_d, aenq_d);
+		}
 		return -ETIMEDOUT;
 	}
 

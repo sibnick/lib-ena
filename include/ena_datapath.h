@@ -181,6 +181,8 @@ struct ena_ring {
 	uint16_t free_req_head;    /* Pop index */
 	uint16_t free_req_tail;    /* Push index */
 	uint16_t free_req_count;   /* Count of free IDs */
+	uint8_t *req_in_flight;    /* In-flight flag for each request ID */
+	uint32_t ring_lock;        /* Atomic spinlock for ring access */
 
 	/* Tracking Buffers (allocated to depth entries, indexed by req_id) */
 	union {
@@ -201,6 +203,17 @@ struct ena_ring {
 	uint32_t push_buf_size;
 	uint32_t llq_header_len;
 };
+
+static inline void ena_ring_lock(struct ena_ring *ring)
+{
+	while (__sync_lock_test_and_set(&ring->ring_lock, 1u) != 0u)
+		ena_delay_us(1);
+}
+
+static inline void ena_ring_unlock(struct ena_ring *ring)
+{
+	__sync_lock_release(&ring->ring_lock);
+}
 
 /* -------------------------------------------------------------------------
  * Datapath Ring Lifecycle & Allocation Prototypes

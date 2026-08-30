@@ -28,6 +28,8 @@ struct uk_netdev_rx_queue {
 	struct uk_alloc *allocator;
 	uk_netdev_alloc_rxpkts alloc_rxpkts;
 	void *alloc_rxpkts_argp;
+	void *bounce_buf;
+	uint64_t bounce_phys;
 };
 
 struct uk_netdev_tx_queue {
@@ -35,6 +37,9 @@ struct uk_netdev_tx_queue {
 	uint16_t queue_id;
 	struct ena_adapter *adapter;
 	struct uk_alloc *allocator;
+	void *bounce_buf;
+	uint64_t bounce_phys;
+	bool bounce_in_use;
 };
 
 struct ena_uk_device {

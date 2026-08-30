@@ -45,6 +45,16 @@ struct mock_ena_hw {
 	uint8_t inject_bad_cmd_id;
 	uint16_t bad_cmd_id;
 
+	/* Security audit fault injection: CREATE_CQ/CREATE_SQ return a
+	 * device-controlled doorbell offset outside the BAR0 window. */
+	uint8_t inject_bad_db_offset;
+	uint32_t bad_db_offset;
+
+	/* Security audit fault injection: the next emulated completion
+	 * carries a forged req_id instead of the descriptor's req_id. */
+	uint8_t inject_fake_req_id;
+	uint16_t fake_req_id;
+
 	/* Last consumed admin command (for test assertions) */
 	uint8_t last_opcode;
 	uint16_t last_command_id;
@@ -108,6 +118,10 @@ void mock_ena_hw_hang_admin(struct mock_ena_hw *hw);
 void mock_ena_hw_clear_admin_hang(struct mock_ena_hw *hw);
 void mock_ena_hw_inject_bad_cmd_id(struct mock_ena_hw *hw, uint16_t id);
 void mock_ena_hw_clear_bad_cmd_id(struct mock_ena_hw *hw);
+void mock_ena_hw_inject_bad_db_offset(struct mock_ena_hw *hw, uint32_t offset);
+void mock_ena_hw_clear_bad_db_offset(struct mock_ena_hw *hw);
+void mock_ena_hw_inject_fake_req_id(struct mock_ena_hw *hw, uint16_t id);
+void mock_ena_hw_clear_fake_req_id(struct mock_ena_hw *hw);
 void mock_ena_hw_inject_aenq(struct mock_ena_hw *hw, uint16_t group, uint16_t syndrome);
 
 /* Phase 3: device-side feature negotiation */
