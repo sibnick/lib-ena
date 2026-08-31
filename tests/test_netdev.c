@@ -9,6 +9,7 @@
 #include "ena_datapath.h"
 #include "ena_netdev.h"
 #include "mock_pci.h"
+#include "test_framework.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -16,10 +17,25 @@
 #include <stdlib.h>
 #include <string.h>
 
+static struct mock_ena_hw g_hw;
+static struct ena_adapter g_adapter;
+
+static void test_netdev_setup(void)
+{
+	mock_ena_hw_init(&g_hw);
+	mock_pci_clear_faults(&g_hw);
+	test_reset_alloc_tracking();
+}
+
+static void test_netdev_teardown(void)
+{
+	mock_pci_clear_faults(&g_hw);
+}
+
 static void *mock_rx_alloc_cb(void *arg, uint64_t *phys_out, uint32_t *len_out)
 {
 	static uint64_t next_phys = 0x8000000;
-	struct uk_netbuf *nb = calloc(1, sizeof(*nb));
+	struct uk_netbuf *nb = test_calloc(1, sizeof(*nb));
 	(void)arg;
 
 	*phys_out = next_phys;
@@ -48,8 +64,8 @@ static int setup_test_adapter(struct mock_ena_hw *hw, struct ena_adapter *adapte
 	if (ret)
 		return ret;
 
-	adapter->rx_rings = calloc(adapter->max_rx_queues, sizeof(struct ena_ring *));
-	adapter->tx_rings = calloc(adapter->max_tx_queues, sizeof(struct ena_ring *));
+	adapter->rx_rings = test_calloc(adapter->max_rx_queues, sizeof(struct ena_ring *));
+	adapter->tx_rings = test_calloc(adapter->max_tx_queues, sizeof(struct ena_ring *));
 	return 0;
 }
 
@@ -60,7 +76,7 @@ static void teardown_test_adapter(struct ena_adapter *adapter)
 			if (adapter->rx_rings[i])
 				ena_ring_free(adapter->rx_rings[i]);
 		}
-		free(adapter->rx_rings);
+		test_free(adapter->rx_rings);
 		adapter->rx_rings = NULL;
 	}
 
@@ -69,7 +85,7 @@ static void teardown_test_adapter(struct ena_adapter *adapter)
 			if (adapter->tx_rings[i])
 				ena_ring_free(adapter->tx_rings[i]);
 		}
-		free(adapter->tx_rings);
+		test_free(adapter->tx_rings);
 		adapter->tx_rings = NULL;
 	}
 
@@ -78,45 +94,35 @@ static void teardown_test_adapter(struct ena_adapter *adapter)
 
 static void test_netdev_alloc_and_info_get(void)
 {
-	printf("[TEST] Running test_netdev_alloc_and_info_get...\n");
-
-	struct mock_ena_hw hw;
-	struct ena_adapter adapter;
 	struct uk_netdev *netdev;
 	struct uk_netdev_info info;
 
-	assert(setup_test_adapter(&hw, &adapter) == 0);
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
 
-	netdev = ena_netdev_alloc(&adapter);
+	netdev = ena_netdev_alloc(&g_adapter);
 	assert(netdev != NULL);
 	assert(netdev->state == UK_NETDEV_UNCONFIGURED);
 
 	assert(netdev->ops->info_get(netdev, &info) == 0);
 	assert(info.mtu == 1500);
-	assert(info.max_rx_queues == adapter.max_rx_queues);
-	assert(info.max_tx_queues == adapter.max_tx_queues);
+	assert(info.max_rx_queues == g_adapter.max_rx_queues);
+	assert(info.max_tx_queues == g_adapter.max_tx_queues);
 	assert(info.features & UK_NETDEV_F_RX_CSUM);
 	assert(info.features & UK_NETDEV_F_TX_CSUM);
 	assert(info.hwaddr[0] == 0x52 && info.hwaddr[1] == 0x54);
 
+	teardown_test_adapter(&g_adapter);
 	ena_netdev_free(netdev);
-	teardown_test_adapter(&adapter);
-
-	printf("[PASS] test_netdev_alloc_and_info_get passed\n");
 }
 
 static void test_netdev_configure_and_lifecycle(void)
 {
-	printf("[TEST] Running test_netdev_configure_and_lifecycle...\n");
-
-	struct mock_ena_hw hw;
-	struct ena_adapter adapter;
 	struct uk_netdev *netdev;
 	struct uk_netdev_conf conf;
 
-	assert(setup_test_adapter(&hw, &adapter) == 0);
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
 
-	netdev = ena_netdev_alloc(&adapter);
+	netdev = ena_netdev_alloc(&g_adapter);
 	assert(netdev != NULL);
 
 	memset(&conf, 0, sizeof(conf));
@@ -141,26 +147,20 @@ static void test_netdev_configure_and_lifecycle(void)
 	assert(netdev->ops->dev_stop(netdev) == 0);
 	assert(netdev->state == UK_NETDEV_STOPPED);
 
+	teardown_test_adapter(&g_adapter);
 	ena_netdev_free(netdev);
-	teardown_test_adapter(&adapter);
-
-	printf("[PASS] test_netdev_configure_and_lifecycle passed\n");
 }
 
 static void test_netdev_txq_xmit(void)
 {
-	printf("[TEST] Running test_netdev_txq_xmit...\n");
-
-	struct mock_ena_hw hw;
-	struct ena_adapter adapter;
 	struct uk_netdev *netdev;
 	struct uk_netdev_conf conf;
-	struct uk_netbuf *tx_buf = calloc(1, sizeof(*tx_buf));
+	struct uk_netbuf *tx_buf = test_calloc(1, sizeof(*tx_buf));
 	assert(tx_buf != NULL);
 
-	assert(setup_test_adapter(&hw, &adapter) == 0);
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
 
-	netdev = ena_netdev_alloc(&adapter);
+	netdev = ena_netdev_alloc(&g_adapter);
 	assert(netdev != NULL);
 
 	memset(&conf, 0, sizeof(conf));
@@ -177,39 +177,33 @@ static void test_netdev_txq_xmit(void)
 	tx_buf->len = 256;
 
 	assert(netdev->ops->txq_xmit(netdev, 0, tx_buf) == 0);
-	assert(adapter.tx_rings[0]->sq_tail == 1);
-	assert(adapter.tx_rings[0]->tx_packets == 1);
-	assert(mock_ena_hw_get_reg32(&hw, adapter.tx_rings[0]->sq_db_offset) == 1);
+	assert(g_adapter.tx_rings[0]->sq_tail == 1);
+	assert(g_adapter.tx_rings[0]->tx_packets == 1);
+	assert(mock_ena_hw_get_reg32(&g_hw, g_adapter.tx_rings[0]->sq_db_offset) == 1);
 
 	/* Mock device completes packet */
-	mock_ena_hw_emulate_tx(&hw, adapter.tx_rings[0], 1);
+	mock_ena_hw_emulate_tx(&g_hw, g_adapter.tx_rings[0], 1);
 
 	/* Transmit second packet (triggers poll) */
 	assert(netdev->ops->txq_xmit(netdev, 0, tx_buf) == 0);
-	assert(adapter.tx_rings[0]->sq_head == 1);
+	assert(g_adapter.tx_rings[0]->sq_head == 1);
 
 	assert(netdev->ops->dev_stop(netdev) == 0);
-	free(tx_buf);
+	test_free(tx_buf);
+	teardown_test_adapter(&g_adapter);
 	ena_netdev_free(netdev);
-	teardown_test_adapter(&adapter);
-
-	printf("[PASS] test_netdev_txq_xmit passed\n");
 }
 
 static void test_netdev_rxq_recv(void)
 {
-	printf("[TEST] Running test_netdev_rxq_recv...\n");
-
-	struct mock_ena_hw hw;
-	struct ena_adapter adapter;
 	struct uk_netdev *netdev;
 	struct uk_netdev_conf conf;
 	struct uk_netbuf *rx_buf = NULL;
 	unsigned int refilled;
 
-	assert(setup_test_adapter(&hw, &adapter) == 0);
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
 
-	netdev = ena_netdev_alloc(&adapter);
+	netdev = ena_netdev_alloc(&g_adapter);
 	assert(netdev != NULL);
 
 	memset(&conf, 0, sizeof(conf));
@@ -222,13 +216,13 @@ static void test_netdev_rxq_recv(void)
 	assert(netdev->ops->dev_start(netdev) == 0);
 
 	/* Populate RX ring */
-	assert(ena_rx_refill(adapter.rx_rings[0], 4, mock_rx_alloc_cb, NULL, &refilled) == 4);
+	assert(ena_rx_refill(g_adapter.rx_rings[0], 4, mock_rx_alloc_cb, NULL, &refilled) == 4);
 
 	/* Receive before arrival returns 0 */
 	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 0);
 
 	/* Mock incoming packet */
-	mock_ena_hw_emulate_rx(&hw, adapter.rx_rings[0], 1, 512, 0x11223344,
+	mock_ena_hw_emulate_rx(&g_hw, g_adapter.rx_rings[0], 1, 512, 0x11223344,
 			       ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK);
 
 	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 1);
@@ -238,36 +232,30 @@ static void test_netdev_rxq_recv(void)
 	assert(rx_buf->l4_csum_checked == true);
 	assert(rx_buf->l3_csum_err == false);
 
-	free(rx_buf);
+	test_free(rx_buf);
 
 	assert(netdev->ops->dev_stop(netdev) == 0);
-	for (int i = 0; i < adapter.rx_rings[0]->sq_depth; i++) {
-		if (adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf) {
-			free(adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf);
-			adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf = NULL;
+	for (int i = 0; i < g_adapter.rx_rings[0]->sq_depth; i++) {
+		if (g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf) {
+			test_free(g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf);
+			g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf = NULL;
 		}
 	}
+	teardown_test_adapter(&g_adapter);
 	ena_netdev_free(netdev);
-	teardown_test_adapter(&adapter);
-
-	printf("[PASS] test_netdev_rxq_recv passed\n");
 }
 
 static void test_netdev_invalid_ops(void)
 {
-	printf("[TEST] Running test_netdev_invalid_ops...\n");
-
-	struct mock_ena_hw hw;
-	struct ena_adapter adapter;
 	struct uk_netdev *netdev;
 	struct uk_netdev_conf conf;
-	struct uk_netbuf *tx_buf = calloc(1, sizeof(*tx_buf));
+	struct uk_netbuf *tx_buf = test_calloc(1, sizeof(*tx_buf));
 	struct uk_netbuf *rx_buf = NULL;
 	assert(tx_buf != NULL);
 
-	assert(setup_test_adapter(&hw, &adapter) == 0);
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
 
-	netdev = ena_netdev_alloc(&adapter);
+	netdev = ena_netdev_alloc(&g_adapter);
 	assert(netdev != NULL);
 
 	memset(&conf, 0, sizeof(conf));
@@ -294,21 +282,19 @@ static void test_netdev_invalid_ops(void)
 	assert(netdev->ops->rxq_configure(netdev, 0, 8, NULL) == -EBUSY);
 
 	assert(netdev->ops->dev_stop(netdev) == 0);
-	free(tx_buf);
+	test_free(tx_buf);
+	teardown_test_adapter(&g_adapter);
 	ena_netdev_free(netdev);
-	teardown_test_adapter(&adapter);
-
-	printf("[PASS] test_netdev_invalid_ops passed\n");
 }
 
 static uint16_t mock_low_mem_rx_alloc(void *arg, struct uk_netbuf *pkts[], uint16_t count)
 {
 	(void)arg;
 	for (uint16_t i = 0; i < count; i++) {
-		pkts[i] = calloc(1, sizeof(struct uk_netbuf));
+		pkts[i] = test_calloc(1, sizeof(struct uk_netbuf));
 		if (!pkts[i])
 			return i;
-		pkts[i]->data = calloc(1, 2048);
+		pkts[i]->data = test_calloc(1, 2048);
 		pkts[i]->phys_addr = 0x500; /* Below 1MB */
 		pkts[i]->buflen = 2048;
 	}
@@ -317,24 +303,20 @@ static uint16_t mock_low_mem_rx_alloc(void *arg, struct uk_netbuf *pkts[], uint1
 
 static void test_netdev_bounce_buffers(void)
 {
-	printf("[TEST] Running test_netdev_bounce_buffers...\n");
-
-	struct mock_ena_hw hw;
-	struct ena_adapter adapter;
 	struct uk_netdev *netdev;
 	struct uk_netdev_conf conf;
 	struct uk_netdev_rxqueue_conf rx_conf;
 	struct uk_netdev_txqueue_conf tx_conf;
-	struct uk_netbuf *tx_buf1 = calloc(1, sizeof(*tx_buf1));
-	struct uk_netbuf *tx_buf2 = calloc(1, sizeof(*tx_buf2));
+	struct uk_netbuf *tx_buf1 = test_calloc(1, sizeof(*tx_buf1));
+	struct uk_netbuf *tx_buf2 = test_calloc(1, sizeof(*tx_buf2));
 	uint8_t payload1[64];
 	uint8_t payload2[64];
 
 	memset(payload1, 0xAA, sizeof(payload1));
 	memset(payload2, 0xBB, sizeof(payload2));
 
-	assert(setup_test_adapter(&hw, &adapter) == 0);
-	netdev = ena_netdev_alloc(&adapter);
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
+	netdev = ena_netdev_alloc(&g_adapter);
 	assert(netdev != NULL);
 
 	memset(&conf, 0, sizeof(conf));
@@ -367,36 +349,30 @@ static void test_netdev_bounce_buffers(void)
 	assert(netdev->ops->txq_xmit(netdev, 0, tx_buf2) == -EBUSY);
 
 	/* Complete first transmission */
-	mock_ena_hw_emulate_tx(&hw, adapter.tx_rings[0], 1);
-	ena_tx_poll_completions(adapter.tx_rings[0], 1, NULL);
+	mock_ena_hw_emulate_tx(&g_hw, g_adapter.tx_rings[0], 1);
+	ena_tx_poll_completions(g_adapter.tx_rings[0], 1, NULL);
 
 	/* After completion, second packet transmits successfully */
 	assert(netdev->ops->txq_xmit(netdev, 0, tx_buf2) == 0);
 	assert(netdev->tx_queues[0].bounce_in_use == true);
 
-	mock_ena_hw_emulate_tx(&hw, adapter.tx_rings[0], 1);
-	ena_tx_poll_completions(adapter.tx_rings[0], 1, NULL);
+	mock_ena_hw_emulate_tx(&g_hw, g_adapter.tx_rings[0], 1);
+	ena_tx_poll_completions(g_adapter.tx_rings[0], 1, NULL);
 
 	assert(netdev->ops->dev_stop(netdev) == 0);
-	free(tx_buf1);
-	free(tx_buf2);
+	test_free(tx_buf1);
+	test_free(tx_buf2);
+	teardown_test_adapter(&g_adapter);
 	ena_netdev_free(netdev);
-	teardown_test_adapter(&adapter);
-
-	printf("[PASS] test_netdev_bounce_buffers passed\n");
 }
 
 static void test_netdev_start_rollback(void)
 {
-	printf("[TEST] Running test_netdev_start_rollback...\n");
-
-	struct mock_ena_hw hw;
-	struct ena_adapter adapter;
 	struct uk_netdev *netdev;
 	struct uk_netdev_conf conf;
 
-	assert(setup_test_adapter(&hw, &adapter) == 0);
-	netdev = ena_netdev_alloc(&adapter);
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
+	netdev = ena_netdev_alloc(&g_adapter);
 	assert(netdev != NULL);
 
 	memset(&conf, 0, sizeof(conf));
@@ -409,21 +385,19 @@ static void test_netdev_start_rollback(void)
 	assert(netdev->ops->txq_configure(netdev, 1, 8, NULL) == 0);
 
 	/* Inject fault during hardware ring creation */
-	mock_pci_inject_fault(&hw, MOCK_PCI_FAULT_BAD_DB_OFFSET, 0x9000);
+	mock_pci_inject_fault(&g_hw, MOCK_PCI_FAULT_BAD_DB_OFFSET, 0x9000);
 	int ret = netdev->ops->dev_start(netdev);
 	assert(ret != 0);
 	assert(netdev->state != UK_NETDEV_RUNNING);
 
 	/* Clear fault and verify start succeeds */
-	mock_pci_clear_faults(&hw);
+	mock_pci_clear_faults(&g_hw);
 	assert(netdev->ops->dev_start(netdev) == 0);
 	assert(netdev->state == UK_NETDEV_RUNNING);
 
 	assert(netdev->ops->dev_stop(netdev) == 0);
+	teardown_test_adapter(&g_adapter);
 	ena_netdev_free(netdev);
-	teardown_test_adapter(&adapter);
-
-	printf("[PASS] test_netdev_start_rollback passed\n");
 }
 
 int main(void)
@@ -432,13 +406,16 @@ int main(void)
 	printf("Running Unikraft ENA Phase 7 Test Suite \n");
 	printf("========================================\n");
 
-	test_netdev_alloc_and_info_get();
-	test_netdev_configure_and_lifecycle();
-	test_netdev_txq_xmit();
-	test_netdev_rxq_recv();
-	test_netdev_invalid_ops();
-	test_netdev_bounce_buffers();
-	test_netdev_start_rollback();
+	test_register_setup(test_netdev_setup);
+	test_register_teardown(test_netdev_teardown);
+
+	RUN_TEST(test_netdev_alloc_and_info_get);
+	RUN_TEST(test_netdev_configure_and_lifecycle);
+	RUN_TEST(test_netdev_txq_xmit);
+	RUN_TEST(test_netdev_rxq_recv);
+	RUN_TEST(test_netdev_invalid_ops);
+	RUN_TEST(test_netdev_bounce_buffers);
+	RUN_TEST(test_netdev_start_rollback);
 
 	printf("========================================\n");
 	printf("ALL PHASE 7 NETDEV TESTS PASSED (7/7)   \n");
