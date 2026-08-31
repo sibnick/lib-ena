@@ -288,7 +288,7 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 			found = true;
 			break;
 		}
-		ena_delay_us(1);
+		ena_delay_us(100);
 	}
 
 	if (!found) {

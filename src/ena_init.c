@@ -9,8 +9,8 @@
 #include <errno.h>
 #include <string.h>
 
-/* Bounded poll budget for init commands (500ms at 1us per poll). */
-#define ENA_INIT_MAX_POLLS 500000
+/* Bounded poll budget for init commands (500ms at 100us per poll). */
+#define ENA_INIT_MAX_POLLS 5000
 
 static size_t ena_copy_str(char *dst, size_t cap, const char *src)
 {

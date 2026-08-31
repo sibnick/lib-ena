@@ -11,8 +11,8 @@
 #include <string.h>
 #include <stdlib.h>
 
-/* Bounded poll budget for queue creation/destruction commands (500ms at 1us per poll). */
-#define ENA_DATAPATH_MAX_POLLS 500000
+/* Bounded poll budget for queue creation/destruction commands (500ms at 100us per poll). */
+#define ENA_DATAPATH_MAX_POLLS 5000
 
 static int ena_is_power_of_two(uint16_t val)
 {
