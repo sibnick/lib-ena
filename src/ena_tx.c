@@ -36,6 +36,12 @@ int ena_tx_submit(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 	if (!ring || !pkt || ring->ring_type != ENA_RING_TYPE_TX)
 		return -EINVAL;
 
+	/* Refuse to submit to a ring whose hardware was destroyed by a
+	 * reset. The netdev start path recreates the queue and restores
+	 * validity before transmit may resume. */
+	if (!ring->hw_valid)
+		return -ENODEV;
+
 	if (pkt->len == 0 || pkt->len > 0xFFFFu)
 		return -EINVAL;
 
@@ -117,7 +123,7 @@ int ena_tx_submit(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 
 void ena_tx_doorbell(struct ena_ring *ring)
 {
-	if (!ring || !ring->sq_db)
+	if (!ring || !ring->hw_valid || !ring->sq_db)
 		return;
 
 	ena_wmb();
@@ -135,6 +141,12 @@ int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 
 	if (!ring || ring->ring_type != ENA_RING_TYPE_TX || !ring->cq_virt)
 		return -EINVAL;
+
+	/* After a reset the CQ memory may hold stale entries and the
+	 * indices are fresh. Do not consume them until the queue is
+	 * re-created. */
+	if (!ring->hw_valid)
+		return 0;
 
 	if (budget == 0)
 		budget = ring->cq_depth;

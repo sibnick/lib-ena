@@ -60,6 +60,9 @@ int ena_ring_alloc(struct ena_adapter *adapter, uint16_t qid,
 	ring->adapter = adapter;
 	ring->qid = qid;
 	ring->ring_type = ring_type;
+	/* A fresh ring is valid. It becomes invalid on destroy or on a
+	 * device reset and is restored by a queue re-creation. */
+	ring->hw_valid = true;
 	ring->sq_depth = sq_depth;
 	ring->cq_depth = cq_depth;
 	ring->sq_phase = 1;
@@ -540,6 +543,8 @@ int ena_ring_create_hw(struct ena_ring *ring, uint32_t msix_vector)
 			 (unsigned int)entry_size);
 	}
 
+	ring->hw_valid = true;
+
 	return 0;
 }
 
@@ -577,5 +582,9 @@ int ena_ring_destroy_hw(struct ena_ring *ring)
 	ring->llq_entry_size = 0;
 	ring->llq_header_len = 0;
 
+	ring->hw_valid = false;
+
 	return ret;
 }
+
+

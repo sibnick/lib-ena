@@ -268,6 +268,114 @@ static void test_netdev_txq_xmit(void)
 	ena_netdev_free(netdev);
 }
 
+static void test_netdev_tx_stuck_bounce_releases(void)
+{
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+	struct uk_netbuf *nb = test_calloc(1, sizeof(*nb));
+	char pkt_data[64];
+	struct uk_netdev_tx_queue *txq;
+	struct ena_ring *ring;
+	int i;
+	int ret;
+	int busy = 0;
+
+	assert(nb != NULL);
+
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
+
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 1;
+	conf.nb_tx_queues = 1;
+
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+	assert(netdev->ops->rxq_configure(netdev, 0, 8, NULL) == 0);
+	assert(netdev->ops->txq_configure(netdev, 0, 8, NULL) == 0);
+	assert(netdev->ops->dev_start(netdev) == 0);
+
+	txq = &netdev->tx_queues[0];
+	ring = g_adapter.tx_rings[0];
+
+	/* The bounce buffer is pre-allocated in txq_configure, so the fast
+	 * path does not allocate in the data path. */
+	assert(txq->bounce_buf != NULL);
+
+	/* A low-memory packet (physical address below the limit) uses the
+	 * bounce buffer. Its completion is never delivered by the mock. */
+	nb->data = pkt_data;
+	nb->len = sizeof(pkt_data);
+	nb->phys_addr = 0x1000;
+
+	assert(netdev->ops->txq_xmit(netdev, 0, nb) == 0);
+	assert(txq->bounce_in_use == true);
+	assert(txq->bounce_wait_polls == 0);
+
+	/* Later low-memory transmits fail until the bounded stall limit is
+	 * reached, then the stuck bounce is released and the transmit
+	 * succeeds. */
+	for (i = 0; i < ENA_TX_BOUNCE_STALL_LIMIT + 1; i++) {
+		ret = netdev->ops->txq_xmit(netdev, 0, nb);
+		if (ret == -EBUSY)
+			busy++;
+		else
+			break;
+	}
+	assert(ret == 0);
+	assert(busy == ENA_TX_BOUNCE_STALL_LIMIT);
+
+	/* The stuck request id was returned to the pool, the new request is
+	 * in flight, and the wait counter was restarted. */
+	assert(txq->bounce_in_use == true);
+	assert(txq->bounce_wait_polls == 0);
+	assert(ring->req_in_flight[txq->bounce_req_id] == 1);
+	assert(ring->free_req_count == ring->sq_depth - 1);
+
+	/* The device writes two completions: the request released at the
+	 * stall limit (no longer in flight, the driver skips it) and the
+	 * current bounce request (the driver frees it and clears the
+	 * bounce). */
+	{
+		struct ena_eth_io_tx_cdesc *cd =
+			(struct ena_eth_io_tx_cdesc *)ring->cq_virt;
+		uint16_t h0 = (uint16_t)(ring->cq_head & (ring->cq_depth - 1));
+		uint16_t h1 = (uint16_t)((ring->cq_head + 1) &
+					 (ring->cq_depth - 1));
+
+		cd[h0].req_id = 0;
+		cd[h0].flags = ring->cq_phase;
+		cd[h1].req_id = txq->bounce_req_id;
+		cd[h1].flags = ring->cq_phase;
+	}
+
+	ret = netdev->ops->txq_xmit(netdev, 0, nb);
+	assert(ret == 0);
+	assert(txq->bounce_in_use == true);
+	assert(txq->bounce_wait_polls == 0);
+
+	/* Complete the last request. A high-memory packet no longer uses
+	 * the bounce and it is free afterwards. */
+	{
+		struct ena_eth_io_tx_cdesc *cd =
+			(struct ena_eth_io_tx_cdesc *)ring->cq_virt;
+		uint16_t h0 = (uint16_t)(ring->cq_head & (ring->cq_depth - 1));
+
+		cd[h0].req_id = txq->bounce_req_id;
+		cd[h0].flags = ring->cq_phase;
+	}
+
+	nb->phys_addr = 0x50001000;
+	assert(netdev->ops->txq_xmit(netdev, 0, nb) == 0);
+	assert(txq->bounce_in_use == false);
+
+	assert(netdev->ops->dev_stop(netdev) == 0);
+	test_free(nb);
+	teardown_test_adapter(&g_adapter);
+	ena_netdev_free(netdev);
+}
+
 static void test_netdev_rxq_recv(void)
 {
 	struct uk_netdev *netdev;
@@ -654,6 +762,7 @@ int main(void)
 	RUN_TEST(test_netdev_alloc_and_info_get);
 	RUN_TEST(test_netdev_configure_and_lifecycle);
 	RUN_TEST(test_netdev_txq_xmit);
+	RUN_TEST(test_netdev_tx_stuck_bounce_releases);
 	RUN_TEST(test_netdev_rxq_recv);
 	RUN_TEST(test_netdev_rx_undersized_netbuf);
 	RUN_TEST(test_netdev_rx_bad_completion_bounce_pool);
@@ -662,7 +771,7 @@ int main(void)
 	RUN_TEST(test_netdev_start_rollback);
 
 	printf("========================================\n");
-	printf("ALL PHASE 7 NETDEV TESTS PASSED (9/9)   \n");
+	printf("ALL PHASE 7 NETDEV TESTS PASSED (10/10) \n");
 	printf("========================================\n");
 	return 0;
 }

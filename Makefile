@@ -17,7 +17,7 @@ TEST9 = $(BUILD)/test_llq
 TEST10 = $(BUILD)/test_validation
 
 ENA_SRCS = src/ena_pci.c src/ena_com.c src/ena_plat.c
-ENA_SRCS_P2 = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c
+ENA_SRCS_P2 = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena_init.c src/ena_datapath.c src/ena_tx.c src/ena_rx.c
 ENA_SRCS_P3 = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena_init.c
 ENA_SRCS_P4 = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena_init.c src/ena_datapath.c
 ENA_SRCS_P5 = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena_init.c src/ena_datapath.c src/ena_tx.c

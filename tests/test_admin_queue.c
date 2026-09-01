@@ -13,6 +13,7 @@
 #include <pthread.h>
 #endif
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -191,6 +192,107 @@ static void test_admin_cmd_timeout(void)
 
 	ena_admin_fini(&adapter);
 	printf("[PASS] test_admin_cmd_timeout passed\n");
+}
+
+static void test_admin_timeout_invalidates_io_queues(void)
+{
+	printf("[TEST] Running test_admin_timeout_invalidates_io_queues...\n");
+
+	struct mock_ena_hw hw;
+	mock_ena_hw_init(&hw);
+	ena_admin_set_db_hook(mock_ena_hw_aq_doorbell_hook, &hw);
+	ena_device_set_reset_poll_hook(mock_ena_hw_reset_poll_hook, &hw);
+
+	struct ena_adapter adapter;
+	ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0));
+	assert(ena_admin_init(&adapter, 8, 8, 8) == 0);
+	assert(ena_init_run(&adapter, 1500) == 0);
+
+	/* Attach one TX and one RX ring so the reset has queues to invalidate */
+	struct ena_ring *tx_ring = NULL;
+	struct ena_ring *rx_ring = NULL;
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8, &tx_ring) == 0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 8, 8, &rx_ring) == 0);
+	assert(ena_ring_create_hw(tx_ring, 0) == 0);
+	assert(ena_ring_create_hw(rx_ring, 0) == 0);
+	assert(tx_ring->hw_valid == true);
+	assert(rx_ring->hw_valid == true);
+
+	adapter.tx_rings = calloc(1, sizeof(struct ena_ring *));
+	adapter.rx_rings = calloc(1, sizeof(struct ena_ring *));
+	adapter.tx_rings[0] = tx_ring;
+	adapter.num_tx_rings = 1;
+	adapter.rx_rings[0] = rx_ring;
+	adapter.num_rx_rings = 1;
+
+	/* Leave a request in flight so invalidation has state to clear */
+	struct ena_tx_pkt pkt;
+	char pkt_data[32];
+	uint16_t req_id = 0;
+
+	memset(&pkt, 0, sizeof(pkt));
+	pkt.len = sizeof(pkt_data);
+	pkt.phys_addr = 0x50001000;
+	assert(ena_tx_submit(tx_ring, &pkt, &req_id) == 0);
+	assert(tx_ring->req_in_flight[req_id] == 1);
+
+
+	/* Hang the admin queue: the command times out and the driver issues a
+	 * device reset. The mock does not complete the reset, so the adapter
+	 * stays in the error state. */
+	mock_ena_hw_hang_admin(&hw);
+	uint16_t cmd_id = 0;
+	assert(ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE, NULL, 0,
+				  NULL, 0, &cmd_id, 50) == -ETIMEDOUT);
+	mock_ena_hw_clear_admin_hang(&hw);
+
+	/* The reset destroyed the IO queues. The driver-side rings are
+	 * invalid, the request pool is re-armed, and indices are zero. */
+	assert(adapter.state == ENA_STATE_ERROR);
+	assert(tx_ring->hw_valid == false);
+	assert(rx_ring->hw_valid == false);
+	assert(tx_ring->free_req_count == 8);
+	assert(tx_ring->req_in_flight[req_id] == 0);
+	assert(tx_ring->sq_tail == 0);
+	assert(tx_ring->cq_head == 0);
+	assert(tx_ring->sq_db == NULL);
+
+	/* The data path returns a clean error instead of touching dead
+	 * hardware: no submit, no completion consumed. The doorbell pointer
+	 * is NULL, so ena_tx_doorbell cannot write to a dead queue. */
+	assert(ena_tx_submit(tx_ring, &pkt, &req_id) == -ENODEV);
+	assert(ena_rx_submit_one(rx_ring, pkt_data, 0x50001000,
+				 sizeof(pkt_data), NULL) == -ENODEV);
+	ena_tx_doorbell(tx_ring);
+	assert(ena_tx_poll_completions(tx_ring, 8, NULL) == 0);
+	{
+		struct ena_rx_pkt pkts[4];
+		assert(ena_rx_poll(rx_ring, pkts, 4) == 0);
+	}
+
+	/* Recovery: the reset completes (the device re-initializes its
+	 * admin queue state), the admin queue is re-initialized, and the
+	 * queues are re-created. The rings become valid again and
+	 * transmit works. */
+	hw.reset_polls_to_finish = 2;
+	assert(ena_device_wait_reset_complete(&adapter, 100) == 0);
+	assert(ena_admin_init(&adapter, 8, 8, 8) == 0);
+	assert(adapter.state == ENA_STATE_ADMIN_READY);
+	assert(ena_ring_create_hw(tx_ring, 0) == 0);
+	assert(ena_ring_create_hw(rx_ring, 0) == 0);
+	assert(tx_ring->hw_valid == true);
+	assert(rx_ring->hw_valid == true);
+	req_id = 0;
+	assert(ena_tx_submit(tx_ring, &pkt, &req_id) == 0);
+
+	ena_ring_free(tx_ring);
+	ena_ring_free(rx_ring);
+	free(adapter.tx_rings);
+	free(adapter.rx_rings);
+	ena_admin_fini(&adapter);
+	ena_device_set_reset_poll_hook(NULL, NULL);
+
+	printf("[PASS] test_admin_timeout_invalidates_io_queues passed\n");
 }
 
 static void test_admin_acq_phase_flip(void)
@@ -678,6 +780,7 @@ int main(void)
 	test_admin_cmd_roundtrip();
 	test_admin_cmd_error_status();
 	test_admin_cmd_timeout();
+	test_admin_timeout_invalidates_io_queues();
 	test_admin_acq_phase_flip();
 	test_admin_aenq_dispatch();
 	test_admin_fini_clears();
