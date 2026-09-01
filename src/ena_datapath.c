@@ -232,7 +232,8 @@ int ena_ring_req_id_free(struct ena_ring *ring, uint16_t req_id)
 int ena_admin_create_cq(struct ena_adapter *adapter, uint16_t cq_depth,
 			uint64_t cq_phys, uint32_t msix_vector,
 			uint8_t entry_size_words,
-			uint16_t *out_cq_idx, uint32_t *out_db_offset)
+			uint16_t *out_cq_idx, uint32_t *out_db_offset,
+			uint32_t *out_unmask_off)
 {
 	struct ena_admin_aq_create_cq_cmd cmd;
 	struct ena_admin_acq_create_cq_resp_desc resp;
@@ -261,10 +262,13 @@ int ena_admin_create_cq(struct ena_adapter *adapter, uint16_t cq_depth,
 
 	uint16_t cq_idx = ena_le16_to_cpu(resp.cq_idx);
 	uint32_t cq_db_offset = ena_le32_to_cpu(resp.cq_head_db_register_offset);
+	uint32_t cq_unmask_off = ena_le32_to_cpu(resp.cq_interrupt_unmask_register_offset);
 	uint16_t cq_actual_depth = ena_le16_to_cpu(resp.cq_actual_depth);
 
 	*out_cq_idx = cq_idx;
 	*out_db_offset = cq_db_offset;
+	if (out_unmask_off)
+		*out_unmask_off = cq_unmask_off;
 
 	if (adapter->bar0_size && cq_db_offset != 0) {
 		if (cq_db_offset + sizeof(uint32_t) > adapter->bar0_size ||
@@ -276,8 +280,8 @@ int ena_admin_create_cq(struct ena_adapter *adapter, uint16_t cq_depth,
 		}
 	}
 
-	ena_info("create_cq: ok cq_idx=%u depth=%u actual_depth=%u db_offset=0x%x",
-		 cq_idx, cq_depth, cq_actual_depth, cq_db_offset);
+	ena_info("create_cq: ok cq_idx=%u depth=%u actual_depth=%u db_offset=0x%x unmask_off=0x%x",
+		 cq_idx, cq_depth, cq_actual_depth, cq_db_offset, cq_unmask_off);
 	return 0;
 }
 
@@ -439,7 +443,8 @@ int ena_ring_create_hw(struct ena_ring *ring, uint32_t msix_vector)
 	/* 1. Create Completion Queue (always in host memory) */
 	uint8_t cq_entry_words = (ring->ring_type == ENA_RING_TYPE_TX) ? 2 : 4;
 	ret = ena_admin_create_cq(adapter, ring->cq_depth, ring->cq_phys,
-				  msix_vector, cq_entry_words, &ring->cq_idx, &ring->cq_db_offset);
+				  msix_vector, cq_entry_words, &ring->cq_idx,
+				  &ring->cq_db_offset, &ring->cq_unmask_db_offset);
 	if (ret) {
 		ena_err("ring create hw: failed to create CQ (%d)", ret);
 		return ret;
@@ -455,6 +460,16 @@ int ena_ring_create_hw(struct ena_ring *ring, uint32_t msix_vector)
 		}
 		ring->cq_db = (volatile uint32_t *)
 			(adapter->bar0_base + ring->cq_db_offset);
+	}
+
+	if (ring->cq_unmask_db_offset != 0) {
+		if (ring->cq_unmask_db_offset + sizeof(uint32_t) > adapter->bar0_size ||
+		    (ring->cq_unmask_db_offset & 3) != 0) {
+			ena_err("ring create hw: invalid CQ unmask offset 0x%x (bar0_size 0x%zx)",
+				ring->cq_unmask_db_offset, adapter->bar0_size);
+			ena_admin_destroy_cq(adapter, ring->cq_idx);
+			return -EINVAL;
+		}
 	}
 
 	/* 2. Create Submission Queue associated with CQ.
@@ -572,6 +587,7 @@ int ena_ring_destroy_hw(struct ena_ring *ring)
 
 	ring->sq_db = NULL;
 	ring->cq_db = NULL;
+	ring->cq_unmask_db_offset = 0;
 
 	/* The LLQ push buffer is device MMIO. Nothing to release on the
 	 * host side. */

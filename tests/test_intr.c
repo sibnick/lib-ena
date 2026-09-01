@@ -103,62 +103,94 @@ static void test_intr_msix_init_and_fini(void)
 	printf("[PASS] test_intr_msix_init_and_fini passed\n");
 }
 
-static void test_intr_mask_unmask(void)
+/* Masking and unmasking the admin vector write the INTR_MASK register
+ * (BAR0 0x4C) with the ENA spec polarity: 1 = masked, 0 = unmasked. */
+static void test_intr_intr_mask_register(void)
 {
-	printf("[TEST] Running test_intr_mask_unmask...\n");
+	printf("[TEST] Running test_intr_intr_mask_register...\n");
 
+	struct mock_ena_hw hw;
 	struct ena_adapter adapter;
-	struct ena_ring tx_ring;
-	struct ena_ring rx_ring;
-	struct ena_ring *tx_rings[1] = { &tx_ring };
-	struct ena_ring *rx_rings[1] = { &rx_ring };
-	uint32_t bar0_dummy[64];
-	uint32_t tx_cq_db_val = 0;
-	uint32_t rx_cq_db_val = 0;
 
-	memset(&adapter, 0, sizeof(adapter));
-	memset(&tx_ring, 0, sizeof(tx_ring));
-	memset(&rx_ring, 0, sizeof(rx_ring));
-	memset(bar0_dummy, 0, sizeof(bar0_dummy));
-
-	adapter.bar0_base = (volatile uint8_t *)bar0_dummy;
-	adapter.bar0_size = sizeof(bar0_dummy);
-	tx_ring.cq_db = &tx_cq_db_val;
-	tx_ring.cq_head = 4;
-	rx_ring.cq_db = &rx_cq_db_val;
-	rx_ring.cq_head = 6;
-	adapter.tx_rings = tx_rings;
-	adapter.rx_rings = rx_rings;
-	adapter.num_tx_rings = 1;
-	adapter.num_rx_rings = 1;
-
+	assert(setup_test_adapter(&hw, &adapter) == 0);
 	assert(ena_intr_msix_init(&adapter, 4) == 0);
 
-	/* Unmask vector 1 (queue 0) */
+	assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_INTR_MASK_OFF) == 0);
+
+	/* Mask the admin vector: INTR_MASK bit 0 set. */
+	assert(ena_intr_mask_vector(&adapter, 0) == 0);
+	assert(adapter.irq_vectors[0].masked == true);
+	assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_INTR_MASK_OFF) == 1);
+
+	/* Unmask the admin vector: INTR_MASK bit 0 clear. */
+	assert(ena_intr_unmask_vector(&adapter, 0) == 0);
+	assert(adapter.irq_vectors[0].masked == false);
+	assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_INTR_MASK_OFF) == 0);
+
+	/* Fini masks every vector, including the admin vector. */
+	ena_intr_msix_fini(&adapter);
+	assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_INTR_MASK_OFF) == 1);
+
+	teardown_test_adapter(&adapter);
+	printf("[PASS] test_intr_intr_mask_register passed\n");
+}
+
+/* Unmasking an IO vector writes intr_control bit 30 to the per-queue
+ * unmask register reported by the CREATE_CQ response. It never writes
+ * the CQ head doorbell. */
+static void test_intr_unmask_cq_register(void)
+{
+	printf("[TEST] Running test_intr_unmask_cq_register...\n");
+
+	struct mock_ena_hw hw;
+	struct ena_adapter adapter;
+	uint32_t head_db;
+
+	assert(setup_test_adapter(&hw, &adapter) == 0);
+
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8, &adapter.tx_rings[0]) == 0);
+	assert(ena_ring_create_hw(adapter.tx_rings[0], 0) == 0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 8, 8, &adapter.rx_rings[0]) == 0);
+	assert(ena_ring_create_hw(adapter.rx_rings[0], 0) == 0);
+
+	/* The device reported a per-queue unmask register for both CQs,
+	 * distinct from each CQ head doorbell. */
+	assert(adapter.tx_rings[0]->cq_unmask_db_offset != 0);
+	assert(adapter.rx_rings[0]->cq_unmask_db_offset != 0);
+	assert(adapter.tx_rings[0]->cq_unmask_db_offset !=
+	       adapter.tx_rings[0]->cq_db_offset);
+	assert(adapter.rx_rings[0]->cq_unmask_db_offset !=
+	       adapter.rx_rings[0]->cq_db_offset);
+
+	assert(ena_intr_msix_init(&adapter, 2) == 0);
+
+	/* Seed the CQ head doorbell so any write to it is visible. The
+	 * mock gives both CQs the same head doorbell offset, so one seed
+	 * covers both rings. */
+	ena_reg_write32(adapter.tx_rings[0]->cq_db, 3);
+	head_db = mock_ena_hw_get_reg32(&hw, adapter.tx_rings[0]->cq_db_offset);
+	assert(head_db == 3);
+	assert(mock_ena_hw_get_reg32(&hw, adapter.rx_rings[0]->cq_db_offset) == 3);
+
+	/* Unmask vector 1 (queue 0). */
 	assert(ena_intr_unmask_vector(&adapter, 1) == 0);
 	assert(adapter.irq_vectors[1].masked == false);
-	assert(adapter.irq_vectors[0].masked == true);
-	assert(tx_cq_db_val == (4 | ENA_INTR_UNMASK_MASK));
-	assert(rx_cq_db_val == (6 | ENA_INTR_UNMASK_MASK));
 
-	/* Mask vector 1 */
-	assert(ena_intr_mask_vector(&adapter, 1) == 0);
-	assert(adapter.irq_vectors[1].masked == true);
+	/* intr_control bit 30 written to both per-queue unmask registers. */
+	assert(mock_ena_hw_get_reg32(&hw, adapter.tx_rings[0]->cq_unmask_db_offset) ==
+	       ENA_ETH_IO_INTR_REG_INTR_UNMASK_MASK);
+	assert(mock_ena_hw_get_reg32(&hw, adapter.rx_rings[0]->cq_unmask_db_offset) ==
+	       ENA_ETH_IO_INTR_REG_INTR_UNMASK_MASK);
 
-	/* Unmask all */
-	ena_intr_unmask_all(&adapter);
-	assert(adapter.irq_vectors[0].masked == false);
-	assert(adapter.irq_vectors[1].masked == false);
-	assert(adapter.irq_vectors[2].masked == false);
-	assert(adapter.irq_vectors[3].masked == false);
-
-	/* Mask all */
-	ena_intr_mask_all(&adapter);
-	assert(adapter.irq_vectors[0].masked == true);
-	assert(adapter.irq_vectors[1].masked == true);
+	/* The CQ head doorbell is unchanged. */
+	assert(mock_ena_hw_get_reg32(&hw, adapter.tx_rings[0]->cq_db_offset) == head_db);
+	assert(mock_ena_hw_get_reg32(&hw, adapter.rx_rings[0]->cq_db_offset) == head_db);
 
 	ena_intr_msix_fini(&adapter);
-	printf("[PASS] test_intr_mask_unmask passed\n");
+	ena_ring_destroy_hw(adapter.tx_rings[0]);
+	ena_ring_destroy_hw(adapter.rx_rings[0]);
+	teardown_test_adapter(&adapter);
+	printf("[PASS] test_intr_unmask_cq_register passed\n");
 }
 
 static void test_intr_set_coalesce(void)
@@ -269,26 +301,26 @@ static void test_intr_setup_msix(void)
 	assert(adapter.num_irq_vectors == 0);
 	assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_INTR_MASK_OFF) == 0);
 
-	/* Platform provides 4 vectors: allocate the table and enable the
-	 * admin vector (device interrupt register set to 1). IO vectors
-	 * stay masked. */
+	/* Platform provides 4 vectors: allocate the table and unmask
+	 * the admin vector (INTR_MASK bit 0 clear). IO vectors stay
+	 * masked. */
 	ena_plat_set_mock_msix_vectors(4);
 	assert(ena_intr_setup(&adapter, NULL) == 0);
 	assert(adapter.num_irq_vectors == 4);
 	assert(adapter.irq_vectors[0].is_admin == true);
 	assert(adapter.irq_vectors[0].masked == false);
 	assert(adapter.irq_vectors[1].masked == true);
-	assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_INTR_MASK_OFF) == 1);
+	assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_INTR_MASK_OFF) == 0);
 
 	/* A second setup call is a no-op. */
 	assert(ena_intr_setup(&adapter, NULL) == 0);
 	assert(adapter.num_irq_vectors == 4);
 
-	/* Fini re-masks the admin vector. */
+	/* Fini re-masks the admin vector (INTR_MASK bit 0 set). */
 	ena_intr_msix_fini(&adapter);
 	assert(adapter.irq_vectors == NULL);
 	assert(adapter.num_irq_vectors == 0);
-	assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_INTR_MASK_OFF) == 0);
+	assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_INTR_MASK_OFF) == 1);
 
 	/* A vector count above the maximum is clamped. */
 	ena_plat_set_mock_msix_vectors(128);
@@ -309,14 +341,15 @@ int main(void)
 	printf("========================================\n");
 
 	test_intr_msix_init_and_fini();
-	test_intr_mask_unmask();
+	test_intr_intr_mask_register();
+	test_intr_unmask_cq_register();
 	test_intr_set_coalesce();
 	test_poll_step_engine();
 	test_intr_invalid_args();
 	test_intr_setup_msix();
 
 	printf("========================================\n");
-	printf("ALL PHASE 8 INTR TESTS PASSED (6/6)     \n");
+	printf("ALL PHASE 8 INTR TESTS PASSED (7/7)     \n");
 	printf("========================================\n");
 	return 0;
 }

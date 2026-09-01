@@ -215,15 +215,23 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 			    cmd->cq_depth > hw->dev_max_cq_depth) {
 				status = ENA_ADMIN_ILLEGAL_PARAMETER;
 			} else {
+				uint16_t cq_idx = hw->next_cq_id;
+
+				hw->next_cq_id++;
 				hw->cq_created_count++;
 				hw->last_cq_depth = cmd->cq_depth;
 				hw->last_cq_phys = cmd->cq_ba.mem_addr_low;
-				resp->cq_idx = hw->next_cq_id++;
+				resp->cq_idx = cq_idx;
 				resp->cq_actual_depth = cmd->cq_depth;
 				resp->cq_head_db_register_offset =
 					hw->inject_bad_db_offset ?
 					hw->bad_db_offset : 0x30;
-				resp->cq_interrupt_unmask_register_offset = 0x4C;
+				/* Each CQ gets its own interrupt unmask
+				 * register, one 32-bit word per queue, in a
+				 * region of BAR0 clear of the doorbells and
+				 * the global INTR_MASK register (0x4C). */
+				resp->cq_interrupt_unmask_register_offset =
+					0x400 + (uint32_t)cq_idx * 4;
 				filled = 1;
 			}
 		} else if (req->aq_common_desc.opcode == ENA_ADMIN_DESTROY_CQ) {

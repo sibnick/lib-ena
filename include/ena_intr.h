@@ -13,7 +13,13 @@
 #include <stdbool.h>
 
 #define ENA_MAX_MSIX_VECTORS 32
-#define ENA_INTR_UNMASK_MASK 0x1u
+
+/* Interrupt control register written to the per-queue unmask register
+ * reported by the CREATE_CQ response. Bit 30 unmasking the interrupt
+ * of the queue. Mirrors reference/ena_eth_io_defs.h,
+ * struct ena_eth_io_intr_reg. */
+#define ENA_ETH_IO_INTR_REG_INTR_UNMASK_SHIFT 30
+#define ENA_ETH_IO_INTR_REG_INTR_UNMASK_MASK  (1u << ENA_ETH_IO_INTR_REG_INTR_UNMASK_SHIFT)
 
 /* MSI-X Interrupt Vector descriptor */
 struct ena_irq_vector {
