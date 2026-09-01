@@ -54,6 +54,43 @@ void ena_intr_msix_fini(struct ena_adapter *adapter)
 	adapter->num_irq_vectors = 0;
 }
 
+int ena_intr_setup(struct ena_adapter *adapter, void *pci_dev)
+{
+	uint32_t nvec = 0;
+	int ret;
+
+	if (!adapter)
+		return -EINVAL;
+
+	if (adapter->irq_vectors)
+		return 0; /* Already set up. */
+
+	ret = ena_plat_msix_probe(pci_dev, &nvec);
+	if (ret)
+		return ret;
+
+	if (nvec == 0) {
+		ena_info("msix: no vectors from platform, using software polling");
+		return -ENOTSUP;
+	}
+
+	if (nvec > ENA_MAX_MSIX_VECTORS)
+		nvec = ENA_MAX_MSIX_VECTORS;
+
+	ret = ena_intr_msix_init(adapter, nvec);
+	if (ret) {
+		ena_err("msix: vector table init failed (%d)", ret);
+		return ret;
+	}
+
+	/* Enable the device interrupt for the admin/AENQ vector (vector 0).
+	 * IO queue vectors stay masked until their queues are active. */
+	ena_intr_unmask_vector(adapter, 0);
+
+	ena_info("msix: %u vectors active (admin vector enabled)", (unsigned)nvec);
+	return 0;
+}
+
 int ena_intr_mask_vector(struct ena_adapter *adapter, uint32_t vector_id)
 {
 	if (!adapter || !adapter->irq_vectors || vector_id >= adapter->num_irq_vectors)

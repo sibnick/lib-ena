@@ -40,6 +40,8 @@ int ena_pci_match_id(uint16_t vendor_id, uint16_t device_id)
 #include <uk/bus/pci.h>
 #include <uk/netdev_driver.h>
 
+#include "ena_intr.h"
+
 static inline uint32_t pci_read32(const struct pci_address *addr, uint32_t reg)
 {
 	uint32_t config_addr = (1u << 31)
@@ -168,6 +170,19 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 		return ret;
 	}
 
+	/* 6. Register the default AENQ handler. It resets the device on a
+	 *    FATAL_ERROR event and updates the link state on LINK_CHANGE. */
+	ret = ena_admin_aenq_register(&edev->adapter, ena_aenq_default_handler,
+				      &edev->adapter);
+	if (ret)
+		ena_warn("probe: aenq handler register failed (%d)", ret);
+
+	/* 7. Allocate MSI-X vectors when the platform provides them.
+	 *    Otherwise the driver stays in software polling mode. */
+	ret = ena_intr_setup(&edev->adapter, &pdev->addr);
+	if (ret < 0)
+		ena_info("probe: msix inactive (%d), software polling mode", ret);
+
 	edev->netdev.rx_one = ena_netdev_rx_one;
 	edev->netdev.tx_one = ena_netdev_tx_one;
 	edev->netdev.ops = &ena_ops;
@@ -175,6 +190,7 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 	ret = uk_netdev_drv_register(&edev->netdev, uk_alloc_get_default(), "ena");
 	if (ret < 0) {
 		ena_err("probe: failed to register uknetdev (%d)", ret);
+		ena_intr_msix_fini(&edev->adapter);
 		ena_admin_fini(&edev->adapter);
 		uk_free(uk_alloc_get_default(), edev);
 		return ret;

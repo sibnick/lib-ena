@@ -983,6 +983,89 @@ static void test_validation_fault_rx_corrupt_length(void)
 	ena_netdev_free(netdev);
 }
 
+/* 19. AENQ runtime wiring: the RX poll path drains the AENQ ring and
+ * dispatches the default handler registered at probe time. LINK_CHANGE
+ * updates the link state; FATAL_ERROR resets the device and re-inits
+ * the admin queues. */
+static void test_validation_aenq_runtime_wiring(void)
+{
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+	struct uk_netbuf *rx_nb = NULL;
+	unsigned int refilled = 0;
+	uint16_t cmd_id = 0;
+	uint32_t resp[14];
+
+	assert(setup_test_adapter(&g_hw, &g_adapter, 1500, 1500) == 0);
+
+	/* The probe path registers the default handler. */
+	assert(ena_admin_aenq_register(&g_adapter, ena_aenq_default_handler,
+				       &g_adapter) == 0);
+	assert(g_adapter.link_up == false);
+
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 1;
+	conf.nb_tx_queues = 1;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+	assert(netdev->ops->rxq_configure(netdev, 0, 8, NULL) == 0);
+	assert(netdev->ops->txq_configure(netdev, 0, 8, NULL) == 0);
+	assert(netdev->ops->dev_start(netdev) == 0);
+	assert(ena_rx_refill(g_adapter.rx_rings[0], 8, mock_rx_alloc_cb, NULL,
+			     &refilled) == 8);
+
+	/* LINK_CHANGE with link_status=1: the RX poll dispatches it and
+	 * the link state flips to up. */
+	mock_ena_hw_inject_aenq_payload(&g_hw, ENA_ADMIN_LINK_CHANGE, 0, 1);
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_nb) == 0);
+	assert(g_adapter.link_up == true);
+	assert(ena_netdev_link_get(netdev) == true);
+
+	/* LINK_CHANGE with link_status=0: the link state flips to down. */
+	mock_ena_hw_inject_aenq_payload(&g_hw, ENA_ADMIN_LINK_CHANGE, 1, 0);
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_nb) == 0);
+	assert(g_adapter.link_up == false);
+	assert(ena_netdev_link_get(netdev) == false);
+
+	/* FATAL_ERROR: model a reset in progress that finishes after 10
+	 * polls. The RX poll must trigger the reset and re-init. */
+	mock_ena_hw_set_reg32(&g_hw, ENA_REGS_DEV_STS_OFF,
+			      ENA_DEV_STS_RESET_IN_PROG_MASK);
+	g_hw.reset_polls_to_finish = 10;
+	ena_device_set_reset_poll_hook(mock_ena_hw_reset_poll_hook, &g_hw);
+
+	mock_ena_hw_inject_aenq(&g_hw, ENA_ADMIN_FATAL_ERROR, 0x99);
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_nb) == 0);
+	ena_device_set_reset_poll_hook(NULL, NULL);
+
+	/* The reset request reached DEV_CTL and the device finished it. */
+	assert(mock_ena_hw_get_reg32(&g_hw, ENA_REGS_DEV_CTL_OFF) &
+	       ENA_DEV_CTL_DEV_RESET_MASK);
+	assert(mock_ena_hw_get_reg32(&g_hw, ENA_REGS_DEV_STS_OFF) &
+	       ENA_DEV_STS_RESET_FIN_MASK);
+
+	/* The admin queues were re-initialized and the handler re-registered. */
+	assert(g_adapter.state == ENA_STATE_ADMIN_READY);
+	assert(g_adapter.aenq_handler == ena_aenq_default_handler);
+
+	/* The admin path works after the fatal error recovery. */
+	memset(resp, 0, sizeof(resp));
+	assert(ena_admin_exec_cmd(&g_adapter, ENA_ADMIN_GET_FEATURE, NULL, 0,
+				  resp, sizeof(resp), &cmd_id, 100) == 0);
+
+	assert(netdev->ops->dev_stop(netdev) == 0);
+	for (int i = 0; i < g_adapter.rx_rings[0]->sq_depth; i++) {
+		if (g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf) {
+			test_free(g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf);
+			g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf = NULL;
+		}
+	}
+	teardown_test_adapter(&g_adapter);
+	ena_netdev_free(netdev);
+}
+
 int main(void)
 {
 	printf("========================================\n");
@@ -1010,9 +1093,10 @@ int main(void)
 	RUN_TEST(test_validation_concurrency_stress_queues);
 	RUN_TEST(test_validation_fault_tx_fake_req_id);
 	RUN_TEST(test_validation_fault_rx_corrupt_length);
+	RUN_TEST(test_validation_aenq_runtime_wiring);
 
 	printf("========================================\n");
-	printf("ALL PHASE 10 VALIDATION TESTS PASSED (18/18)\n");
+	printf("ALL PHASE 10 VALIDATION TESTS PASSED (19/19)\n");
 	printf("========================================\n");
 	return 0;
 }

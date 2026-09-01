@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <errno.h>
 
 #ifndef __Unikraft__
 
@@ -47,6 +48,24 @@ void ena_delay_us(unsigned int us)
 	ts.tv_sec = us / 1000000;
 	ts.tv_nsec = (long)(us % 1000000) * 1000;
 	nanosleep(&ts, NULL);
+}
+
+static uint32_t s_mock_msix_vectors = 0;
+
+void ena_plat_set_mock_msix_vectors(uint32_t num_vectors)
+{
+	s_mock_msix_vectors = num_vectors;
+}
+
+int ena_plat_msix_probe(void *pci_dev, uint32_t *num_vectors)
+{
+	(void)pci_dev;
+
+	if (!num_vectors)
+		return -EINVAL;
+
+	*num_vectors = s_mock_msix_vectors;
+	return 0;
 }
 
 static void ena_log_emit(FILE *stream, const char *prefix, const char *fmt, va_list args)
@@ -93,6 +112,69 @@ void ena_debug(const char *fmt, ...)
 #include <uk/alloc.h>
 #include <uk/plat/memory.h>
 #include <uk/plat/time.h>
+#include <uk/arch/util.h>
+
+/* PCI config space access (same method as the probe path in ena_pci.c). */
+static uint32_t plat_pci_cfg_read(const struct pci_address *addr, uint32_t reg)
+{
+	uint32_t config_addr = (1u << 31)
+		| ((uint32_t)addr->bus << 16)
+		| ((uint32_t)addr->devid << 11)
+		| ((uint32_t)addr->function << 8)
+		| (reg & 0xFC);
+	uk_arch_x86_64_outl(PCI_CONFIG_ADDR, config_addr);
+	return uk_arch_x86_64_inl(PCI_CONFIG_DATA);
+}
+
+/* PCI capability ID for MSI-X (PCI revision 3.x). */
+#define ENA_PLAT_PCI_CAP_ID_MSIX	11u
+
+int ena_plat_msix_probe(void *pci_dev, uint32_t *num_vectors)
+{
+	const struct pci_address *addr = (const struct pci_address *)pci_dev;
+	uint32_t cap;
+
+	if (!num_vectors)
+		return -EINVAL;
+
+	*num_vectors = 0;
+	if (!addr)
+		return 0;
+
+	/* Walk the PCI capability list for the MSI-X capability. */
+	cap = plat_pci_cfg_read(addr, 0x34) & 0xFCu;
+	while (cap) {
+		uint32_t cap_id = plat_pci_cfg_read(addr, cap) & 0xFFu;
+		uint32_t next = plat_pci_cfg_read(addr, cap + 1) & 0xFFu;
+
+		if (cap_id == ENA_PLAT_PCI_CAP_ID_MSIX) {
+			uint32_t msg_ctrl = plat_pci_cfg_read(addr, cap + 2);
+
+			if (!(msg_ctrl & 0x0001u)) {
+				uint32_t count = (msg_ctrl >> 1) & 0x7FFFu;
+				uint32_t nvec = 1;
+
+				/* The count field encodes vectors minus one. */
+				while (nvec <= count)
+					nvec <<= 1;
+				ena_info("msix: device exposes %u vectors", (unsigned)nvec);
+			} else {
+				ena_info("msix: capability is masked");
+			}
+
+			/* The pinned Unikraft platform (>=0.17.0) exposes no
+			 * interrupt allocation API. The driver cannot arm the
+			 * MSI-X table, so it reports zero vectors and stays
+			 * in software polling mode. */
+			return 0;
+		}
+
+		cap = next;
+	}
+
+	ena_info("msix: no MSI-X capability found");
+	return 0;
+}
 
 void *ena_dma_alloc(size_t size, uint64_t *phys_out)
 {

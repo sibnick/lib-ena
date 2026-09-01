@@ -16,6 +16,18 @@
  * Shared Datapath and Netdev Helper Functions
  * ------------------------------------------------------------------------- */
 
+/* Maximum AENQ events drained per datapath poll iteration. */
+#define ENA_NETDEV_AENQ_POLL_BUDGET	8
+
+/* Drain pending asynchronous events from the AENQ ring.
+ * The driver dispatches them to the registered handler (default handler
+ * registered at probe time). Called on every datapath poll iteration.
+ * Returns the number of dispatched events, or a negative errno value. */
+static int ena_netdev_drain_aenq(struct ena_adapter *adapter)
+{
+	return ena_admin_aenq_poll(adapter, ENA_NETDEV_AENQ_POLL_BUDGET);
+}
+
 /* Clamp descriptor count within driver and hardware limits */
 static uint16_t ena_netdev_clamp_desc_count(uint16_t nb_desc, uint16_t max_ring_size)
 {
@@ -347,6 +359,12 @@ static uint16_t ena_netdev_mtu_get(struct uk_netdev *dev)
 	return edev->adapter.mtu ? edev->adapter.mtu : ENA_DEFAULT_MTU;
 }
 
+bool ena_netdev_link_get(struct uk_netdev *dev)
+{
+	struct ena_uk_device *edev = to_enadevice(dev);
+	return edev->adapter.link_up;
+}
+
 static int ena_netdev_configure(struct uk_netdev *dev, const struct uk_netdev_conf *conf)
 {
 	struct ena_uk_device *edev = to_enadevice(dev);
@@ -563,16 +581,20 @@ static int ena_netdev_stop(struct uk_netdev *dev)
 	return ena_netdev_stop_rings_hw(adapter, adapter->num_rx_rings, adapter->num_tx_rings);
 }
 
-int ena_netdev_rx_one(struct uk_netdev *dev __attribute__((unused)),
+int ena_netdev_rx_one(struct uk_netdev *dev,
 		      struct uk_netdev_rx_queue *queue,
 		      struct uk_netbuf **pkt)
 {
+	struct ena_uk_device *edev = to_enadevice(dev);
 	struct ena_rx_pkt rx_pkt;
 	struct ena_ring *ring;
 	int ret;
 
 	if (!queue || !queue->ring || !pkt)
 		return -EINVAL;
+
+	/* Drain asynchronous events on every poll iteration. */
+	ena_netdev_drain_aenq(&edev->adapter);
 
 	ring = queue->ring;
 	ret = ena_rx_poll(ring, &rx_pkt, 1);
@@ -926,6 +948,9 @@ static int ena_netdev_rxq_recv(struct uk_netdev *dev, uint16_t queue_id,
 	if (dev->state != UK_NETDEV_RUNNING)
 		return -EAGAIN;
 
+	/* Drain asynchronous events on every poll iteration. */
+	ena_netdev_drain_aenq(dev->adapter);
+
 	if (queue_id >= dev->nb_rx_queues || queue_id >= ENA_NETDEV_MAX_QUEUES)
 		return -EINVAL;
 
@@ -1108,6 +1133,14 @@ int ena_netdev_register(struct uk_netdev *netdev)
 
 	netdev->ops = &ena_ops;
 	return 0;
+}
+
+bool ena_netdev_link_get(struct uk_netdev *dev)
+{
+	if (!dev || !dev->adapter)
+		return false;
+
+	return dev->adapter->link_up;
 }
 
 #endif /* !__Unikraft__ */

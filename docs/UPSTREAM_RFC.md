@@ -20,9 +20,10 @@ This RFC proposes the addition of `lib-ena`, a native driver for the Amazon Web 
 ### Key Features
 - **PCI Initialization & MMIO Mapping**: Registers device IDs (`0xec20`, `0xec21`) and maps BAR0 configuration and BAR2 Low Latency Queue (LLQ) regions.
 - **Admin Queue Subsystem**: Synchronous Admin Queue (AQ/ACQ) for device feature negotiation, capability discovery, and queue creation.
-- **AENQ Engine**: Asynchronous Event Notification Queue for hardware health monitoring and link status updates.
+- **AENQ Engine**: The driver polls the Asynchronous Event Notification Queue on every RX pass. A fatal error event resets the device. A link change event updates the link state.
 - **Circular DMA Rings**: Zero-copy TX/RX ring buffers with phase-bit synchronization and wrap tracking.
 - **Low Latency Queue (LLQ)**: Direct MMIO push of TX descriptors and packet headers into device BAR2 for reduced latency.
+- **Interrupts**: The driver runs in software polling mode by default. It allocates MSI-X vectors at probe time when the platform provides them. The pinned Unikraft platform (>=0.17.0) exposes no interrupt delivery API, so full MSI-X interrupt runtime support is in progress.
 - **Hardware Offloads & Jumbo Frames**: Supports hardware IPv4 checksum offload and configurable MTUs up to 9000 bytes.
 - **uknetdev Integration**: Standard driver ops implementation (`rxq_recv`, `txq_xmit`, `info_get`, `configure`, `rxq_configure`, `txq_configure`).
 
@@ -40,7 +41,7 @@ The driver underwent extensive testing on AWS EC2 `t3.nano` instances (ENA contr
 | **Latency (p99)** | **47.9 $\mu$s** | `netperf` TCP_RR under peak load |
 | **Small Packet Rate (64B)** | **1.835 Mpps** | UDP packet generator with LLQ |
 
-All 40 unit and hardware validation tests in the test suite pass with zero errors.
+All 94 host unit tests in the standalone test suite pass with zero errors.
 
 ---
 

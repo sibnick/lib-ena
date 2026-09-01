@@ -221,6 +221,22 @@ typedef int ena_aenq_handler(void *arg, uint16_t group, uint16_t syndrome,
 struct ena_adapter;
 struct ena_admin_device_attr_feature_desc;
 
+/**
+ * Default AENQ handler registered by the probe path.
+ *
+ * A FATAL_ERROR event resets the device and re-initializes the admin queues.
+ * A LINK_CHANGE event updates the link state in the adapter. Other groups
+ * are logged only.
+ *
+ * @param arg Pointer to the master ENA adapter structure.
+ * @param group Event group identifier.
+ * @param syndrome Event syndrome code.
+ * @param entry Pointer to the raw AENQ entry.
+ * @return 0 on success, or a negative errno value on error.
+ */
+int ena_aenq_default_handler(void *arg, uint16_t group, uint16_t syndrome,
+			     const struct ena_admin_aenq_entry *entry);
+
 
 /**
  * Retrieve device attributes using the Admin Queue.

@@ -55,6 +55,21 @@ int ena_intr_msix_init(struct ena_adapter *adapter, uint32_t num_vectors);
 void ena_intr_msix_fini(struct ena_adapter *adapter);
 
 /**
+ * Set up MSI-X interrupts for the adapter.
+ *
+ * The setup probes the platform for usable MSI-X vectors. When vectors are
+ * available, the driver allocates the vector table and enables the device
+ * interrupt for the admin vector. When the platform provides no vectors,
+ * the driver stays in software polling mode.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param pci_dev Platform-specific PCI device handle.
+ * @return 0 when MSI-X is active, or a negative errno value when the
+ *         platform provides no MSI-X support.
+ */
+int ena_intr_setup(struct ena_adapter *adapter, void *pci_dev);
+
+/**
  * Mask an individual MSI-X interrupt vector.
  *
  * @param adapter Pointer to the master ENA adapter structure.
