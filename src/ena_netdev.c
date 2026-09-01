@@ -265,6 +265,31 @@ static void ena_netdev_free_txq_bounce(struct uk_netdev_tx_queue *txq)
 	txq->nb_desc = 0;
 }
 
+/* Return a dropped RX netbuf bounce slot to the queue pool and free the netbuf */
+static void ena_netdev_rxq_drop_netbuf(void *arg, void *netbuf)
+{
+	struct uk_netdev_rx_queue *rxq = (struct uk_netdev_rx_queue *)arg;
+	struct uk_netbuf *nb = (struct uk_netbuf *)netbuf;
+
+	if (!rxq || !nb)
+		return;
+
+	if (nb->priv != NULL && rxq->bounce_free_ids && rxq->nb_desc > 0) {
+		uint16_t slot = (uint16_t)((uintptr_t)nb->priv - 1);
+
+		nb->priv = NULL;
+		if (slot < rxq->nb_desc) {
+			rxq->bounce_free_ids[rxq->bounce_free_tail] = slot;
+			rxq->bounce_free_tail = (uint16_t)((rxq->bounce_free_tail + 1) & (rxq->nb_desc - 1));
+			rxq->bounce_free_count++;
+		}
+	}
+
+#ifdef __Unikraft__
+	uk_netbuf_free(nb);
+#endif
+}
+
 #ifdef __Unikraft__
 
 
@@ -377,6 +402,9 @@ static struct uk_netdev_rx_queue *ena_netdev_rxq_configure(struct uk_netdev *dev
 	edev->rx_queues[queue_id].alloc_rxpkts = conf ? conf->alloc_rxpkts : NULL;
 	edev->rx_queues[queue_id].alloc_rxpkts_argp = conf ? conf->alloc_rxpkts_argp : NULL;
 	edev->rx_queues[queue_id].nb_desc = nb_desc;
+
+	ring->drop_netbuf_cb = ena_netdev_rxq_drop_netbuf;
+	ring->drop_netbuf_arg = &edev->rx_queues[queue_id];
 
 	/* Allocate per-slot bounce buffers for low memory descriptors */
 	edev->rx_queues[queue_id].bounce_buf = ena_dma_alloc((size_t)nb_desc * ENA_RX_BUF_SIZE,
@@ -491,8 +519,11 @@ static void *ena_netbuf_alloc_helper(void *arg, uint64_t *phys_out, uint32_t *le
 
 		if (phys_out)
 			*phys_out = rxq->bounce_phys + ((uint64_t)slot * ENA_RX_BUF_SIZE);
-		if (len_out)
-			*len_out = ENA_RX_BUF_SIZE;
+		if (len_out) {
+			/* Never offer more than the netbuf can hold */
+			*len_out = (nb->buflen < ENA_RX_BUF_SIZE) ? (uint32_t)nb->buflen
+			                                       : (uint32_t)ENA_RX_BUF_SIZE;
+		}
 	} else {
 		if (phys_out)
 			*phys_out = phys;
@@ -549,17 +580,26 @@ int ena_netdev_rx_one(struct uk_netdev *dev __attribute__((unused)),
 		return 0;
 
 	if (rx_pkt.netbuf) {
-		*pkt = (struct uk_netbuf *)rx_pkt.netbuf;
-		(*pkt)->len = rx_pkt.len;
+		struct uk_netbuf *nb = (struct uk_netbuf *)rx_pkt.netbuf;
+		bool had_priv = (nb->priv != NULL);
+		bool dropped = false;
+
+		nb->len = rx_pkt.len;
 
 		/* Copy payload if received into a low memory bounce slot */
-		if ((*pkt)->priv != NULL) {
-			uint16_t slot = (uint16_t)((uintptr_t)(*pkt)->priv - 1);
+		if (had_priv) {
+			uint16_t slot = (uint16_t)((uintptr_t)nb->priv - 1);
+
+			nb->priv = NULL;
 			if (queue->bounce_buf && slot < queue->nb_desc) {
 				void *slot_virt = (char *)queue->bounce_buf + ((size_t)slot * ENA_RX_BUF_SIZE);
-				memcpy((*pkt)->data, slot_virt, rx_pkt.len);
+
+				/* Drop the packet if it does not fit the application buffer */
+				if (nb->data && rx_pkt.len <= nb->buflen)
+					memcpy(nb->data, slot_virt, rx_pkt.len);
+				else
+					dropped = true;
 			}
-			(*pkt)->priv = NULL;
 
 			/* Return slot to bounce free pool */
 			if (queue->bounce_free_ids && queue->nb_desc > 0) {
@@ -568,6 +608,13 @@ int ena_netdev_rx_one(struct uk_netdev *dev __attribute__((unused)),
 				queue->bounce_free_count++;
 			}
 		}
+
+		if (dropped) {
+			ena_netdev_rxq_drop_netbuf(queue, nb);
+			return 0;
+		}
+
+		*pkt = nb;
 
 		ena_rx_refill(ring, 1, ena_netbuf_alloc_helper, queue, NULL);
 		return UK_NETDEV_STATUS_SUCCESS;
@@ -749,6 +796,9 @@ static int ena_netdev_rxq_configure(struct uk_netdev *dev, uint16_t queue_id,
 	dev->rx_queues[queue_id].alloc_rxpkts_argp = conf ? conf->alloc_rxpkts_argp : NULL;
 	dev->rx_queues[queue_id].nb_desc = nb_desc;
 
+	ring->drop_netbuf_cb = ena_netdev_rxq_drop_netbuf;
+	ring->drop_netbuf_arg = &dev->rx_queues[queue_id];
+
 	/* Allocate per-slot bounce buffers for low memory descriptors */
 	dev->rx_queues[queue_id].bounce_buf = ena_dma_alloc((size_t)nb_desc * ENA_RX_BUF_SIZE,
 							    &dev->rx_queues[queue_id].bounce_phys);
@@ -891,25 +941,39 @@ static int ena_netdev_rxq_recv(struct uk_netdev *dev, uint16_t queue_id,
 
 	if (rx_pkt.netbuf) {
 		struct uk_netbuf *nb = (struct uk_netbuf *)rx_pkt.netbuf;
+		bool had_priv = (nb->priv != NULL);
+		bool dropped = false;
+
 		nb->len = rx_pkt.len;
 		nb->hash = rx_pkt.hash;
 		nb->l3_csum_err = rx_pkt.l3_csum_err;
 		nb->l4_csum_err = rx_pkt.l4_csum_err;
 		nb->l4_csum_checked = rx_pkt.l4_csum_checked;
 
-		if (nb->priv != NULL) {
+		if (had_priv) {
 			uint16_t slot = (uint16_t)((uintptr_t)nb->priv - 1);
+
+			nb->priv = NULL;
 			if (rxq->bounce_buf && slot < rxq->nb_desc && nb->data) {
 				void *slot_virt = (char *)rxq->bounce_buf + ((size_t)slot * ENA_RX_BUF_SIZE);
-				memcpy(nb->data, slot_virt, rx_pkt.len);
+
+				/* Drop the packet if it does not fit the application buffer */
+				if (rx_pkt.len <= nb->buflen)
+					memcpy(nb->data, slot_virt, rx_pkt.len);
+				else
+					dropped = true;
 			}
-			nb->priv = NULL;
 
 			if (rxq->bounce_free_ids && rxq->nb_desc > 0) {
 				rxq->bounce_free_ids[rxq->bounce_free_tail] = slot;
 				rxq->bounce_free_tail = (uint16_t)((rxq->bounce_free_tail + 1) & (rxq->nb_desc - 1));
 				rxq->bounce_free_count++;
 			}
+		}
+
+		if (dropped) {
+			ena_netdev_rxq_drop_netbuf(rxq, nb);
+			return 0;
 		}
 
 		*pkt = nb;

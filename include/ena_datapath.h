@@ -196,6 +196,11 @@ struct ena_ring {
 	uint8_t *req_in_flight;    /* In-flight flag for each request ID */
 	uint32_t ring_lock;        /* Atomic spinlock for ring access */
 
+	/* RX drop callback: return a dropped netbuf bounce slot to the pool
+	 * and free the buffer. Set by the netdev layer, called from ena_rx_poll */
+	void (*drop_netbuf_cb)(void *arg, void *netbuf);
+	void *drop_netbuf_arg;
+
 	/* Tracking Buffers (allocated to depth entries, indexed by req_id) */
 	union {
 		struct ena_tx_buffer *tx_bufs;

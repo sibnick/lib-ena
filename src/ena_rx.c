@@ -194,11 +194,16 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 			ena_err("rx poll: packet length %u exceeds buffer capacity %u",
 				pkt_len, rx_buf->data_len);
 			ring->req_in_flight[req_id] = 0;
+			if (rx_buf->netbuf) {
+				/* Release the bounce slot (if any) before freeing */
+				if (ring->drop_netbuf_cb)
+					ring->drop_netbuf_cb(ring->drop_netbuf_arg, rx_buf->netbuf);
 #ifdef __Unikraft__
-			if (rx_buf->netbuf)
-				uk_netbuf_free((struct uk_netbuf *)rx_buf->netbuf);
+				else
+					uk_netbuf_free((struct uk_netbuf *)rx_buf->netbuf);
 #endif
-			rx_buf->netbuf = NULL;
+				rx_buf->netbuf = NULL;
+			}
 			ena_ring_req_id_free(ring, req_id);
 			ring->cq_head++;
 			if ((ring->cq_head & (ring->cq_depth - 1)) == 0)
