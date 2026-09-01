@@ -16,7 +16,7 @@ DURATION = "10s"
 THREADS = 2
 
 TARGETS = {
-    "Unikraft (lib-ena + lwIP)": "http://172.31.16.152/",
+    "Unikraft (Optimized ENA + lwIP)": "http://172.31.16.153/",
     "Linux (Ubuntu 24.04 ENA)": "http://172.31.16.160/"
 }
 
