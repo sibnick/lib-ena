@@ -1,0 +1,21 @@
+spec: v0.6
+
+name: ena-ci-app
+
+unikraft: stable
+
+libraries:
+  lib-ena:
+    source: ../..
+    version: ">=0.1.0"
+    kconfig:
+      CONFIG_LIBENA: "y"
+      CONFIG_LIBENA_LLQ: "y"
+
+targets:
+  - name: kvm
+    plat: qemu
+    arch: x86_64
+  - name: kvm
+    plat: qemu
+    arch: arm64

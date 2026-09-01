@@ -7,7 +7,7 @@ The driver integrates with `ukbus_pci` and `uknetdev` to provide high network pe
 
 ---
 
-## 2. Completed Milestones (Phases 1 to 10)
+## 2. Milestones (Phases 1 to 10)
 
 ```mermaid
 gantt
@@ -32,7 +32,7 @@ gantt
     section Phase 9
     Low Latency Queue (LLQ) Optimization Mode    :done, p9, after p8, 7d
     section Phase 10
-    EC2 Deployment & Performance Benchmarking    :done, p10, after p9, 10d
+    EC2 Deployment & Performance Benchmarking    :active, p10, after p9, 10d
     section Future Roadmap
     Scatter-Gather TX Multi-Descriptor Chaining  :p11, 2026-09-01, 14d
     Scatter-Gather RX Reassembly                 :p12, after p11, 14d
@@ -93,10 +93,10 @@ gantt
 - Implement direct MMIO push for TX descriptors and packet headers.
 
 ### Phase 10: Validation, EC2 Deployment, and Performance Benchmarking
-- **Status**: Completed
-- Validate on AWS EC2 instances (`t3.nano`).
-- Benchmark throughput and latency using iperf3 and netperf.
-- Store benchmark reports in Fossil unversioned store (`fossil uv`).
+- **Status**: In Progress
+- Create the EC2 deployment guide (`docs/ec2_deployment.md`).
+- Create the benchmark measurement template (`scripts/ec2_benchmark.sh`).
+- Real measurements on EC2 hardware are pending. Store the results in the Fossil unversioned store (`fossil uv`).
 
 ---
 
