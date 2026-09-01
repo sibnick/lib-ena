@@ -1,5 +1,7 @@
 # Build artifacts
 build/
+.unikraft/
+benchmark-results/
 *.o
 *.a
 *.d

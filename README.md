@@ -80,16 +80,11 @@ The driver operates under a strict threat model where hardware device input is u
 
 All 18 security audit findings are resolved. See [docs/security_audit.md](docs/security_audit.md) for full audit records.
 
-## Performance Benchmark Summary
+## Performance Benchmarking
 
-The driver was validated on an AWS `t3.nano` instance (`i-04ac6e142c9989dc4`):
+No published benchmark results. A measurement method is described in [scripts/ec2_benchmark.sh](scripts/ec2_benchmark.sh).
 
-- **Throughput (1500 MTU)**: Line rate saturation at 4.96 Gbps (407 Kpps).
-- **Throughput (9000 Jumbo MTU)**: Line rate saturation at 4.99 Gbps (69 Kpps).
-- **Round-Trip Latency (TCP_RR)**: 33.4 us median (p50) and 47.9 us 99th percentile (p99) with LLQ.
-- **Small Packet Rate (64B)**: 1.835 Mpps under LLQ direct push mode.
-
-See [docs/benchmark_report.md](docs/benchmark_report.md) for full benchmark details.
+Store measured results outside version control, for example in the Fossil unversioned store (`fossil uv`). Do not store unmeasured numbers in this repository.
 
 ## License
 

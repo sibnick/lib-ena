@@ -28,19 +28,13 @@ This RFC proposes the addition of `lib-ena`, a native driver for the Amazon Web 
 
 ---
 
-## 3. Hardware Validation & Benchmark Results
+## 3. Validation and Benchmarking
 
-The driver underwent extensive testing on AWS EC2 `t3.nano` instances (ENA controller rev 0):
+No published benchmark results. The driver has not been measured on real EC2 hardware in this repository.
 
-| Metric | Result | Benchmark Configuration |
-| :--- | :--- | :--- |
-| **Throughput (1500 MTU)** | **4.96 Gbps** (407 Kpps) | Bidirectional TCP stream (line rate saturation) |
-| **Throughput (9000 Jumbo)** | **4.99 Gbps** (69 Kpps) | 9000-byte jumbo frames |
-| **Latency (p50)** | **33.4 $\mu$s** | `netperf` TCP_RR with LLQ direct push |
-| **Latency (p99)** | **47.9 $\mu$s** | `netperf` TCP_RR under peak load |
-| **Small Packet Rate (64B)** | **1.835 Mpps** | UDP packet generator with LLQ |
+The standalone test suite (`make test`) runs against a mock ENA controller. It checks driver logic. It is not a hardware validation.
 
-All 40 unit and hardware validation tests in the test suite pass with zero errors.
+A measurement method is described in [scripts/ec2_benchmark.sh](scripts/ec2_benchmark.sh). Store real measurements outside version control, for example in the Fossil unversioned store (`fossil uv`).
 
 ---
 

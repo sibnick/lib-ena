@@ -107,8 +107,9 @@ Recommended instance types:
    aws ec2 get-console-output --instance-id i-0123456789abcdef0
    ```
 2. Verify that the ENA driver initializes and attaches to the network device.
-3. Run the automated benchmark script to measure throughput and latency:
+3. Run the benchmark template to create an empty report file and the step-by-step measurement instructions:
    ```bash
    ./scripts/ec2_benchmark.sh
    ```
-4. View generated benchmark reports in `reports/benchmark_report.md` and `reports/benchmark_report.html`.
+   The script does not run measurements and does not write any numbers. You run `iperf3` and `netperf` yourself and record the real output.
+4. Store the finished report outside version control, for example in the Fossil unversioned store (`fossil uv`). Do not commit reports to this repository.

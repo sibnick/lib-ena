@@ -280,7 +280,7 @@ static void ena_netdev_info_get(struct uk_netdev *dev, struct uk_netdev_info *in
 	info->nb_encap_rx = 0;
 	info->ioalign = ENA_NETDEV_IOALIGN;
 	info->in_queue_pairs = 1;
-	info->features = UK_NETDEV_F_RX_CSUM | UK_NETDEV_F_TX_CSUM;
+	info->features = UK_NETDEV_F_PARTIAL_CSUM;
 }
 
 static int ena_netdev_rxq_info_get(struct uk_netdev *dev, uint16_t queue_id __attribute__((unused)),
@@ -645,6 +645,10 @@ void ena_netdev_free(struct uk_netdev *netdev)
 	if (!netdev)
 		return;
 
+	/* The current uknetdev API has no stop op. Stop the hardware rings
+	 * here, at device teardown, before the rings are released. */
+	ena_netdev_stop(netdev);
+
 	edev = to_enadevice(netdev);
 
 	for (q = 0; q < ENA_NETDEV_MAX_QUEUES; q++) {
@@ -666,7 +670,6 @@ const struct uk_netdev_ops ena_ops = {
 	.rxq_configure   = ena_netdev_rxq_configure,
 	.txq_configure   = ena_netdev_txq_configure,
 	.start           = ena_netdev_start,
-	.stop            = ena_netdev_stop,
 };
 
 #else /* !__Unikraft__ (Standalone Test Suite) */
