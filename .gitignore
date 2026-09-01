@@ -2,10 +2,18 @@
 build/
 .unikraft/
 benchmark-results/
+bin/
 *.o
 *.a
 *.d
 /test_*
+samples/**/build/
+samples/**/bin/
+samples/**/.libs/
+samples/**/.unikraft/
+samples/**/cmake-build-debug/
+*.log
+.ipynb_checkpoints/
 
 # Fossil SCM internal files and local binary
 .fossil

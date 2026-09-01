@@ -40,6 +40,8 @@ struct uk_netdev_rx_queue {
 	uint16_t bounce_free_tail;
 	uint16_t bounce_free_count;
 	uint16_t *bounce_free_ids;
+	int16_t *bounce_map;
+	int16_t pending_slot;
 };
 
 struct uk_netdev_tx_queue {

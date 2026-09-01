@@ -6,6 +6,7 @@
 
 #include "ena.h"
 #include "ena_datapath.h"
+#include "ena_netdev.h"
 
 #ifdef __Unikraft__
 #include <uk/netbuf.h>
@@ -111,15 +112,22 @@ int ena_rx_refill(struct ena_ring *ring, unsigned int count,
 		count = ring->free_req_count;
 
 	while (refilled < count && ring->free_req_count > 0) {
+		uint16_t req_id = 0;
 		phys = 0;
 		len = 0;
 		nb = alloc_netbuf(alloc_arg, &phys, &len);
 		if (!nb)
 			break;
 
-		ret = ena_rx_submit_one(ring, nb, phys, len, NULL);
+		ret = ena_rx_submit_one(ring, nb, phys, len, &req_id);
 		if (ret)
 			break;
+
+		struct uk_netdev_rx_queue *rxq = (struct uk_netdev_rx_queue *)alloc_arg;
+		if (rxq && rxq->bounce_map && req_id < rxq->nb_desc) {
+			rxq->bounce_map[req_id] = rxq->pending_slot;
+			rxq->pending_slot = -1;
+		}
 
 		refilled++;
 	}
@@ -204,9 +212,18 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 		if (pkt_len > rx_buf->data_len) {
 			ena_err("rx poll: packet length %u exceeds buffer capacity %u",
 				pkt_len, rx_buf->data_len);
-			ring->req_in_flight[req_id] = 0;
+			struct uk_netdev_rx_queue *rxq = (struct uk_netdev_rx_queue *)ring->drop_netbuf_arg;
+			if (rxq && rxq->bounce_map && req_id < rxq->nb_desc && rxq->bounce_map[req_id] >= 0) {
+				uint16_t slot = (uint16_t)rxq->bounce_map[req_id];
+				rxq->bounce_map[req_id] = -1;
+				if (rxq->bounce_free_ids && rxq->nb_desc > 0) {
+					rxq->bounce_free_ids[rxq->bounce_free_tail] = slot;
+					rxq->bounce_free_tail = (uint16_t)((rxq->bounce_free_tail + 1) & (rxq->nb_desc - 1));
+					rxq->bounce_free_count++;
+				}
+			}
 			if (rx_buf->netbuf) {
-				/* Release the bounce slot (if any) before freeing */
+				/* Release the netbuf before freeing */
 				if (ring->drop_netbuf_cb)
 					ring->drop_netbuf_cb(ring->drop_netbuf_arg, rx_buf->netbuf);
 #ifdef __Unikraft__

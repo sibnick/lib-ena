@@ -112,7 +112,7 @@ static void *mock_rx_undersized_alloc_cb(void *arg, uint64_t *phys_out, uint32_t
 	slot = rxq->bounce_free_ids[rxq->bounce_free_head];
 	rxq->bounce_free_head = (uint16_t)((rxq->bounce_free_head + 1) & (rxq->nb_desc - 1));
 	rxq->bounce_free_count--;
-	nb->priv = (void *)(uintptr_t)(slot + 1);
+	rxq->pending_slot = (int16_t)slot;
 
 	*phys_out = rxq->bounce_phys + ((uint64_t)slot * ENA_RX_BUF_SIZE);
 	*len_out = 2048;
@@ -573,8 +573,9 @@ static void test_netdev_rx_bad_completion_bounce_pool(void)
 	assert(ena_rx_refill(rx_ring, 1, mock_rx_undersized_alloc_cb, rxq, &refilled) == 1);
 	assert(rxq->bounce_free_count == 7);
 
+	uint16_t refill_slot = (uint16_t)rxq->bounce_map[rx_ring->sq_head & (rx_ring->sq_depth - 1)];
 	slot_virt = (uint8_t *)(uintptr_t)rxq->bounce_phys +
-		    (size_t)((uintptr_t)g_tracked_nb[4]->priv - 1) * ENA_RX_BUF_SIZE;
+		    (size_t)refill_slot * ENA_RX_BUF_SIZE;
 	memset(slot_virt, 0x44, 64);
 	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 64, 0x99887766, 0);
 

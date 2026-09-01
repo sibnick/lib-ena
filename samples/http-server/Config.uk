@@ -1,0 +1,20 @@
+config APPHELLOWORLD_DEPENDENCIES
+	bool
+	default y
+	select LIBNOLIBC if !HAVE_LIBC
+	select LIBUKALLOC
+	select LIBUKBUS
+	select LIBUKBUS_PCI
+	select LIBUKNETDEV
+	select LIBLWIP
+	select LIBLWIP_IPV4
+	select LIBLWIP_SOCKET
+	select LIBLWIP_DHCP
+	select LIBLWIP_TCP
+	select LIBPOSIX_POLL
+	select LIBENA
+
+menuconfig APPHELLOWORLD
+	bool "Unikraft Hello World Web Server"
+	default y
+	select APPHELLOWORLD_DEPENDENCIES
