@@ -20,11 +20,17 @@
 static struct mock_ena_hw g_hw;
 static struct ena_adapter g_adapter;
 
+/* Netbuf tracking for tests that allocate through callbacks */
+#define MAX_TRACKED_NETBUFS 16
+static struct uk_netbuf *g_tracked_nb[MAX_TRACKED_NETBUFS];
+static unsigned int g_tracked_nb_count = 0;
+
 static void test_netdev_setup(void)
 {
 	mock_ena_hw_init(&g_hw);
 	mock_pci_clear_faults(&g_hw);
 	test_reset_alloc_tracking();
+	g_tracked_nb_count = 0;
 }
 
 static void test_netdev_teardown(void)
@@ -44,6 +50,74 @@ static void *mock_rx_alloc_cb(void *arg, uint64_t *phys_out, uint32_t *len_out)
 
 	nb->phys_addr = *phys_out;
 	nb->buflen = *len_out;
+	return nb;
+}
+
+static void track_netbuf(struct uk_netbuf *nb)
+{
+	if (g_tracked_nb_count < MAX_TRACKED_NETBUFS)
+		g_tracked_nb[g_tracked_nb_count++] = nb;
+}
+
+static void untrack_and_free_netbuf(struct uk_netbuf *nb)
+{
+	for (unsigned int i = 0; i < g_tracked_nb_count; i++) {
+		if (g_tracked_nb[i] == nb) {
+			g_tracked_nb[i] = NULL;
+			break;
+		}
+	}
+	if (nb) {
+		if (nb->data)
+			test_free(nb->data);
+		test_free(nb);
+	}
+}
+
+static void free_remaining_tracked_netbufs(void)
+{
+	for (unsigned int i = 0; i < g_tracked_nb_count; i++) {
+		if (g_tracked_nb[i])
+			untrack_and_free_netbuf(g_tracked_nb[i]);
+	}
+	g_tracked_nb_count = 0;
+}
+
+/* RX alloc callback: small (64-byte) application buffer that takes a
+ * bounce slot like the driver helper does. Offers the full 2048-byte
+ * slot, so a hostile completion can exceed the application buffer. */
+static void *mock_rx_undersized_alloc_cb(void *arg, uint64_t *phys_out, uint32_t *len_out)
+{
+	struct uk_netdev_rx_queue *rxq = (struct uk_netdev_rx_queue *)arg;
+	struct uk_netbuf *nb;
+	uint16_t slot;
+
+	nb = test_calloc(1, sizeof(*nb));
+	if (!nb)
+		return NULL;
+
+	nb->data = test_calloc(1, 64);
+	if (!nb->data) {
+		test_free(nb);
+		return NULL;
+	}
+	nb->buflen = 64;
+
+	if (!rxq || !rxq->bounce_free_ids || rxq->bounce_free_count == 0) {
+		test_free(nb->data);
+		test_free(nb);
+		return NULL;
+	}
+
+	slot = rxq->bounce_free_ids[rxq->bounce_free_head];
+	rxq->bounce_free_head = (uint16_t)((rxq->bounce_free_head + 1) & (rxq->nb_desc - 1));
+	rxq->bounce_free_count--;
+	nb->priv = (void *)(uintptr_t)(slot + 1);
+
+	*phys_out = rxq->bounce_phys + ((uint64_t)slot * ENA_RX_BUF_SIZE);
+	*len_out = 2048;
+
+	track_netbuf(nb);
 	return nb;
 }
 
@@ -245,6 +319,174 @@ static void test_netdev_rxq_recv(void)
 	ena_netdev_free(netdev);
 }
 
+static void test_netdev_rx_undersized_netbuf(void)
+{
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+	struct uk_netdev_rxqueue_conf rx_conf;
+	struct uk_netdev_txqueue_conf tx_conf;
+	struct ena_ring *rx_ring;
+	struct uk_netdev_rx_queue *rxq;
+	struct uk_netbuf *rx_buf = NULL;
+	unsigned int refilled;
+	uint8_t *slot_virt;
+	uint8_t expect[64];
+
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 1;
+	conf.nb_tx_queues = 1;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+
+	memset(&rx_conf, 0, sizeof(rx_conf));
+	memset(&tx_conf, 0, sizeof(tx_conf));
+	assert(netdev->ops->rxq_configure(netdev, 0, 8, &rx_conf) == 0);
+	assert(netdev->ops->txq_configure(netdev, 0, 8, &tx_conf) == 0);
+	assert(netdev->ops->dev_start(netdev) == 0);
+
+	rx_ring = g_adapter.rx_rings[0];
+	rxq = &netdev->rx_queues[0];
+
+	/* Populate 4 buffers, each taking one bounce slot */
+	assert(ena_rx_refill(rx_ring, 4, mock_rx_undersized_alloc_cb, rxq, &refilled) == 4);
+	assert(refilled == 4);
+	assert(rxq->bounce_free_count == 4);
+
+	/* Hostile device: 100-byte completion into a 64-byte application
+	 * buffer. The driver must drop the packet, not overflow the buffer. */
+	slot_virt = (uint8_t *)(uintptr_t)rxq->bounce_phys;
+	memset(slot_virt, 0xCC, 100);
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 100, 0, 0);
+
+	rx_buf = NULL;
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 0);
+	assert(rx_buf == NULL);
+	assert(rxq->bounce_free_count == 5);
+	/* The ring counted the completion; the netdev layer dropped the packet */
+	assert(rx_ring->rx_packets == 1);
+
+	/* The dropped netbuf is orphaned: the test frees it */
+	untrack_and_free_netbuf(g_tracked_nb[0]);
+
+	/* A packet that fits the 64-byte buffer is delivered with its
+	 * payload copied from the bounce slot */
+	slot_virt = (uint8_t *)(uintptr_t)rxq->bounce_phys + (size_t)1 * ENA_RX_BUF_SIZE;
+	memset(slot_virt, 0x77, 64);
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 64, 0x12345678,
+			       ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK);
+
+	rx_buf = NULL;
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 1);
+	assert(rx_buf != NULL);
+	assert(rx_buf->len == 64);
+	assert(rx_buf->hash == 0x12345678);
+	memset(expect, 0x77, sizeof(expect));
+	assert(memcmp(rx_buf->data, expect, 64) == 0);
+	assert(rxq->bounce_free_count == 6);
+	untrack_and_free_netbuf(g_tracked_nb[1]);
+
+	/* The ring still refills and delivers after the drop */
+	assert(ena_rx_refill(rx_ring, 1, mock_rx_undersized_alloc_cb, rxq, &refilled) == 1);
+	assert(rxq->bounce_free_count == 5);
+	slot_virt = (uint8_t *)(uintptr_t)rxq->bounce_phys +
+		    (size_t)((uintptr_t)g_tracked_nb[4]->priv - 1) * ENA_RX_BUF_SIZE;
+	memset(slot_virt, 0x55, 64);
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 64, 0, 0);
+
+	rx_buf = NULL;
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 1);
+	assert(rx_buf->len == 64);
+	assert(rxq->bounce_free_count == 6);
+
+	assert(netdev->ops->dev_stop(netdev) == 0);
+	free_remaining_tracked_netbufs();
+	teardown_test_adapter(&g_adapter);
+	ena_netdev_free(netdev);
+}
+
+static void test_netdev_rx_bad_completion_bounce_pool(void)
+{
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+	struct uk_netdev_rxqueue_conf rx_conf;
+	struct uk_netdev_txqueue_conf tx_conf;
+	struct ena_ring *rx_ring;
+	struct uk_netdev_rx_queue *rxq;
+	struct uk_netbuf *rx_buf = NULL;
+	unsigned int refilled;
+	uint8_t *slot_virt;
+	uint8_t expect[64];
+	unsigned int i;
+
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 1;
+	conf.nb_tx_queues = 1;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+
+	memset(&rx_conf, 0, sizeof(rx_conf));
+	memset(&tx_conf, 0, sizeof(tx_conf));
+	assert(netdev->ops->rxq_configure(netdev, 0, 8, &rx_conf) == 0);
+	assert(netdev->ops->txq_configure(netdev, 0, 8, &tx_conf) == 0);
+	assert(netdev->ops->dev_start(netdev) == 0);
+
+	rx_ring = g_adapter.rx_rings[0];
+	rxq = &netdev->rx_queues[0];
+
+	assert(ena_rx_refill(rx_ring, 4, mock_rx_undersized_alloc_cb, rxq, &refilled) == 4);
+	assert(rxq->bounce_free_count == 4);
+	assert(rx_ring->free_req_count == 4);
+
+	/* A faulty or hostile device repeats over-length completions.
+	 * Every drop must return its bounce slot to the free pool. */
+	for (i = 0; i < 4; i++) {
+		mock_pci_inject_fault(&g_hw, MOCK_PCI_FAULT_CORRUPT_LENGTH, 0xFFFF);
+		mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 512, 0, 0);
+		mock_pci_clear_faults(&g_hw);
+
+		rx_buf = NULL;
+		assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 0);
+		assert(rx_buf == NULL);
+		assert(rx_ring->rx_packets == 0);
+		assert(rxq->bounce_free_count == 4 + (i + 1));
+		assert(rx_ring->free_req_count == 4 + (i + 1));
+
+		untrack_and_free_netbuf(g_tracked_nb[i]);
+	}
+
+	/* The pool is intact: the ring refills and a good packet is
+	 * still delivered (receive did not deadlock) */
+	assert(ena_rx_refill(rx_ring, 1, mock_rx_undersized_alloc_cb, rxq, &refilled) == 1);
+	assert(rxq->bounce_free_count == 7);
+
+	slot_virt = (uint8_t *)(uintptr_t)rxq->bounce_phys +
+		    (size_t)((uintptr_t)g_tracked_nb[4]->priv - 1) * ENA_RX_BUF_SIZE;
+	memset(slot_virt, 0x44, 64);
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 64, 0x99887766, 0);
+
+	rx_buf = NULL;
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 1);
+	assert(rx_buf != NULL);
+	assert(rx_buf->len == 64);
+	assert(rx_buf->hash == 0x99887766);
+	assert(rxq->bounce_free_count == 8);
+
+	memset(expect, 0x44, sizeof(expect));
+	assert(memcmp(rx_buf->data, expect, 64) == 0);
+	untrack_and_free_netbuf(g_tracked_nb[4]);
+
+	assert(netdev->ops->dev_stop(netdev) == 0);
+	free_remaining_tracked_netbufs();
+	teardown_test_adapter(&g_adapter);
+	ena_netdev_free(netdev);
+}
+
 static void test_netdev_invalid_ops(void)
 {
 	struct uk_netdev *netdev;
@@ -413,12 +655,14 @@ int main(void)
 	RUN_TEST(test_netdev_configure_and_lifecycle);
 	RUN_TEST(test_netdev_txq_xmit);
 	RUN_TEST(test_netdev_rxq_recv);
+	RUN_TEST(test_netdev_rx_undersized_netbuf);
+	RUN_TEST(test_netdev_rx_bad_completion_bounce_pool);
 	RUN_TEST(test_netdev_invalid_ops);
 	RUN_TEST(test_netdev_bounce_buffers);
 	RUN_TEST(test_netdev_start_rollback);
 
 	printf("========================================\n");
-	printf("ALL PHASE 7 NETDEV TESTS PASSED (7/7)   \n");
+	printf("ALL PHASE 7 NETDEV TESTS PASSED (9/9)   \n");
 	printf("========================================\n");
 	return 0;
 }
