@@ -309,7 +309,7 @@ static void test_netdev_tx_stuck_bounce_releases(void)
 	struct uk_netdev *netdev;
 	struct uk_netdev_conf conf;
 	struct uk_netbuf *nb = test_calloc(1, sizeof(*nb));
-	char pkt_data[64];
+	char pkt_data[64] = {0};
 	struct uk_netdev_tx_queue *txq;
 	struct ena_ring *ring;
 	int i;
@@ -475,6 +475,7 @@ static void test_netdev_rx_undersized_netbuf(void)
 	unsigned int refilled;
 	uint8_t *slot_virt;
 	uint8_t expect[64];
+	uint16_t next_slot;
 
 	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
 	netdev = ena_netdev_alloc(&g_adapter);
@@ -535,8 +536,10 @@ static void test_netdev_rx_undersized_netbuf(void)
 	/* The ring still refills and delivers after the drop */
 	assert(ena_rx_refill(rx_ring, 1, mock_rx_undersized_alloc_cb, rxq, &refilled) == 1);
 	assert(rxq->bounce_free_count == 5);
+	/* Pre-fill the bounce slot the next completion will land in */
+	next_slot = (uint16_t)rxq->bounce_map[rx_ring->sq_head & (rx_ring->sq_depth - 1)];
 	slot_virt = (uint8_t *)(uintptr_t)rxq->bounce_phys +
-		    (size_t)((uintptr_t)g_tracked_nb[4]->priv - 1) * ENA_RX_BUF_SIZE;
+		    (size_t)next_slot * ENA_RX_BUF_SIZE;
 	memset(slot_virt, 0x55, 64);
 	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 64, 0, 0);
 
