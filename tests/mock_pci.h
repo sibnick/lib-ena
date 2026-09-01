@@ -140,6 +140,8 @@ void mock_ena_hw_clear_bad_db_offset(struct mock_ena_hw *hw);
 void mock_ena_hw_inject_fake_req_id(struct mock_ena_hw *hw, uint16_t id);
 void mock_ena_hw_clear_fake_req_id(struct mock_ena_hw *hw);
 void mock_ena_hw_inject_aenq(struct mock_ena_hw *hw, uint16_t group, uint16_t syndrome);
+void mock_ena_hw_inject_aenq_payload(struct mock_ena_hw *hw, uint16_t group,
+				     uint16_t syndrome, uint32_t inline0);
 
 /* Generic fault injection API */
 void mock_pci_inject_fault(struct mock_ena_hw *hw, enum mock_pci_fault_type type, uint64_t arg);

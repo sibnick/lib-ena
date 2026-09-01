@@ -12,10 +12,10 @@ The ENA driver provides high-performance networking for Unikraft unikernels runn
 | :--- | :--- | :--- |
 | **PCI Probe & Reset** | Supported | Device identification, MMIO BAR0 mapping, and controller lifecycle. |
 | **Admin Queue (AQ/ACQ)** | Supported | Synchronous device configuration and capability discovery. |
-| **AENQ Engine** | Supported | Asynchronous event notifications and health monitoring. |
+| **AENQ Engine** | Supported | The driver polls the AENQ ring on every RX pass. A fatal error resets the device. A link change updates the link state. |
 | **TX / RX Rings** | Supported | Multi-queue circular descriptor rings with hardware checksum offload. |
 | **Low Latency Queue (LLQ)** | Supported | Direct push of packet headers and descriptors to BAR2 MMIO. |
-| **Interrupt / MSI-X Polling** | Supported | Per-queue interrupt masking and high-frequency polling engine. |
+| **Interrupts / MSI-X** | Partial | The default mode is software polling. The driver allocates MSI-X vectors at probe time when the platform provides them. |
 | **Jumbo Frames** | Supported | Configurable MTU up to 9000 bytes. |
 
 ## Supported EC2 Instance Types

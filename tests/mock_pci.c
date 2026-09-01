@@ -159,6 +159,17 @@ void mock_ena_hw_reset_poll_hook(void *cookie)
 	hw->reset_polls++;
 	if (hw->reset_polls_to_finish != 0 &&
 	    hw->reset_polls >= hw->reset_polls_to_finish) {
+		/* A finished reset re-initializes the device-side
+		 * admin queue state, matching real device behavior. */
+		hw->dev_aq_base = NULL;
+		hw->dev_acq_base = NULL;
+		hw->dev_aenq_base = NULL;
+		hw->dev_acq_tail = 0;
+		hw->dev_acq_phase = 1;
+		hw->dev_aenq_tail = 0;
+		hw->dev_aenq_phase = 1;
+		hw->last_acq_tail_reg = 0;
+		hw->drv_acq_head = 0;
 		mock_ena_hw_set_reg32(hw, ENA_REGS_DEV_STS_OFF,
 				      ENA_DEV_STS_RESET_FIN_MASK |
 				      ENA_DEV_STS_READY_MASK);
@@ -556,8 +567,8 @@ void mock_ena_hw_require_attrs_first(struct mock_ena_hw *hw, int on)
 		hw->require_attrs_first = (uint8_t)(on ? 1 : 0);
 }
 
-void mock_ena_hw_inject_aenq(struct mock_ena_hw *hw, uint16_t group,
-			     uint16_t syndrome)
+void mock_ena_hw_inject_aenq_payload(struct mock_ena_hw *hw, uint16_t group,
+				     uint16_t syndrome, uint32_t inline0)
 {
 	uint64_t aenq_phys;
 	uint16_t aenq_idx;
@@ -584,11 +595,18 @@ void mock_ena_hw_inject_aenq(struct mock_ena_hw *hw, uint16_t group,
 	ev->aenq_common_desc.flags = hw->dev_aenq_phase;
 	ev->aenq_common_desc.timestamp_low = hw->dev_aenq_seq++;
 	ev->aenq_common_desc.timestamp_high = 0;
+	ev->inline_data_w4[0] = inline0;
 
 	/* Advance device AENQ tail and flip phase on wrap */
 	hw->dev_aenq_tail++;
 	if ((hw->dev_aenq_tail & (hw->dev_aenq_depth - 1)) == 0)
 		hw->dev_aenq_phase ^= 1;
+}
+
+void mock_ena_hw_inject_aenq(struct mock_ena_hw *hw, uint16_t group,
+			     uint16_t syndrome)
+{
+	mock_ena_hw_inject_aenq_payload(hw, group, syndrome, 0);
 }
 
 void mock_ena_hw_emulate_tx(struct mock_ena_hw *hw, struct ena_ring *ring,

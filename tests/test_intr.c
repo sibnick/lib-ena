@@ -253,6 +253,55 @@ static void test_intr_invalid_args(void)
 	printf("[PASS] test_intr_invalid_args passed\n");
 }
 
+static void test_intr_setup_msix(void)
+{
+	printf("[TEST] Running test_intr_setup_msix...\n");
+
+	struct mock_ena_hw hw;
+	struct ena_adapter adapter;
+
+	assert(setup_test_adapter(&hw, &adapter) == 0);
+
+	/* Platform provides no vectors: stay in software polling mode. */
+	ena_plat_set_mock_msix_vectors(0);
+	assert(ena_intr_setup(&adapter, NULL) == -ENOTSUP);
+	assert(adapter.irq_vectors == NULL);
+	assert(adapter.num_irq_vectors == 0);
+	assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_INTR_MASK_OFF) == 0);
+
+	/* Platform provides 4 vectors: allocate the table and enable the
+	 * admin vector (device interrupt register set to 1). IO vectors
+	 * stay masked. */
+	ena_plat_set_mock_msix_vectors(4);
+	assert(ena_intr_setup(&adapter, NULL) == 0);
+	assert(adapter.num_irq_vectors == 4);
+	assert(adapter.irq_vectors[0].is_admin == true);
+	assert(adapter.irq_vectors[0].masked == false);
+	assert(adapter.irq_vectors[1].masked == true);
+	assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_INTR_MASK_OFF) == 1);
+
+	/* A second setup call is a no-op. */
+	assert(ena_intr_setup(&adapter, NULL) == 0);
+	assert(adapter.num_irq_vectors == 4);
+
+	/* Fini re-masks the admin vector. */
+	ena_intr_msix_fini(&adapter);
+	assert(adapter.irq_vectors == NULL);
+	assert(adapter.num_irq_vectors == 0);
+	assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_INTR_MASK_OFF) == 0);
+
+	/* A vector count above the maximum is clamped. */
+	ena_plat_set_mock_msix_vectors(128);
+	assert(ena_intr_setup(&adapter, NULL) == 0);
+	assert(adapter.num_irq_vectors == ENA_MAX_MSIX_VECTORS);
+
+	ena_intr_msix_fini(&adapter);
+	ena_plat_set_mock_msix_vectors(0);
+
+	teardown_test_adapter(&adapter);
+	printf("[PASS] test_intr_setup_msix passed\n");
+}
+
 int main(void)
 {
 	printf("========================================\n");
@@ -264,9 +313,10 @@ int main(void)
 	test_intr_set_coalesce();
 	test_poll_step_engine();
 	test_intr_invalid_args();
+	test_intr_setup_msix();
 
 	printf("========================================\n");
-	printf("ALL PHASE 8 INTR TESTS PASSED (5/5)     \n");
+	printf("ALL PHASE 8 INTR TESTS PASSED (6/6)     \n");
 	printf("========================================\n");
 	return 0;
 }

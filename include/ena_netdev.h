@@ -92,6 +92,14 @@ int ena_netdev_rx_one(struct uk_netdev *dev, struct uk_netdev_rx_queue *queue, s
  */
 int ena_netdev_tx_one(struct uk_netdev *dev, struct uk_netdev_tx_queue *queue, struct uk_netbuf *pkt);
 
+/**
+ * Get the current link state from the AENQ LINK_CHANGE events.
+ *
+ * @param dev Pointer to the network device.
+ * @return true when the link is up, false when it is down.
+ */
+bool ena_netdev_link_get(struct uk_netdev *dev);
+
 #else /* !__Unikraft__ */
 
 #define UK_NETDEV_MAC_ADDR_LEN 6
@@ -202,6 +210,14 @@ void ena_netdev_free(struct uk_netdev *netdev);
  * @return 0 on success, or a negative errno value on error.
  */
 int ena_netdev_register(struct uk_netdev *netdev);
+
+/**
+ * Get the current link state from the AENQ LINK_CHANGE events.
+ *
+ * @param dev Pointer to the network device.
+ * @return true when the link is up, false when it is down.
+ */
+bool ena_netdev_link_get(struct uk_netdev *dev);
 
 #endif /* !__Unikraft__ */
 

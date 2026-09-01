@@ -122,5 +122,23 @@ void ena_dma_free(void *virt, uint64_t phys);
  */
 void ena_delay_us(unsigned int us);
 
+/**
+ * Probe a PCI device for usable MSI-X vectors.
+ *
+ * The probe checks the device MSI-X capability and the platform interrupt
+ * delivery support. A count of zero means the driver must stay in software
+ * polling mode.
+ *
+ * @param pci_dev Platform-specific PCI device handle.
+ * @param num_vectors Output pointer storing the number of usable vectors.
+ * @return 0 on success, or a negative errno value on error.
+ */
+int ena_plat_msix_probe(void *pci_dev, uint32_t *num_vectors);
+
+#ifndef __Unikraft__
+/* Host test hook: set the vector count reported by ena_plat_msix_probe. */
+void ena_plat_set_mock_msix_vectors(uint32_t num_vectors);
+#endif
+
 #endif /* LIBENA_ENA_PLAT_H */
 

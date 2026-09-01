@@ -440,6 +440,83 @@ int ena_admin_aenq_poll(struct ena_adapter *adapter, unsigned int max_events)
 	return dispatched;
 }
 
+int ena_aenq_default_handler(void *arg, uint16_t group, uint16_t syndrome,
+			     const struct ena_admin_aenq_entry *entry)
+{
+	struct ena_adapter *adapter = (struct ena_adapter *)arg;
+
+	if (!adapter)
+		return -EINVAL;
+
+	switch (group) {
+	case ENA_ADMIN_FATAL_ERROR: {
+		ena_aenq_handler *handler = adapter->aenq_handler;
+		void *handler_arg = adapter->aenq_handler_arg;
+		uint16_t aq_d;
+		uint16_t acq_d;
+		uint16_t aenq_d;
+		int rret;
+
+		ena_err("aenq: fatal error (syndrome %u), resetting device",
+			(unsigned)syndrome);
+		adapter->state = ENA_STATE_ERROR;
+
+		/* The poll path does not hold the admin lock. Take it here so
+		 * the reset and re-init serialize with admin command use. */
+		ena_admin_lock_take(&adapter->admin_lock);
+		ena_device_reset(adapter);
+		rret = ena_device_wait_reset_complete(adapter, 1000);
+		if (rret == 0) {
+			int iret;
+
+			aq_d = adapter->aq_depth ? adapter->aq_depth : 32;
+			acq_d = adapter->acq_depth ? adapter->acq_depth : 32;
+			aenq_d = adapter->aenq_depth ? adapter->aenq_depth : 32;
+			iret = ena_admin_init(adapter, aq_d, acq_d, aenq_d);
+			if (iret == 0 && handler)
+				ena_admin_aenq_register(adapter, handler,
+							handler_arg);
+		}
+		ena_admin_lock_drop(&adapter->admin_lock);
+
+		if (rret != 0)
+			ena_err("aenq: reset recovery failed (%d)", rret);
+		return rret;
+	}
+
+	case ENA_ADMIN_LINK_CHANGE: {
+		/* The link status is bit 0 of the first inline data word. */
+		uint32_t flags = entry ? entry->inline_data_w4[0] : 0;
+		bool up = (flags & 1u) != 0;
+
+		if (up != adapter->link_up) {
+			adapter->link_up = up;
+			ena_info("aenq: link %s", up ? "up" : "down");
+		}
+		return 0;
+	}
+
+	case ENA_ADMIN_WARNING:
+		ena_warn("aenq: warning (syndrome %u)", (unsigned)syndrome);
+		return 0;
+
+	case ENA_ADMIN_NOTIFICATION:
+		ena_info("aenq: notification (syndrome %u)", (unsigned)syndrome);
+		return 0;
+
+	case ENA_ADMIN_KEEP_ALIVE:
+		ena_debug("aenq: keep alive (rx_drops 0x%x, tx_drops 0x%x)",
+			  entry ? entry->inline_data_w4[0] : 0,
+			  entry ? entry->inline_data_w4[1] : 0);
+		return 0;
+
+	default:
+		ena_debug("aenq: unknown group %u (syndrome %u)",
+			  (unsigned)group, (unsigned)syndrome);
+		return 0;
+	}
+}
+
 int ena_admin_get_device_attr(struct ena_adapter *adapter,
 			      struct ena_admin_device_attr_feature_desc *attr)
 {

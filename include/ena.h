@@ -82,6 +82,7 @@ struct ena_adapter {
 	/* Phase 2: AENQ event dispatch */
 	ena_aenq_handler *aenq_handler;
 	void *aenq_handler_arg;
+	bool link_up;             /* Current link state from AENQ LINK_CHANGE events */
 
 	/* Phase 3: negotiated device attributes */
 	uint32_t impl_id;               /* Device implementation id */
