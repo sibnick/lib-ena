@@ -755,10 +755,12 @@ void mock_ena_hw_emulate_rx(struct mock_ena_hw *hw, struct ena_ring *ring,
 		cq_idx = hw->io_rx_cq_state[qid].cq_tail & (ring->cq_depth - 1);
 		memset(&cq_descs[cq_idx], 0, sizeof(cq_descs[cq_idx]));
 
+		uint32_t first_last_flags = (status_flags & (ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK | ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK));
+		if (first_last_flags == 0)
+			first_last_flags = ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK | ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK;
+
 		status = ((uint32_t)hw->io_rx_cq_state[qid].cq_phase << ENA_ETH_IO_RX_CDESC_BASE_PHASE_SHIFT);
-		status |= ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK |
-			  ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK |
-			  status_flags;
+		status |= first_last_flags | status_flags;
 
 		cq_descs[cq_idx].status = status;
 		cq_descs[cq_idx].length = hw->inject_corrupt_len ? hw->corrupt_len : pkt_len;

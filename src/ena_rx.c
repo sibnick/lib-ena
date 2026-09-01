@@ -249,6 +249,8 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 		pkts[rcvd].l4_csum_err = !!(status_val & ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_ERR_MASK);
 		pkts[rcvd].l4_csum_checked = !!(status_val & ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK);
 		pkts[rcvd].frag = !!(status_val & ENA_ETH_IO_RX_CDESC_BASE_IPV4_FRAG_MASK);
+		pkts[rcvd].first = !!(status_val & ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK);
+		pkts[rcvd].last = !!(status_val & ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK);
 
 		ring->rx_packets++;
 		ring->rx_bytes += pkts[rcvd].len;

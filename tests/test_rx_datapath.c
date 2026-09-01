@@ -326,6 +326,41 @@ static void test_rx_invalid_args(void)
 	printf("[PASS] test_rx_invalid_args passed\n");
 }
 
+static void test_rx_multi_descriptor_flags(void)
+{
+	printf("[TEST] Running test_rx_multi_descriptor_flags...\n");
+
+	struct mock_ena_hw hw;
+	struct ena_adapter adapter;
+	struct ena_ring *ring = NULL;
+	struct ena_rx_pkt pkts[4];
+	unsigned int refilled;
+
+	assert(setup_adapter(&hw, &adapter) == 0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 8, 8, &ring) == 0);
+	assert(ena_ring_create_hw(ring, 0) == 0);
+
+	assert(ena_rx_refill(ring, 2, mock_alloc_netbuf_helper, NULL, &refilled) == 2);
+
+	/* First segment of multi-descriptor packet */
+	mock_ena_hw_emulate_rx(&hw, ring, 1, 1500, 0, ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK);
+	assert(ena_rx_poll(ring, pkts, 1) == 1);
+	assert(pkts[0].first == true);
+	assert(pkts[0].last == false);
+
+	/* Last segment of multi-descriptor packet */
+	mock_ena_hw_emulate_rx(&hw, ring, 1, 500, 0, ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK);
+	assert(ena_rx_poll(ring, pkts, 1) == 1);
+	assert(pkts[0].first == false);
+	assert(pkts[0].last == true);
+
+	assert(ena_ring_destroy_hw(ring) == 0);
+	ena_ring_free(ring);
+	ena_admin_fini(&adapter);
+
+	printf("[PASS] test_rx_multi_descriptor_flags passed\n");
+}
+
 int main(void)
 {
 	printf("========================================\n");
@@ -338,10 +373,11 @@ int main(void)
 	test_rx_poll_completions();
 	test_rx_checksum_and_frag_flags();
 	test_rx_phase_flip_multicycle();
+	test_rx_multi_descriptor_flags();
 	test_rx_invalid_args();
 
 	printf("========================================\n");
-	printf("ALL PHASE 6 RX TESTS PASSED (7/7)       \n");
+	printf("ALL PHASE 6 RX TESTS PASSED (8/8)       \n");
 	printf("========================================\n");
 	return 0;
 }

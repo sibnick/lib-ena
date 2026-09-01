@@ -469,6 +469,8 @@ struct ena_rx_pkt {
 	bool l4_csum_err;          /* L4 checksum error detected */
 	bool l4_csum_checked;      /* L4 checksum was checked by hardware */
 	bool frag;                 /* IPv4 fragmented packet */
+	bool first;                /* First descriptor of a packet/LRO frame */
+	bool last;                 /* Last descriptor of a packet/LRO frame */
 	uint16_t req_id;           /* Request ID used for this buffer */
 };
 

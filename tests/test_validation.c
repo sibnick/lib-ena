@@ -120,8 +120,9 @@ static void test_validation_t3_nano_profile(void)
 	assert(info.mtu == 1500);
 	assert(info.max_rx_queues >= 1);
 	assert(info.max_tx_queues >= 1);
-	assert(info.features & UK_NETDEV_F_RX_CSUM);
-	assert(info.features & UK_NETDEV_F_TX_CSUM);
+	assert(info.features & UK_NETDEV_F_PARTIAL_CSUM);
+	assert(info.features & UK_NETDEV_F_LRO);
+	assert(info.features & UK_NETDEV_F_TSO4);
 
 	teardown_test_adapter(&g_adapter);
 	ena_netdev_free(netdev);

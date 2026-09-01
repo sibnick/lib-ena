@@ -121,6 +121,41 @@ static void *mock_rx_undersized_alloc_cb(void *arg, uint64_t *phys_out, uint32_t
 	return nb;
 }
 
+static void *mock_rx_standard_alloc_cb(void *arg, uint64_t *phys_out, uint32_t *len_out)
+{
+	struct uk_netdev_rx_queue *rxq = (struct uk_netdev_rx_queue *)arg;
+	struct uk_netbuf *nb;
+	uint16_t slot;
+
+	nb = test_calloc(1, sizeof(*nb));
+	if (!nb)
+		return NULL;
+
+	nb->data = test_calloc(1, 2048);
+	if (!nb->data) {
+		test_free(nb);
+		return NULL;
+	}
+	nb->buflen = 2048;
+
+	if (!rxq || !rxq->bounce_free_ids || rxq->bounce_free_count == 0) {
+		test_free(nb->data);
+		test_free(nb);
+		return NULL;
+	}
+
+	slot = rxq->bounce_free_ids[rxq->bounce_free_head];
+	rxq->bounce_free_head = (uint16_t)((rxq->bounce_free_head + 1) & (rxq->nb_desc - 1));
+	rxq->bounce_free_count--;
+	rxq->pending_slot = (int16_t)slot;
+
+	*phys_out = rxq->bounce_phys + ((uint64_t)slot * ENA_RX_BUF_SIZE);
+	*len_out = 2048;
+
+	track_netbuf(nb);
+	return nb;
+}
+
 static int setup_test_adapter(struct mock_ena_hw *hw, struct ena_adapter *adapter)
 {
 	mock_ena_hw_init(hw);
@@ -181,8 +216,9 @@ static void test_netdev_alloc_and_info_get(void)
 	assert(info.mtu == 1500);
 	assert(info.max_rx_queues == g_adapter.max_rx_queues);
 	assert(info.max_tx_queues == g_adapter.max_tx_queues);
-	assert(info.features & UK_NETDEV_F_RX_CSUM);
-	assert(info.features & UK_NETDEV_F_TX_CSUM);
+	assert(info.features & UK_NETDEV_F_PARTIAL_CSUM);
+	assert(info.features & UK_NETDEV_F_LRO);
+	assert(info.features & UK_NETDEV_F_TSO4);
 	assert(info.hwaddr[0] == 0x52 && info.hwaddr[1] == 0x54);
 
 	teardown_test_adapter(&g_adapter);
@@ -865,6 +901,131 @@ static void test_netdev_free_not_running(void)
 	assert(g_adapter.tx_rings == NULL);
 }
 
+static void test_netdev_rx_csum_and_lro_chaining(void)
+{
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+	struct uk_netdev_rxqueue_conf rx_conf;
+	struct uk_netdev_txqueue_conf tx_conf;
+	struct ena_ring *rx_ring;
+	struct uk_netdev_rx_queue *rxq;
+	struct uk_netbuf *rx_buf = NULL;
+	unsigned int refilled;
+
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 1;
+	conf.nb_tx_queues = 1;
+	conf.lro = 1;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+
+	memset(&rx_conf, 0, sizeof(rx_conf));
+	memset(&tx_conf, 0, sizeof(tx_conf));
+	assert(netdev->ops->rxq_configure(netdev, 0, 8, &rx_conf) == 0);
+	assert(netdev->ops->txq_configure(netdev, 0, 8, &tx_conf) == 0);
+	assert(netdev->ops->dev_start(netdev) == 0);
+
+	rx_ring = g_adapter.rx_rings[0];
+	rxq = &netdev->rx_queues[0];
+
+	/* Test 1: Hardware RX checksum ok sets DATA_VALID */
+	assert(ena_rx_refill(rx_ring, 1, mock_rx_standard_alloc_cb, rxq, &refilled) == 1);
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 64, 0, ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK);
+
+	rx_buf = NULL;
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 1);
+	assert(rx_buf != NULL);
+	assert(rx_buf->flags & UK_NETBUF_F_DATA_VALID);
+
+	/* Test 2: Multi-descriptor LRO chain reassembly */
+	assert(ena_rx_refill(rx_ring, 2, mock_rx_standard_alloc_cb, rxq, &refilled) == 2);
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 1400, 0, ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK);
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 600, 0, ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK);
+
+	rx_buf = NULL;
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 1);
+	assert(rx_buf != NULL);
+	assert(rx_buf->len == 1400);
+	assert(rx_buf->next != NULL);
+	assert(rx_buf->next->len == 600);
+
+	assert(netdev->ops->dev_stop(netdev) == 0);
+	free_remaining_tracked_netbufs();
+	teardown_test_adapter(&g_adapter);
+	ena_netdev_free(netdev);
+}
+
+static void test_netdev_tx_csum_offload(void)
+{
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+	struct uk_netdev_rxqueue_conf rx_conf;
+	struct uk_netdev_txqueue_conf tx_conf;
+	struct uk_netbuf *tx_buf;
+	struct ena_ring *tx_ring;
+	const struct ena_eth_io_tx_desc *slot_desc;
+	uint8_t dummy_tcp_pkt[64];
+
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 1;
+	conf.nb_tx_queues = 1;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+
+	memset(&rx_conf, 0, sizeof(rx_conf));
+	memset(&tx_conf, 0, sizeof(tx_conf));
+	assert(netdev->ops->rxq_configure(netdev, 0, 8, &rx_conf) == 0);
+	assert(netdev->ops->txq_configure(netdev, 0, 8, &tx_conf) == 0);
+	assert(netdev->ops->dev_start(netdev) == 0);
+
+	tx_ring = g_adapter.tx_rings[0];
+
+	/* Build IPv4 TCP frame template */
+	memset(dummy_tcp_pkt, 0, sizeof(dummy_tcp_pkt));
+	dummy_tcp_pkt[12] = 0x08; dummy_tcp_pkt[13] = 0x00; /* IPv4 */
+	dummy_tcp_pkt[14 + 9] = 6;                          /* TCP */
+
+	tx_buf = test_calloc(1, sizeof(*tx_buf));
+	assert(tx_buf != NULL);
+	tx_buf->data = dummy_tcp_pkt;
+	tx_buf->len = sizeof(dummy_tcp_pkt);
+	tx_buf->phys_addr = 0x50001000;
+
+	/* Transmit with UK_NETBUF_F_PARTIAL_CSUM enabled */
+	tx_buf->flags = UK_NETBUF_F_PARTIAL_CSUM;
+	assert(netdev->ops->txq_xmit(netdev, 0, tx_buf) == 0);
+
+	slot_desc = (const struct ena_eth_io_tx_desc *)tx_ring->sq_virt;
+	assert(slot_desc[0].meta_ctrl & ENA_ETH_IO_TX_DESC_L3_CSUM_EN_MASK);
+	assert(slot_desc[0].meta_ctrl & ENA_ETH_IO_TX_DESC_L4_CSUM_EN_MASK);
+
+	/* Clean completions */
+	mock_ena_hw_emulate_tx(&g_hw, tx_ring, 1);
+	ena_tx_poll_completions(tx_ring, 8, NULL);
+
+	/* Transmit with UK_NETBUF_F_PARTIAL_CSUM disabled */
+	tx_buf->flags = 0;
+	assert(netdev->ops->txq_xmit(netdev, 0, tx_buf) == 0);
+
+	slot_desc = (const struct ena_eth_io_tx_desc *)tx_ring->sq_virt;
+	assert((slot_desc[1].meta_ctrl & ENA_ETH_IO_TX_DESC_L3_CSUM_EN_MASK) == 0);
+	assert((slot_desc[1].meta_ctrl & ENA_ETH_IO_TX_DESC_L4_CSUM_EN_MASK) == 0);
+
+	mock_ena_hw_emulate_tx(&g_hw, tx_ring, 1);
+	ena_tx_poll_completions(tx_ring, 8, NULL);
+
+	test_free(tx_buf);
+	assert(netdev->ops->dev_stop(netdev) == 0);
+	teardown_test_adapter(&g_adapter);
+	ena_netdev_free(netdev);
+}
+
 int main(void)
 {
 	printf("========================================\n");
@@ -879,6 +1040,8 @@ int main(void)
 	RUN_TEST(test_netdev_txq_xmit);
 	RUN_TEST(test_netdev_tx_stuck_bounce_releases);
 	RUN_TEST(test_netdev_rxq_recv);
+	RUN_TEST(test_netdev_rx_csum_and_lro_chaining);
+	RUN_TEST(test_netdev_tx_csum_offload);
 	RUN_TEST(test_netdev_rx_undersized_netbuf);
 	RUN_TEST(test_netdev_rx_bad_completion_bounce_pool);
 	RUN_TEST(test_netdev_invalid_ops);
@@ -888,7 +1051,7 @@ int main(void)
 	RUN_TEST(test_netdev_free_not_running);
 
 	printf("========================================\n");
-	printf("ALL PHASE 7 NETDEV TESTS PASSED (12/12) \n");
+	printf("ALL PHASE 7 NETDEV TESTS PASSED (14/14) \n");
 	printf("========================================\n");
 	return 0;
 }

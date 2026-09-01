@@ -222,6 +222,16 @@ static void ena_netdev_classify_tx_pkt(const struct uk_netbuf *pkt, struct ena_t
 				tx_pkt->l4_proto = ENA_ETH_IO_L4_PROTO_UDP;
 		}
 	}
+
+	/* Selectively enable hardware checksum offload if requested */
+	if (pkt->flags & UK_NETBUF_F_PARTIAL_CSUM) {
+		if (tx_pkt->l3_proto == ENA_ETH_IO_L3_PROTO_IPV4)
+			tx_pkt->l3_csum_en = true;
+		if (tx_pkt->l4_proto == ENA_ETH_IO_L4_PROTO_TCP || tx_pkt->l4_proto == ENA_ETH_IO_L4_PROTO_UDP)
+			tx_pkt->l4_csum_en = true;
+	}
+	if (pkt->flags & UK_NETBUF_F_GSO_TCPV4)
+		tx_pkt->tso_en = true;
 }
 
 /* Free RX queue bounce buffer and tracking metadata */
@@ -352,7 +362,7 @@ static void ena_netdev_info_get(struct uk_netdev *dev, struct uk_netdev_info *in
 	info->nb_encap_rx = 0;
 	info->ioalign = ENA_NETDEV_IOALIGN;
 	info->in_queue_pairs = 1;
-	info->features = UK_NETDEV_F_PARTIAL_CSUM;
+	info->features = UK_NETDEV_F_PARTIAL_CSUM | UK_NETDEV_F_LRO | UK_NETDEV_F_TSO4;
 }
 
 static int ena_netdev_rxq_info_get(struct uk_netdev *dev, uint16_t queue_id __attribute__((unused)),
@@ -656,17 +666,26 @@ int ena_netdev_rx_one(struct uk_netdev *dev,
 	ena_netdev_drain_aenq(&edev->adapter);
 
 	ring = queue->ring;
-	ret = ena_rx_poll(ring, &rx_pkt, 1);
-	if (ret <= 0)
-		return 0;
 
-	if (rx_pkt.netbuf) {
+	while (1) {
+		ret = ena_rx_poll(ring, &rx_pkt, 1);
+		if (ret <= 0)
+			return 0;
+
+		if (!rx_pkt.netbuf)
+			return 0;
+
 		struct uk_netbuf *nb = (struct uk_netbuf *)rx_pkt.netbuf;
 		int16_t slot = (queue->bounce_map && rx_pkt.req_id < queue->nb_desc) ?
 			       queue->bounce_map[rx_pkt.req_id] : -1;
 		bool dropped = false;
 
 		nb->len = rx_pkt.len;
+		nb->next = NULL;
+
+		/* Set DATA_VALID if hardware validated L3 & L4 checksums */
+		if (!rx_pkt.l3_csum_err && !rx_pkt.l4_csum_err && rx_pkt.l4_csum_checked)
+			nb->flags |= UK_NETBUF_F_DATA_VALID;
 
 		/* Copy payload if received into a low memory bounce slot */
 		if (slot >= 0) {
@@ -691,16 +710,46 @@ int ena_netdev_rx_one(struct uk_netdev *dev,
 
 		if (dropped) {
 			ena_netdev_rxq_drop_netbuf(queue, nb);
+			ena_rx_refill(ring, 1, ena_netbuf_alloc_helper, queue, NULL);
 			return 0;
 		}
 
-		*pkt = nb;
-
 		ena_rx_refill(ring, 1, ena_netbuf_alloc_helper, queue, NULL);
-		return UK_NETDEV_STATUS_SUCCESS;
-	}
 
-	return 0;
+		/* Multi-descriptor packet reassembly (LRO & jumbo frames) */
+		if (rx_pkt.first && rx_pkt.last) {
+			/* Standard single-descriptor frame */
+			*pkt = nb;
+			return UK_NETDEV_STATUS_SUCCESS;
+		} else if (rx_pkt.first && !rx_pkt.last) {
+			/* Start of multi-descriptor frame */
+			queue->chain_head = nb;
+			queue->chain_tail = nb;
+			continue;
+		} else if (!rx_pkt.first && !rx_pkt.last) {
+			/* Middle descriptor in chain */
+			if (queue->chain_tail) {
+				queue->chain_tail->next = nb;
+				queue->chain_tail = nb;
+			} else {
+				ena_netdev_rxq_drop_netbuf(queue, nb);
+			}
+			continue;
+		} else if (!rx_pkt.first && rx_pkt.last) {
+			/* End of multi-descriptor frame */
+			if (queue->chain_tail) {
+				queue->chain_tail->next = nb;
+				queue->chain_tail = nb;
+				*pkt = queue->chain_head;
+				queue->chain_head = NULL;
+				queue->chain_tail = NULL;
+				return UK_NETDEV_STATUS_SUCCESS;
+			} else {
+				ena_netdev_rxq_drop_netbuf(queue, nb);
+				return 0;
+			}
+		}
+	}
 }
 
 int ena_netdev_tx_one(struct uk_netdev *dev __attribute__((unused)),
@@ -852,7 +901,7 @@ static int ena_netdev_info_get(struct uk_netdev *dev, struct uk_netdev_info *inf
 	info->min_mtu = ENA_MIN_MTU_LEN;
 	info->mtu = dev->adapter->mtu;
 	memcpy(info->hwaddr, dev->adapter->mac_addr, UK_NETDEV_MAC_ADDR_LEN);
-	info->features = UK_NETDEV_F_RX_CSUM | UK_NETDEV_F_TX_CSUM;
+	info->features = UK_NETDEV_F_PARTIAL_CSUM | UK_NETDEV_F_LRO | UK_NETDEV_F_TSO4;
 
 	return 0;
 }
@@ -1074,11 +1123,14 @@ static int ena_netdev_rxq_recv(struct uk_netdev *dev, uint16_t queue_id,
 	ring = dev->adapter->rx_rings[queue_id];
 	rxq = &dev->rx_queues[queue_id];
 
-	ret = ena_rx_poll(ring, &rx_pkt, 1);
-	if (ret <= 0)
-		return ret;
+	while (1) {
+		ret = ena_rx_poll(ring, &rx_pkt, 1);
+		if (ret <= 0)
+			return ret;
 
-	if (rx_pkt.netbuf) {
+		if (!rx_pkt.netbuf)
+			return 0;
+
 		struct uk_netbuf *nb = (struct uk_netbuf *)rx_pkt.netbuf;
 		int16_t slot = (rxq->bounce_map && rx_pkt.req_id < rxq->nb_desc) ?
 			       rxq->bounce_map[rx_pkt.req_id] : -1;
@@ -1089,6 +1141,10 @@ static int ena_netdev_rxq_recv(struct uk_netdev *dev, uint16_t queue_id,
 		nb->l3_csum_err = rx_pkt.l3_csum_err;
 		nb->l4_csum_err = rx_pkt.l4_csum_err;
 		nb->l4_csum_checked = rx_pkt.l4_csum_checked;
+		nb->next = NULL;
+
+		if (!rx_pkt.l3_csum_err && !rx_pkt.l4_csum_err && rx_pkt.l4_csum_checked)
+			nb->flags |= UK_NETBUF_F_DATA_VALID;
 
 		if (slot >= 0) {
 			rxq->bounce_map[rx_pkt.req_id] = -1;
@@ -1114,10 +1170,36 @@ static int ena_netdev_rxq_recv(struct uk_netdev *dev, uint16_t queue_id,
 			return 0;
 		}
 
-		*pkt = nb;
+		/* Multi-descriptor packet reassembly */
+		if (rx_pkt.first && rx_pkt.last) {
+			*pkt = nb;
+			return 1;
+		} else if (rx_pkt.first && !rx_pkt.last) {
+			rxq->chain_head = nb;
+			rxq->chain_tail = nb;
+			continue;
+		} else if (!rx_pkt.first && !rx_pkt.last) {
+			if (rxq->chain_tail) {
+				rxq->chain_tail->next = nb;
+				rxq->chain_tail = nb;
+			} else {
+				ena_netdev_rxq_drop_netbuf(rxq, nb);
+			}
+			continue;
+		} else if (!rx_pkt.first && rx_pkt.last) {
+			if (rxq->chain_tail) {
+				rxq->chain_tail->next = nb;
+				rxq->chain_tail = nb;
+				*pkt = rxq->chain_head;
+				rxq->chain_head = NULL;
+				rxq->chain_tail = NULL;
+				return 1;
+			} else {
+				ena_netdev_rxq_drop_netbuf(rxq, nb);
+				return 0;
+			}
+		}
 	}
-
-	return 1;
 }
 
 static int ena_netdev_txq_xmit(struct uk_netdev *dev, uint16_t queue_id,

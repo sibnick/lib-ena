@@ -42,6 +42,8 @@ struct uk_netdev_rx_queue {
 	uint16_t *bounce_free_ids;
 	int16_t *bounce_map;
 	int16_t pending_slot;
+	struct uk_netbuf *chain_head;
+	struct uk_netbuf *chain_tail;
 };
 
 struct uk_netdev_tx_queue {
@@ -137,8 +139,15 @@ enum uk_netdev_state {
 };
 
 /* Feature flags */
-#define UK_NETDEV_F_RX_CSUM (1u << 0)
-#define UK_NETDEV_F_TX_CSUM (1u << 1)
+#define UK_NETDEV_F_RXQ_INTR       (1UL << 0)
+#define UK_NETDEV_F_TXQ_INTR       (1UL << 1)
+#define UK_NETDEV_F_PARTIAL_CSUM   (1UL << 2)
+#define UK_NETDEV_F_TSO4           (1UL << 3)
+#define UK_NETDEV_F_LRO            (1UL << 4)
+
+#define UK_NETBUF_F_DATA_VALID     (1 << 0)
+#define UK_NETBUF_F_PARTIAL_CSUM   (1 << 1)
+#define UK_NETBUF_F_GSO_TCPV4      (1 << 2)
 
 /* Hardware and driver capabilities */
 struct uk_netdev_info {
@@ -155,6 +164,7 @@ struct uk_netdev_info {
 struct uk_netdev_conf {
 	uint16_t nb_rx_queues;
 	uint16_t nb_tx_queues;
+	uint8_t  lro;
 };
 
 /* Queue configuration */
@@ -172,6 +182,9 @@ struct uk_netdev_txqueue_conf {
 
 /* Network buffer abstraction */
 struct uk_netbuf {
+	struct uk_netbuf *next;
+	struct uk_netbuf *prev;
+	uint8_t flags;
 	void *data;
 	size_t len;
 	size_t buflen;
