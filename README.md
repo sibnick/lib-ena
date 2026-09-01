@@ -20,12 +20,16 @@ The ENA driver provides high-performance networking for Unikraft unikernels runn
 
 ## Supported EC2 Instance Types
 
-The driver supports all AWS EC2 instance types equipped with ENA hardware:
+The driver supports x86_64 AWS EC2 instance types equipped with ENA hardware:
 
 - **General Purpose**: `t3`, `m5`, `m6i`, `m6a`, `m7i`, `m7a`
 - **Compute Optimized**: `c5`, `c6i`, `c6a`, `c7i`
 - **Memory Optimized**: `r5`, `r6i`, `r6a`, `r7i`
-- **Graviton (ARM64)**: `c6g`, `m6g`, `r6g`, `c7g`, `m7g`, `r7g`
+
+ARM64 (Graviton) instances are not supported at this time. The driver reads
+PCI config space with x86 port I/O (0xCF8/0xCFC) and cannot build for
+ARM64. Porting config space access to the UK ECAM API (available on aarch64
+since UK 0.19) is future work.
 
 ## Kconfig Configuration Options
 

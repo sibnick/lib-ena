@@ -630,6 +630,7 @@ static void test_netdev_invalid_ops(void)
 	/* Reconfigure while running */
 	assert(netdev->ops->configure(netdev, &conf) == -EBUSY);
 	assert(netdev->ops->rxq_configure(netdev, 0, 8, NULL) == -EBUSY);
+	assert(netdev->ops->txq_configure(netdev, 0, 8, NULL) == -EBUSY);
 
 	assert(netdev->ops->dev_stop(netdev) == 0);
 	test_free(tx_buf);
@@ -750,6 +751,119 @@ static void test_netdev_start_rollback(void)
 	ena_netdev_free(netdev);
 }
 
+static void test_netdev_free_running_teardown(void)
+{
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+	void *rx_arr;
+	void *tx_arr;
+	uint32_t sq_created;
+	uint32_t cq_created;
+
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
+
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	rx_arr = g_adapter.rx_rings;
+	tx_arr = g_adapter.tx_rings;
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 2;
+	conf.nb_tx_queues = 2;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+	assert(netdev->ops->rxq_configure(netdev, 0, 8, NULL) == 0);
+	assert(netdev->ops->rxq_configure(netdev, 1, 8, NULL) == 0);
+	assert(netdev->ops->txq_configure(netdev, 0, 8, NULL) == 0);
+	assert(netdev->ops->txq_configure(netdev, 1, 8, NULL) == 0);
+
+	assert(netdev->ops->dev_start(netdev) == 0);
+	assert(netdev->state == UK_NETDEV_RUNNING);
+
+	sq_created = g_hw.sq_created_count;
+	cq_created = g_hw.cq_created_count;
+	assert(sq_created > 0);
+	assert(cq_created > 0);
+
+	/*
+	 * Freeing a running device must complete the full teardown the
+	 * netdev API cannot express: stop the datapath (destroy every SQ
+	 * and CQ), release the bounce buffers, the rings, the admin
+	 * queues, and the host info buffer, then free the netdev struct.
+	 */
+	ena_netdev_free(netdev);
+
+	/* The driver frees the ring arrays with plain free(); balance
+	 * the test allocator tracker. */
+	if (rx_arr)
+		test_track_free(rx_arr);
+	if (tx_arr)
+		test_track_free(tx_arr);
+
+	/* Every queue created at start is destroyed at stop. */
+	assert(g_hw.sq_destroyed_count == sq_created);
+	assert(g_hw.cq_destroyed_count == cq_created);
+
+	/* The adapter is stopped and all driver-owned memory is released. */
+	assert(g_adapter.state == ENA_STATE_STOPPED);
+	assert(g_adapter.aq_base == NULL);
+	assert(g_adapter.acq_base == NULL);
+	assert(g_adapter.aenq_base == NULL);
+	assert(g_adapter.host_info_base == NULL);
+	assert(g_adapter.host_info_phys == 0);
+	assert(g_adapter.rx_rings == NULL);
+	assert(g_adapter.tx_rings == NULL);
+
+	/* A second fini on the already-released adapter is a no-op. */
+	ena_admin_fini(&g_adapter);
+	assert(g_adapter.state == ENA_STATE_STOPPED);
+}
+
+static void test_netdev_free_not_running(void)
+{
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+	void *rx_arr;
+	void *tx_arr;
+
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
+
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	rx_arr = g_adapter.rx_rings;
+	tx_arr = g_adapter.tx_rings;
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 1;
+	conf.nb_tx_queues = 1;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+	assert(netdev->ops->rxq_configure(netdev, 0, 8, NULL) == 0);
+	assert(netdev->ops->txq_configure(netdev, 0, 8, NULL) == 0);
+
+	/*
+	 * Freeing a configured but never-started device must release the
+	 * admin queues and the rings without issuing hardware destroys.
+	 */
+	ena_netdev_free(netdev);
+
+	if (rx_arr)
+		test_track_free(rx_arr);
+	if (tx_arr)
+		test_track_free(tx_arr);
+
+	assert(g_hw.sq_destroyed_count == 0);
+	assert(g_hw.cq_destroyed_count == 0);
+
+	assert(g_adapter.state == ENA_STATE_STOPPED);
+	assert(g_adapter.aq_base == NULL);
+	assert(g_adapter.acq_base == NULL);
+	assert(g_adapter.aenq_base == NULL);
+	assert(g_adapter.host_info_base == NULL);
+	assert(g_adapter.rx_rings == NULL);
+	assert(g_adapter.tx_rings == NULL);
+}
+
 int main(void)
 {
 	printf("========================================\n");
@@ -769,9 +883,11 @@ int main(void)
 	RUN_TEST(test_netdev_invalid_ops);
 	RUN_TEST(test_netdev_bounce_buffers);
 	RUN_TEST(test_netdev_start_rollback);
+	RUN_TEST(test_netdev_free_running_teardown);
+	RUN_TEST(test_netdev_free_not_running);
 
 	printf("========================================\n");
-	printf("ALL PHASE 7 NETDEV TESTS PASSED (10/10) \n");
+	printf("ALL PHASE 7 NETDEV TESTS PASSED (12/12) \n");
 	printf("========================================\n");
 	return 0;
 }
