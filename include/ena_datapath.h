@@ -219,6 +219,7 @@ struct ena_ring {
 	uint64_t push_buf_phys;
 	uint32_t push_buf_size;
 	uint32_t llq_header_len;
+	uint32_t llq_entry_size;
 };
 
 static inline void ena_ring_lock(struct ena_ring *ring)
@@ -347,6 +348,28 @@ int ena_admin_create_sq(struct ena_adapter *adapter, uint16_t sq_depth,
  * @return 0 on success, or a negative errno value on error.
  */
 int ena_admin_destroy_sq(struct ena_adapter *adapter, uint16_t sq_idx);
+
+/**
+ * Issue a CREATE_SQ admin command for a device-placement (LLQ) queue.
+ * The queue lives in the device LLQ BAR2, so no host SQ address is passed.
+ * The response provides the BAR2 offsets of the descriptor ring and the
+ * header ring.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param sq_depth Submission queue depth in entries.
+ * @param cq_idx Hardware index of the paired Completion Queue.
+ * @param direction Queue traffic direction (1 for TX, 2 for RX).
+ * @param out_sq_idx Output pointer for the device-assigned SQ hardware index.
+ * @param out_db_offset Output pointer for the doorbell register byte offset.
+ * @param out_llq_descs_off Output pointer for the LLQ BAR2 descriptor offset.
+ * @param out_llq_headers_off Output pointer for the LLQ BAR2 header offset.
+ * @return 0 on success, or a negative errno value on error.
+ */
+int ena_admin_create_sq_llq(struct ena_adapter *adapter, uint16_t sq_depth,
+			    uint16_t cq_idx, uint8_t direction,
+			    uint16_t *out_sq_idx, uint32_t *out_db_offset,
+			    uint32_t *out_llq_descs_off,
+			    uint32_t *out_llq_headers_off);
 
 /* Protocol Indexes (matching reference/ena_eth_io_defs.h) */
 enum ena_eth_io_l3_proto_index {

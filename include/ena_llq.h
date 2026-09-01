@@ -27,6 +27,12 @@ enum ena_llq_entry_size {
 	ENA_LLQ_ENTRY_SIZE_256B = 4,
 };
 
+/* Stride control for LLQ descriptor entries (reference/ena_admin_defs.h). */
+enum ena_llq_stride_ctrl {
+	ENA_LLQ_SINGLE_DESC_PER_ENTRY     = 1,
+	ENA_LLQ_MULTIPLE_DESCS_PER_ENTRY  = 2,
+};
+
 /* Wire format for LLQ Get/Set Feature */
 struct ena_admin_feature_llq_desc {
 	uint32_t max_llq_num;
@@ -52,6 +58,20 @@ struct ena_llq_info {
 	uint16_t header_len;
 	uint16_t entry_size;
 };
+
+/**
+ * Select the LLQ entry layout from a device LLQ feature descriptor.
+ * The driver uses inline headers in a 128-byte entry. That layout holds
+ * one 16-byte descriptor and a 96-byte header, which covers standard
+ * L2 to L4 headers.
+ *
+ * @param desc Pointer to the LLQ feature descriptor from the device.
+ * @param entry_size_out Output pointer for the entry size in bytes.
+ * @param header_len_out Output pointer for the inline header capacity in bytes.
+ * @return 0 on success, or a negative errno value on error.
+ */
+int ena_llq_select_params(const struct ena_admin_feature_llq_desc *desc,
+			  uint16_t *entry_size_out, uint16_t *header_len_out);
 
 /**
  * Negotiate Low Latency Queue (LLQ) features and entry size with the device.

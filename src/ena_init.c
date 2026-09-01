@@ -253,14 +253,44 @@ int ena_init_get_mac_addr(struct ena_adapter *adapter, uint8_t mac[6])
 	return 0;
 }
 
+int ena_llq_select_params(const struct ena_admin_feature_llq_desc *desc,
+			  uint16_t *entry_size_out, uint16_t *header_len_out)
+{
+	if (!desc || !entry_size_out || !header_len_out)
+		return -EINVAL;
+
+	/* The driver picks inline headers in a 128-byte entry. That layout
+	 * holds one 16-byte descriptor and a 96-byte header. Other layouts
+	 * need multi-descriptor header assembly, which this driver does not
+	 * implement. */
+	if ((desc->header_location_ctrl_supported & ENA_LLQ_INLINE_HEADER) == 0)
+		return -ENOTSUP;
+	if ((desc->entry_size_ctrl_supported & ENA_LLQ_ENTRY_SIZE_128B) == 0)
+		return -ENOTSUP;
+
+	*entry_size_out = 128;
+	*header_len_out =
+		(uint16_t)(128 - 2 * (uint16_t)sizeof(struct ena_eth_io_tx_desc));
+	return 0;
+}
+
 int ena_init_config_llq(struct ena_adapter *adapter)
 {
 	struct ena_admin_get_feat_inline get_req;
 	struct ena_admin_feature_llq_desc llq;
+	uint16_t entry_size = 0;
+	uint16_t header_len = 0;
 	int ret;
 
 	if (!adapter)
 		return -EINVAL;
+
+	memset(&adapter->llq_info, 0, sizeof(adapter->llq_info));
+
+	/* LLQ push mode needs the BAR2 MMIO region. Devices without BAR2
+	 * stay in standard host-memory mode. */
+	if (!adapter->bar2_base || adapter->bar2_size == 0)
+		return 0;
 
 	memset(&get_req, 0, sizeof(get_req));
 	get_req.feat_common.flags = ENA_ADMIN_FEAT_SELECT_CURRENT;
@@ -280,6 +310,12 @@ int ena_init_config_llq(struct ena_adapter *adapter)
 	if (llq.max_llq_num == 0)
 		return 0;
 
+	ret = ena_llq_select_params(&llq, &entry_size, &header_len);
+	if (ret) {
+		ena_info("LLQ: required layout not supported by device (%d)", ret);
+		return 0;
+	}
+
 	struct {
 		struct ena_admin_ctrl_buff_info control_buffer;
 		struct ena_admin_get_set_feature_common_desc feat_common;
@@ -291,14 +327,15 @@ int ena_init_config_llq(struct ena_adapter *adapter)
 	set_req.feat_common.feature_id = ENA_ADMIN_LLQ;
 	set_req.llq = llq;
 
-	if (llq.header_location_ctrl_supported & 1)
-		set_req.llq.header_location_ctrl_enabled = 1;
-	if (llq.entry_size_ctrl_supported & 1)
-		set_req.llq.entry_size_ctrl_enabled = 1;
-	if (llq.desc_num_before_header_supported & 1)
+	/* Select the layout the driver implements: inline header in a
+	 * 128-byte entry with one descriptor before the header. */
+	set_req.llq.header_location_ctrl_enabled = ENA_LLQ_INLINE_HEADER;
+	set_req.llq.entry_size_ctrl_enabled = ENA_LLQ_ENTRY_SIZE_128B;
+	if (set_req.llq.desc_num_before_header_supported & 1)
 		set_req.llq.desc_num_before_header_enabled = 1;
-	if (llq.descriptors_stride_ctrl_supported & 1)
-		set_req.llq.descriptors_stride_ctrl_enabled = 1;
+	if (set_req.llq.descriptors_stride_ctrl_supported & 1)
+		set_req.llq.descriptors_stride_ctrl_enabled =
+			ENA_LLQ_SINGLE_DESC_PER_ENTRY;
 
 	ret = ena_init_exec(adapter, ENA_ADMIN_SET_FEATURE, &set_req, sizeof(set_req),
 			    NULL, 0);
@@ -311,10 +348,10 @@ int ena_init_config_llq(struct ena_adapter *adapter)
 	adapter->llq_info.enabled = true;
 	adapter->llq_info.max_llq_num = llq.max_llq_num;
 	adapter->llq_info.max_llq_depth = llq.max_llq_depth;
-	adapter->llq_info.entry_size = 128;
-	adapter->llq_info.header_len = 96;
+	adapter->llq_info.entry_size = entry_size;
+	adapter->llq_info.header_len = header_len;
 
-	ena_info("LLQ: enabled (entry_size=128)");
+	ena_info("LLQ: enabled (entry_size=%u header_len=%u)", entry_size, header_len);
 	return 0;
 }
 
