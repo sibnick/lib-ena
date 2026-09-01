@@ -114,6 +114,11 @@ struct mock_ena_hw {
 	uint32_t cq_destroyed_count;
 	uint32_t sq_destroyed_count;
 
+	/* Phase 9: LLQ BAR2 emulation (0 = device without a BAR2) */
+	uint32_t dev_llq_bar_size;
+	uint32_t llq_next_off;
+	uint8_t last_sq_placement;
+
 	/* Phase 4: Mock CQ internal state tracking per queue */
 	struct mock_io_cq_state io_tx_cq_state[MOCK_MAX_IO_QUEUES];
 	struct mock_io_cq_state io_rx_cq_state[MOCK_MAX_IO_QUEUES];

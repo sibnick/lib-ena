@@ -265,6 +265,33 @@ static void ena_netdev_free_txq_bounce(struct uk_netdev_tx_queue *txq)
 	txq->nb_desc = 0;
 }
 
+/* Submit one prepared TX packet on a ring. If the ring uses a device
+ * LLQ push buffer, the descriptor and the inline header go to BAR2 and
+ * the doorbell is rung inside ena_llq_tx_push(). Otherwise the standard
+ * host-memory submission path is used. */
+static int ena_netdev_tx_xmit_one(struct ena_ring *ring,
+				  const struct ena_tx_pkt *tx_pkt,
+				  const void *hdr_data, uint16_t *out_req_id)
+{
+	if (ring->is_llq) {
+		uint32_t max_hdr = ring->llq_header_len ?
+				   ring->llq_header_len : 96;
+		uint16_t hdr_len = (uint16_t)(tx_pkt->len < max_hdr ?
+					      tx_pkt->len : max_hdr);
+
+		return ena_llq_tx_push(ring, tx_pkt, hdr_data, hdr_len,
+				       out_req_id);
+	}
+
+	{
+		int ret = ena_tx_submit(ring, tx_pkt, out_req_id);
+
+		if (ret == 0)
+			ena_tx_doorbell(ring);
+		return ret;
+	}
+}
+
 #ifdef __Unikraft__
 
 
@@ -624,13 +651,15 @@ int ena_netdev_tx_one(struct uk_netdev *dev __attribute__((unused)),
 	tx_pkt.phys_addr = phys;
 	ena_netdev_classify_tx_pkt(pkt, &tx_pkt);
 
-	ret = ena_tx_submit(ring, &tx_pkt, &req_id);
+	ret = ena_netdev_tx_xmit_one(ring, &tx_pkt,
+				     used_bounce ? queue->bounce_buf :
+						     (const void *)pkt->data,
+				     &req_id);
 	if (ret == 0) {
 		if (used_bounce) {
 			queue->bounce_in_use = true;
 			queue->bounce_req_id = req_id;
 		}
-		ena_tx_doorbell(ring);
 		return UK_NETDEV_STATUS_SUCCESS;
 	}
 
@@ -978,13 +1007,15 @@ static int ena_netdev_txq_xmit(struct uk_netdev *dev, uint16_t queue_id,
 	tx_pkt.len = (uint32_t)pkt->len;
 	ena_netdev_classify_tx_pkt(pkt, &tx_pkt);
 
-	ret = ena_tx_submit(ring, &tx_pkt, &req_id);
+	ret = ena_netdev_tx_xmit_one(ring, &tx_pkt,
+				     used_bounce ? txq->bounce_buf :
+						     (const void *)pkt->data,
+				     &req_id);
 	if (ret == 0) {
 		if (used_bounce) {
 			txq->bounce_in_use = true;
 			txq->bounce_req_id = req_id;
 		}
-		ena_tx_doorbell(ring);
 	}
 
 	return ret;

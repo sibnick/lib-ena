@@ -71,29 +71,58 @@ static inline void pci_enable_device(const struct pci_address *addr)
 	pci_write32(addr, 0x04, cmd);
 }
 
-static inline uint64_t pci_read_bar0(const struct pci_address *addr)
+/* Read a PCI BAR at the given config register offset. A 64-bit MMIO BAR
+ * spans two dwords (the high dword is at offset + 4). */
+static inline uint64_t pci_read_bar(const struct pci_address *addr, uint32_t reg)
 {
-	uint32_t bar0_lo = pci_read32(addr, 0x10);
-	uint64_t bar0 = (bar0_lo & ~0x0Fu);
-	if ((bar0_lo & 0x06) == 0x04) { /* 64-bit MMIO BAR */
-		uint32_t bar0_hi = pci_read32(addr, 0x14);
-		bar0 |= ((uint64_t)bar0_hi << 32);
+	uint32_t bar_lo = pci_read32(addr, reg);
+	uint64_t bar = (bar_lo & ~0x0Fu);
+	if ((bar_lo & 0x06) == 0x04) { /* 64-bit MMIO BAR */
+		uint32_t bar_hi = pci_read32(addr, reg + 4);
+		bar |= ((uint64_t)bar_hi << 32);
 	}
-	return bar0;
+	return bar;
 }
 
-static inline uint32_t pci_read_bar0_size(const struct pci_address *addr)
+/* Probe the size of a PCI BAR by writing all ones and reading back the
+ * decode mask. Returns 0 for an unimplemented BAR. */
+static inline uint64_t pci_read_bar_size(const struct pci_address *addr, uint32_t reg)
 {
-	uint32_t bar0_orig = pci_read32(addr, 0x10);
-	pci_write32(addr, 0x10, 0xFFFFFFFFu);
-	uint32_t mask = pci_read32(addr, 0x10);
-	pci_write32(addr, 0x10, bar0_orig);
+	uint32_t bar_lo_orig = pci_read32(addr, reg);
+	uint32_t bar_hi_orig = 0;
+	uint32_t mask_lo;
+	uint64_t mask;
+	bool bar64 = ((bar_lo_orig & 0x06) == 0x04);
 
-	uint32_t size_mask = mask & ~0x0Fu;
-	if (size_mask == 0)
-		return 0x4000;
+	if (bar64)
+		bar_hi_orig = pci_read32(addr, reg + 4);
 
-	return (~size_mask) + 1;
+	pci_write32(addr, reg, 0xFFFFFFFFu);
+	if (bar64)
+		pci_write32(addr, reg + 4, 0xFFFFFFFFu);
+
+	mask_lo = pci_read32(addr, reg);
+	if (bar64) {
+		uint32_t mask_hi = pci_read32(addr, reg + 4);
+
+		/* A size that fits in the low dword reads back with a
+		 * defined low mask. A larger size spans the high dword. */
+		if (mask_lo == 0xFFFFFFFFu)
+			mask = ((uint64_t)mask_hi << 32) | mask_lo;
+		else
+			mask = mask_lo & ~0x0Fu;
+	} else {
+		mask = mask_lo & ~0x0Fu;
+	}
+
+	pci_write32(addr, reg, bar_lo_orig);
+	if (bar64)
+		pci_write32(addr, reg + 4, bar_hi_orig);
+
+	if (mask == 0)
+		return 0;
+
+	return (~mask) + 1;
 }
 
 static const struct pci_device_id ena_pci_ids[] = {
@@ -123,11 +152,13 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 	}
 
 	/* 2. Read full 64-bit BAR0 MMIO address and size */
-	bar0_size = pci_read_bar0_size(&pdev->addr);
+	bar0_size = (uint32_t)pci_read_bar_size(&pdev->addr, 0x10);
+	if (bar0_size == 0)
+		bar0_size = 0x4000;
 	if (bar0_size < 0x104)
 		bar0_size = 0x104;
 
-	bar0_phys = pci_read_bar0(&pdev->addr);
+	bar0_phys = pci_read_bar(&pdev->addr, 0x10);
 	bar0 = (void *)(uintptr_t)bar0_phys;
 
 	edev = uk_calloc(uk_alloc_get_default(), 1, sizeof(*edev));
@@ -144,6 +175,32 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 		ena_err("probe: init scaffold failed (%d)", ret);
 		uk_free(uk_alloc_get_default(), edev);
 		return ret;
+	}
+
+	/* 3b. Map the optional LLQ BAR2 (64-bit MMIO push region). The
+	 * scaffold call above zeros the adapter, so the BAR2 pointers are
+	 * set here before feature negotiation reads them. */
+	{
+		uint32_t bar2_lo = pci_read32(&pdev->addr, 0x18);
+
+		if ((bar2_lo & 0x01) == 0) { /* memory BAR */
+			uint64_t bar2_phys = pci_read_bar(&pdev->addr, 0x18);
+			uint64_t bar2_size = pci_read_bar_size(&pdev->addr, 0x18);
+
+			if (bar2_phys != 0 && bar2_size != 0) {
+				edev->bar2_vaddr = (void *)(uintptr_t)bar2_phys;
+				edev->adapter.bar2_base =
+					(volatile uint8_t *)(uintptr_t)bar2_phys;
+				edev->adapter.bar2_size = (size_t)bar2_size;
+				ena_info("probe: bar2=%p (phys=0x%lx, size=0x%lx)",
+					 edev->bar2_vaddr, (unsigned long)bar2_phys,
+					 (unsigned long)bar2_size);
+			} else {
+				ena_info("probe: BAR2 unimplemented (no LLQ push region)");
+			}
+		} else {
+			ena_info("probe: BAR2 is I/O space (no LLQ push region)");
+		}
 	}
 
 	sts = ena_reg_read32(edev->adapter.bar0_base + ENA_REGS_DEV_STS_OFF);

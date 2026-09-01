@@ -295,10 +295,18 @@ int ena_admin_destroy_cq(struct ena_adapter *adapter, uint16_t cq_idx)
 				  &resp, 0, NULL, ENA_DATAPATH_MAX_POLLS);
 }
 
-int ena_admin_create_sq(struct ena_adapter *adapter, uint16_t sq_depth,
-			uint64_t sq_phys, uint64_t sq_head_wb_phys,
-			uint16_t cq_idx, uint8_t direction,
-			uint16_t *out_sq_idx, uint32_t *out_db_offset)
+/* Shared implementation of the CREATE_SQ admin command. The placement
+ * policy selects where the device keeps the queue: in host memory, or in
+ * the device LLQ BAR2 (reference/ena_admin_defs.h). */
+static int ena_admin_create_sq_common(struct ena_adapter *adapter,
+				      uint8_t placement, uint16_t sq_depth,
+				      uint64_t sq_phys,
+				      uint64_t sq_head_wb_phys,
+				      uint16_t cq_idx, uint8_t direction,
+				      uint16_t *out_sq_idx,
+				      uint32_t *out_db_offset,
+				      uint32_t *out_llq_descs_off,
+				      uint32_t *out_llq_headers_off)
 {
 	struct ena_admin_aq_create_sq_cmd cmd;
 	struct ena_admin_acq_create_sq_resp_desc resp;
@@ -309,15 +317,22 @@ int ena_admin_create_sq(struct ena_adapter *adapter, uint16_t sq_depth,
 
 	memset(&cmd, 0, sizeof(cmd));
 	cmd.sq_identity = (uint8_t)((direction & 0x07u) << 5);
-	cmd.sq_caps_2 = 0x01; /* Host placement, CQE */
-	cmd.sq_caps_3 = 1;    /* physically contiguous */
+	cmd.sq_caps_2 = placement; /* CQE completion policy is 0 */
+	cmd.sq_caps_3 = 1;         /* physically contiguous */
 	cmd.cq_idx = cq_idx;
 	cmd.sq_depth = sq_depth;
-	cmd.sq_ba.mem_addr_low = (uint32_t)(sq_phys & 0xFFFFFFFFu);
-	cmd.sq_ba.mem_addr_high = (uint16_t)((sq_phys >> 32) & 0xFFFFu);
-	if (sq_head_wb_phys != 0) {
-		cmd.sq_head_writeback.mem_addr_low = (uint32_t)(sq_head_wb_phys & 0xFFFFFFFFu);
-		cmd.sq_head_writeback.mem_addr_high = (uint16_t)((sq_head_wb_phys >> 32) & 0xFFFFu);
+
+	if (placement == ENA_ADMIN_PLACEMENT_POLICY_HOST) {
+		/* LLQ queues live in device memory. The spec marks the host
+		 * address fields as unused for those queues. */
+		cmd.sq_ba.mem_addr_low = (uint32_t)(sq_phys & 0xFFFFFFFFu);
+		cmd.sq_ba.mem_addr_high = (uint16_t)((sq_phys >> 32) & 0xFFFFu);
+		if (sq_head_wb_phys != 0) {
+			cmd.sq_head_writeback.mem_addr_low =
+				(uint32_t)(sq_head_wb_phys & 0xFFFFFFFFu);
+			cmd.sq_head_writeback.mem_addr_high =
+				(uint16_t)((sq_head_wb_phys >> 32) & 0xFFFFu);
+		}
 	}
 
 	ret = ena_admin_exec_cmd(adapter, ENA_ADMIN_CREATE_SQ,
@@ -337,6 +352,11 @@ int ena_admin_create_sq(struct ena_adapter *adapter, uint16_t sq_depth,
 	*out_sq_idx = sq_idx;
 	*out_db_offset = sq_doorbell_offset;
 
+	if (out_llq_descs_off)
+		*out_llq_descs_off = ena_le32_to_cpu(resp.llq_descriptors_offset);
+	if (out_llq_headers_off)
+		*out_llq_headers_off = ena_le32_to_cpu(resp.llq_headers_offset);
+
 	if (adapter->bar0_size && sq_doorbell_offset != 0) {
 		if (sq_doorbell_offset + sizeof(uint32_t) > adapter->bar0_size ||
 		    (sq_doorbell_offset & 3) != 0) {
@@ -347,9 +367,37 @@ int ena_admin_create_sq(struct ena_adapter *adapter, uint16_t sq_depth,
 		}
 	}
 
-	ena_info("create_sq: SUCCESS dir=%u sq_idx=%u db_offset=0x%x",
-		 direction, sq_idx, sq_doorbell_offset);
+	ena_info("create_sq: SUCCESS dir=%u sq_idx=%u db_offset=0x%x placement=%u",
+		 direction, sq_idx, sq_doorbell_offset, placement);
 	return 0;
+}
+
+int ena_admin_create_sq(struct ena_adapter *adapter, uint16_t sq_depth,
+			uint64_t sq_phys, uint64_t sq_head_wb_phys,
+			uint16_t cq_idx, uint8_t direction,
+			uint16_t *out_sq_idx, uint32_t *out_db_offset)
+{
+	return ena_admin_create_sq_common(adapter,
+					  ENA_ADMIN_PLACEMENT_POLICY_HOST,
+					  sq_depth, sq_phys, sq_head_wb_phys,
+					  cq_idx, direction, out_sq_idx,
+					  out_db_offset, NULL, NULL);
+}
+
+int ena_admin_create_sq_llq(struct ena_adapter *adapter, uint16_t sq_depth,
+			    uint16_t cq_idx, uint8_t direction,
+			    uint16_t *out_sq_idx, uint32_t *out_db_offset,
+			    uint32_t *out_llq_descs_off,
+			    uint32_t *out_llq_headers_off)
+{
+	if (!out_llq_descs_off || !out_llq_headers_off)
+		return -EINVAL;
+
+	return ena_admin_create_sq_common(adapter,
+					  ENA_ADMIN_PLACEMENT_POLICY_DEV,
+					  sq_depth, 0, 0, cq_idx, direction,
+					  out_sq_idx, out_db_offset,
+					  out_llq_descs_off, out_llq_headers_off);
 }
 
 int ena_admin_destroy_sq(struct ena_adapter *adapter, uint16_t sq_idx)
@@ -371,18 +419,23 @@ int ena_admin_destroy_sq(struct ena_adapter *adapter, uint16_t sq_idx)
 
 int ena_ring_create_hw(struct ena_ring *ring, uint32_t msix_vector)
 {
+	struct ena_adapter *adapter;
 	uint8_t direction;
+	uint32_t llq_descs_off = 0;
+	uint32_t llq_headers_off = 0;
+	bool llq_active = false;
 	int ret;
 
 	if (!ring || !ring->adapter || !ring->adapter->bar0_base)
 		return -EINVAL;
 
+	adapter = ring->adapter;
 	direction = (ring->ring_type == ENA_RING_TYPE_TX) ?
 		    ENA_ADMIN_SQ_DIRECTION_TX : ENA_ADMIN_SQ_DIRECTION_RX;
 
-	/* 1. Create Completion Queue */
+	/* 1. Create Completion Queue (always in host memory) */
 	uint8_t cq_entry_words = (ring->ring_type == ENA_RING_TYPE_TX) ? 2 : 4;
-	ret = ena_admin_create_cq(ring->adapter, ring->cq_depth, ring->cq_phys,
+	ret = ena_admin_create_cq(adapter, ring->cq_depth, ring->cq_phys,
 				  msix_vector, cq_entry_words, &ring->cq_idx, &ring->cq_db_offset);
 	if (ret) {
 		ena_err("ring create hw: failed to create CQ (%d)", ret);
@@ -390,38 +443,101 @@ int ena_ring_create_hw(struct ena_ring *ring, uint32_t msix_vector)
 	}
 
 	if (ring->cq_db_offset != 0) {
-		if (ring->cq_db_offset + sizeof(uint32_t) > ring->adapter->bar0_size ||
+		if (ring->cq_db_offset + sizeof(uint32_t) > adapter->bar0_size ||
 		    (ring->cq_db_offset & 3) != 0) {
 			ena_err("ring create hw: invalid CQ db_offset 0x%x (bar0_size 0x%zx)",
-				ring->cq_db_offset, ring->adapter->bar0_size);
-			ena_admin_destroy_cq(ring->adapter, ring->cq_idx);
+				ring->cq_db_offset, adapter->bar0_size);
+			ena_admin_destroy_cq(adapter, ring->cq_idx);
 			return -EINVAL;
 		}
 		ring->cq_db = (volatile uint32_t *)
-			(ring->adapter->bar0_base + ring->cq_db_offset);
+			(adapter->bar0_base + ring->cq_db_offset);
 	}
 
-	/* 2. Create Submission Queue associated with CQ */
-	ret = ena_admin_create_sq(ring->adapter, ring->sq_depth, ring->sq_phys,
-				  ring->sq_head_wb_phys, ring->cq_idx, direction,
-				  &ring->sq_idx, &ring->sq_db_offset);
-	if (ret) {
-		ena_err("ring create hw: failed to create SQ (%d)", ret);
-		ena_admin_destroy_cq(ring->adapter, ring->cq_idx);
-		return ret;
+	/* 2. Create Submission Queue associated with CQ.
+	 * When LLQ mode is active, a TX queue is created in device
+	 * placement. The device returns the BAR2 offsets of the descriptor
+	 * ring and the header ring in the response. */
+	if (ring->ring_type == ENA_RING_TYPE_TX && adapter->llq_info.enabled &&
+	    adapter->bar2_base && adapter->bar2_size > 0 &&
+	    (adapter->llq_info.max_llq_num == 0 ||
+	     ring->qid < adapter->llq_info.max_llq_num)) {
+		ret = ena_admin_create_sq_llq(adapter, ring->sq_depth, ring->cq_idx,
+					      direction, &ring->sq_idx,
+					      &ring->sq_db_offset, &llq_descs_off,
+					      &llq_headers_off);
+		if (ret == 0) {
+			size_t entry_size = adapter->llq_info.entry_size ?
+					    adapter->llq_info.entry_size : 128;
+			size_t ring_area = (size_t)ring->sq_depth * entry_size;
+
+			if (llq_descs_off == 0 ||
+			    (size_t)llq_descs_off + ring_area > adapter->bar2_size ||
+			    (llq_headers_off != 0 &&
+			     (size_t)llq_headers_off + ring_area > adapter->bar2_size)) {
+				ena_warn("create_hw: invalid LLQ offset (descs=0x%x headers=0x%x bar2=0x%zx)",
+					 llq_descs_off, llq_headers_off,
+					 adapter->bar2_size);
+				ena_admin_destroy_sq(adapter, ring->sq_idx);
+				ret = -EINVAL;
+			}
+		}
+
+		if (ret) {
+			/* The device refused the LLQ queue. Fall back to
+			 * host-memory placement so the queue still works. */
+			ena_warn("create_hw: LLQ SQ rejected (%d), using host placement", ret);
+			ret = ena_admin_create_sq(adapter, ring->sq_depth, ring->sq_phys,
+						  ring->sq_head_wb_phys, ring->cq_idx,
+						  direction, &ring->sq_idx,
+						  &ring->sq_db_offset);
+			if (ret) {
+				ena_err("ring create hw: failed to create SQ (%d)", ret);
+				ena_admin_destroy_cq(adapter, ring->cq_idx);
+				return ret;
+			}
+		} else {
+			llq_active = true;
+		}
+	} else {
+		ret = ena_admin_create_sq(adapter, ring->sq_depth, ring->sq_phys,
+					  ring->sq_head_wb_phys, ring->cq_idx, direction,
+					  &ring->sq_idx, &ring->sq_db_offset);
+		if (ret) {
+			ena_err("ring create hw: failed to create SQ (%d)", ret);
+			ena_admin_destroy_cq(adapter, ring->cq_idx);
+			return ret;
+		}
 	}
 
 	if (ring->sq_db_offset != 0) {
-		if (ring->sq_db_offset + sizeof(uint32_t) > ring->adapter->bar0_size ||
+		if (ring->sq_db_offset + sizeof(uint32_t) > adapter->bar0_size ||
 		    (ring->sq_db_offset & 3) != 0) {
 			ena_err("ring create hw: invalid SQ db_offset 0x%x (bar0_size 0x%zx)",
-				ring->sq_db_offset, ring->adapter->bar0_size);
-			ena_admin_destroy_sq(ring->adapter, ring->sq_idx);
-			ena_admin_destroy_cq(ring->adapter, ring->cq_idx);
+				ring->sq_db_offset, adapter->bar0_size);
+			ena_admin_destroy_sq(adapter, ring->sq_idx);
+			ena_admin_destroy_cq(adapter, ring->cq_idx);
 			return -EINVAL;
 		}
 		ring->sq_db = (volatile uint32_t *)
-			(ring->adapter->bar0_base + ring->sq_db_offset);
+			(adapter->bar0_base + ring->sq_db_offset);
+	}
+
+	if (llq_active) {
+		size_t entry_size = adapter->llq_info.entry_size ?
+				    adapter->llq_info.entry_size : 128;
+
+		ring->is_llq = true;
+		ring->push_buf_virt =
+			(void *)(uintptr_t)(adapter->bar2_base + llq_descs_off);
+		ring->push_buf_phys = 0;
+		ring->push_buf_size = (uint32_t)((size_t)ring->sq_depth * entry_size);
+		ring->llq_entry_size = (uint32_t)entry_size;
+		ring->llq_header_len = adapter->llq_info.header_len;
+
+		ena_info("create_hw: LLQ SQ qid=%u sq_idx=%u push_off=0x%x depth=%u entry=%u",
+			 ring->qid, ring->sq_idx, llq_descs_off, ring->sq_depth,
+			 (unsigned int)entry_size);
 	}
 
 	return 0;
@@ -451,6 +567,15 @@ int ena_ring_destroy_hw(struct ena_ring *ring)
 
 	ring->sq_db = NULL;
 	ring->cq_db = NULL;
+
+	/* The LLQ push buffer is device MMIO. Nothing to release on the
+	 * host side. */
+	ring->is_llq = false;
+	ring->push_buf_virt = NULL;
+	ring->push_buf_phys = 0;
+	ring->push_buf_size = 0;
+	ring->llq_entry_size = 0;
+	ring->llq_header_len = 0;
 
 	return ret;
 }

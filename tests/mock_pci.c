@@ -108,6 +108,11 @@ void mock_ena_hw_init(struct mock_ena_hw *hw)
 	hw->cq_destroyed_count = 0;
 	hw->sq_destroyed_count = 0;
 
+	/* Phase 9: LLQ BAR2 emulation */
+	hw->dev_llq_bar_size = 0;
+	hw->llq_next_off = 0x1000;
+	hw->last_sq_placement = 0;
+
 	for (i = 0; i < MOCK_MAX_IO_QUEUES; i++) {
 		hw->io_tx_cq_state[i].cq_tail = 0;
 		hw->io_tx_cq_state[i].cq_phase = 1;
@@ -223,15 +228,52 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 			    cmd->sq_depth > hw->dev_max_sq_depth) {
 				status = ENA_ADMIN_ILLEGAL_PARAMETER;
 			} else {
+				uint8_t placement = (uint8_t)(cmd->sq_caps_2 & 0x0Fu);
+
 				hw->sq_created_count++;
 				hw->last_sq_depth = cmd->sq_depth;
 				hw->last_sq_phys = cmd->sq_ba.mem_addr_low;
 				hw->last_sq_direction = (cmd->sq_identity >> 5) & 0x7;
 				hw->last_sq_cq_idx = cmd->cq_idx;
+				hw->last_sq_placement = placement;
 				resp->sq_idx = hw->next_sq_id++;
 				resp->sq_doorbell_offset =
 					hw->inject_bad_db_offset ?
 					hw->bad_db_offset : 0x2C;
+
+				/* Device-placement queues live in the LLQ
+				 * BAR2. The response returns the BAR2
+				 * offsets of the descriptor ring and the
+				 * header ring. */
+				if (placement == ENA_ADMIN_PLACEMENT_POLICY_DEV) {
+					size_t descs_area;
+					size_t headers_area;
+
+					if (!(hw->dev_supported_features &
+					      (1u << ENA_ADMIN_LLQ)) ||
+					    hw->dev_llq_bar_size == 0) {
+						status = ENA_ADMIN_ILLEGAL_PARAMETER;
+					} else {
+						descs_area = (size_t)cmd->sq_depth * 128;
+						headers_area = (size_t)cmd->sq_depth * 128;
+
+						if ((size_t)hw->llq_next_off +
+						    descs_area + headers_area >
+						    hw->dev_llq_bar_size) {
+							status = ENA_ADMIN_ILLEGAL_PARAMETER;
+						} else {
+							uint32_t descs_off = hw->llq_next_off;
+
+							resp->llq_descriptors_offset = descs_off;
+							resp->llq_headers_offset =
+								descs_off + (uint32_t)descs_area;
+							hw->llq_next_off +=
+								(uint32_t)(descs_area +
+									     headers_area);
+						}
+					}
+				}
+
 				filled = 1;
 			}
 		} else if (req->aq_common_desc.opcode == ENA_ADMIN_DESTROY_SQ) {
@@ -594,7 +636,6 @@ void mock_ena_hw_inject_aenq(struct mock_ena_hw *hw, uint16_t group,
 void mock_ena_hw_emulate_tx(struct mock_ena_hw *hw, struct ena_ring *ring,
 			    unsigned int count)
 {
-	struct ena_eth_io_tx_desc *sq_descs;
 	struct ena_eth_io_tx_cdesc *cq_descs;
 	unsigned int i;
 	uint16_t sq_idx;
@@ -602,21 +643,40 @@ void mock_ena_hw_emulate_tx(struct mock_ena_hw *hw, struct ena_ring *ring,
 	uint16_t req_id;
 	uint16_t qid;
 
-	if (!hw || !ring || !ring->sq_virt || !ring->cq_virt || count == 0)
+	if (!hw || !ring || !ring->cq_virt || count == 0)
+		return;
+
+	/* LLQ queues keep their descriptors in the BAR2 push buffer.
+	 * Standard queues keep them in the host SQ ring. */
+	if (!ring->is_llq && !ring->sq_virt)
 		return;
 
 	qid = ring->qid;
 	if (qid >= MOCK_MAX_IO_QUEUES)
 		qid = 0;
 
-	sq_descs = (struct ena_eth_io_tx_desc *)ring->sq_virt;
 	cq_descs = (struct ena_eth_io_tx_cdesc *)ring->cq_virt;
 
 	for (i = 0; i < count; i++) {
+		const struct ena_eth_io_tx_desc *slot_desc;
+
 		sq_idx = (ring->sq_head + (uint16_t)i) & (ring->sq_depth - 1);
-		req_id = (uint16_t)(((sq_descs[sq_idx].len_ctrl & ENA_ETH_IO_TX_DESC_REQ_ID_HI_MASK) >>
+
+		if (ring->is_llq && ring->push_buf_virt) {
+			size_t entry_size = ring->llq_entry_size ?
+				ring->llq_entry_size : 128;
+
+			slot_desc = (const struct ena_eth_io_tx_desc *)
+				((const uint8_t *)ring->push_buf_virt +
+				 (size_t)sq_idx * entry_size);
+		} else {
+			slot_desc =
+				&((struct ena_eth_io_tx_desc *)ring->sq_virt)[sq_idx];
+		}
+
+		req_id = (uint16_t)(((slot_desc->len_ctrl & ENA_ETH_IO_TX_DESC_REQ_ID_HI_MASK) >>
 				     ENA_ETH_IO_TX_DESC_REQ_ID_HI_SHIFT) << 10 |
-				    ((sq_descs[sq_idx].meta_ctrl & ENA_ETH_IO_TX_DESC_REQ_ID_LO_MASK) >>
+				    ((slot_desc->meta_ctrl & ENA_ETH_IO_TX_DESC_REQ_ID_LO_MASK) >>
 				     ENA_ETH_IO_TX_DESC_REQ_ID_LO_SHIFT));
 
 		if (hw->inject_fake_req_id)
