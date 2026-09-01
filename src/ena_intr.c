@@ -98,11 +98,9 @@ int ena_intr_mask_vector(struct ena_adapter *adapter, uint32_t vector_id)
 
 	adapter->irq_vectors[vector_id].masked = true;
 
-	if (adapter->bar0_base) {
-		if (vector_id == 0) {
-			ena_reg_write32(adapter->bar0_base + ENA_REGS_INTR_MASK_OFF, 0);
-		}
-	}
+	/* INTR_MASK register bit 0: 1 = masked, 0 = unmasked. */
+	if (adapter->bar0_base && vector_id == 0)
+		ena_reg_write32(adapter->bar0_base + ENA_REGS_INTR_MASK_OFF, 1);
 
 	return 0;
 }
@@ -118,24 +116,34 @@ int ena_intr_unmask_vector(struct ena_adapter *adapter, uint32_t vector_id)
 
 	adapter->irq_vectors[vector_id].masked = false;
 
-	if (adapter->bar0_base) {
-		if (vector_id == 0) {
-			ena_reg_write32(adapter->bar0_base + ENA_REGS_INTR_MASK_OFF, 1);
-		} else {
-			qid = adapter->irq_vectors[vector_id].queue_id;
-			num_tx = adapter->num_tx_rings ? adapter->num_tx_rings : adapter->max_tx_queues;
-			num_rx = adapter->num_rx_rings ? adapter->num_rx_rings : adapter->max_rx_queues;
-			if (adapter->rx_rings && qid < num_rx &&
-			    adapter->rx_rings[qid] && adapter->rx_rings[qid]->cq_db) {
-				ena_reg_write32(adapter->rx_rings[qid]->cq_db,
-						adapter->rx_rings[qid]->cq_head | ENA_INTR_UNMASK_MASK);
-			}
-			if (adapter->tx_rings && qid < num_tx &&
-			    adapter->tx_rings[qid] && adapter->tx_rings[qid]->cq_db) {
-				ena_reg_write32(adapter->tx_rings[qid]->cq_db,
-						adapter->tx_rings[qid]->cq_head | ENA_INTR_UNMASK_MASK);
-			}
-		}
+	if (!adapter->bar0_base)
+		return 0;
+
+	if (vector_id == 0) {
+		ena_reg_write32(adapter->bar0_base + ENA_REGS_INTR_MASK_OFF, 0);
+		return 0;
+	}
+
+	/* IO vector: unmask the queue interrupt via the dedicated
+	 * register reported by the CREATE_CQ response. Writing
+	 * intr_control bit 30 to that register unmasks the queue.
+	 * The CQ head doorbell is not written. */
+	qid = adapter->irq_vectors[vector_id].queue_id;
+	num_tx = adapter->num_tx_rings ? adapter->num_tx_rings : adapter->max_tx_queues;
+	num_rx = adapter->num_rx_rings ? adapter->num_rx_rings : adapter->max_rx_queues;
+	if (adapter->rx_rings && qid < num_rx &&
+	    adapter->rx_rings[qid] &&
+	    adapter->rx_rings[qid]->cq_unmask_db_offset != 0) {
+		ena_reg_write32(adapter->bar0_base +
+				adapter->rx_rings[qid]->cq_unmask_db_offset,
+				ENA_ETH_IO_INTR_REG_INTR_UNMASK_MASK);
+	}
+	if (adapter->tx_rings && qid < num_tx &&
+	    adapter->tx_rings[qid] &&
+	    adapter->tx_rings[qid]->cq_unmask_db_offset != 0) {
+		ena_reg_write32(adapter->bar0_base +
+				adapter->tx_rings[qid]->cq_unmask_db_offset,
+				ENA_ETH_IO_INTR_REG_INTR_UNMASK_MASK);
 	}
 
 	return 0;

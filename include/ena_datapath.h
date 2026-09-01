@@ -18,6 +18,11 @@
 struct ena_adapter;
 
 /* Buffer sizes and memory limits */
+/* Size of one RX buffer in bytes. RX is single-descriptor: each
+ * receive buffer fills exactly one descriptor. A frame longer than
+ * this size cannot be received. The driver drops such a completion
+ * cleanly. Jumbo frame RX needs multi-descriptor RX reassembly
+ * (roadmap Phase 12), which is not implemented. */
 #define ENA_RX_BUF_SIZE         2048
 #define ENA_TX_BOUNCE_SIZE      4096
 #define ENA_DMA_LOW_MEM_LIMIT   0x100000ULL
@@ -187,6 +192,9 @@ struct ena_ring {
 	uint16_t cq_idx;           /* Device-assigned CQ hardware ID */
 	uint32_t cq_db_offset;     /* Offset from BAR0 to CQ doorbell / head DB */
 	volatile uint32_t *cq_db;  /* Mapped CQ doorbell address */
+	uint32_t cq_unmask_db_offset; /* BAR0 offset of the per-queue
+	                                interrupt unmask register from the
+	                                CREATE_CQ response */
 
 	/* Request ID Free Pool (FIFO) */
 	uint16_t *free_req_ids;    /* Array of available request IDs */
@@ -306,12 +314,15 @@ int ena_ring_req_id_free(struct ena_ring *ring, uint16_t req_id);
  * @param entry_size_words Size of each CQ entry in 32-bit words.
  * @param out_cq_idx Output pointer for the device-assigned CQ hardware index.
  * @param out_db_offset Output pointer for the doorbell register byte offset.
+ * @param out_unmask_off Output pointer for the per-queue interrupt unmask
+ *        register byte offset, or NULL to ignore it.
  * @return 0 on success, or a negative errno value on error.
  */
 int ena_admin_create_cq(struct ena_adapter *adapter, uint16_t cq_depth,
 			uint64_t cq_phys, uint32_t msix_vector,
 			uint8_t entry_size_words,
-			uint16_t *out_cq_idx, uint32_t *out_db_offset);
+			uint16_t *out_cq_idx, uint32_t *out_db_offset,
+			uint32_t *out_unmask_off);
 
 /**
  * Issue a DESTROY_CQ admin command to remove a Completion Queue from the device.

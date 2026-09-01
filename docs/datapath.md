@@ -56,8 +56,8 @@ The ENA datapath uses paired rings:
 The native ENA driver supports hardware offloads:
 - **TX Checksum Offload**: IPv4 checksum, TCP/UDP checksum over IPv4/IPv6.
 - **RX Checksum Validation**: Hardware validates L3/L4 checksum and sets flags in CQ descriptor.
-- **Large Receive Offload (LRO)**: Reassembles TCP segments into single buffer when enabled.
-- **Scatter-Gather (SG)**: Chains multiple buffer fragments for packets larger than a single MTU frame.
+- **Large Receive Offload (LRO)**: Not implemented. The driver passes each received segment to the stack.
+- **Scatter-Gather (SG)**: Not implemented. Each packet uses one descriptor. See Section 5.
 
 ---
 
@@ -67,9 +67,9 @@ The native ENA driver supports hardware offloads:
 The driver currently implements single-descriptor transmit and receive processing. Each packet maps to exactly one buffer descriptor in the Submission Queue.
 
 ### 5.2 Technical Implications
-- **Jumbo Frames**: Jumbo frames up to 9000 bytes require contiguous DMA buffers of at least 9000 bytes.
+- **Jumbo Frames**: TX sends jumbo frames from one contiguous buffer of at least 9000 bytes. RX cannot receive them. Each RX descriptor holds one 2048-byte buffer (`ENA_RX_BUF_SIZE`). A completion longer than 2048 bytes is dropped, and the ring keeps working.
 - **TCP Segmentation Offload (TSO)**: TSO is not active without multi-descriptor chain assembly.
-- **Buffer Allocation**: RX replenishment allocates single contiguous `uk_netbuf` instances sized to the configured MTU.
+- **Buffer Allocation**: RX replenishment allocates single contiguous `uk_netbuf` instances of `ENA_RX_BUF_SIZE` (2048 bytes).
 
 ### 5.3 Roadmap for Scatter-Gather Support
 1. **Multi-Descriptor Submission**: Update `ena_tx_submit` to break multi-fragment `uk_netbuf` chains across consecutive SQ descriptors with `FIRST` and `LAST` flags.

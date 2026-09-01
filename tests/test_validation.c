@@ -246,20 +246,53 @@ static void test_validation_latency_roundtrip(void)
 	ena_netdev_free(netdev);
 }
 
-/* 4. Jumbo frame MTU 9000 validation */
-static void test_validation_jumbo_frames_9000(void)
+/* 4. Jumbo frames: MTU 9000 negotiates and jumbo TX completes from one
+ * large buffer, but RX is single-descriptor with ENA_RX_BUF_SIZE
+ * (2048) byte buffers, so jumbo frames cannot be received. An
+ * over-length completion is dropped cleanly: not delivered, not
+ * counted, request pool restored, bounce pool untouched, and the ring
+ * still delivers normal-size packets afterwards. */
+static struct uk_netbuf *g_jumbo_netbufs[16];
+static uint16_t g_jumbo_netbuf_count = 0;
+
+static void *mock_rx_alloc_jumbo_cb(void *arg, uint64_t *phys_out, uint32_t *len_out)
+{
+	static uint64_t next_phys = 0xB000000;
+	struct uk_netbuf *nb = test_calloc(1, sizeof(*nb));
+	(void)arg;
+
+	*phys_out = next_phys;
+	next_phys += 0x1000;
+	*len_out = ENA_RX_BUF_SIZE;
+
+	nb->phys_addr = *phys_out;
+	nb->buflen = *len_out;
+
+	if (g_jumbo_netbuf_count < 16)
+		g_jumbo_netbufs[g_jumbo_netbuf_count++] = nb;
+	return nb;
+}
+
+static void test_validation_jumbo_rx_dropped(void)
 {
 	struct uk_netdev *netdev;
 	struct uk_netdev_conf conf;
 	struct uk_netdev_info info;
+	struct ena_ring *rx_ring;
+	struct uk_netbuf *tx_buf;
+	struct uk_netbuf *rx_nb = NULL;
 	unsigned int refilled;
-	struct uk_netbuf *tx_buf = test_calloc(1, sizeof(*tx_buf));
-	assert(tx_buf != NULL);
+	unsigned int count = 0;
+	uint16_t i;
+	uint16_t j;
+
+	g_jumbo_netbuf_count = 0;
 
 	assert(setup_test_adapter(&g_hw, &g_adapter, 9000, 9000) == 0);
 	netdev = ena_netdev_alloc(&g_adapter);
 	assert(netdev != NULL);
 
+	/* The device accepts MTU 9000. */
 	assert(netdev->ops->info_get(netdev, &info) == 0);
 	assert(info.mtu == 9000);
 
@@ -271,34 +304,65 @@ static void test_validation_jumbo_frames_9000(void)
 	assert(netdev->ops->txq_configure(netdev, 0, 16, NULL) == 0);
 	assert(netdev->ops->dev_start(netdev) == 0);
 
-	assert(ena_rx_refill(g_adapter.rx_rings[0], 8, mock_rx_alloc_cb, NULL, &refilled) == 8);
+	rx_ring = g_adapter.rx_rings[0];
 
-	/* Transmit and receive 8960-byte payload */
+	/* Offer one 2048-byte buffer per descriptor, as the driver does. */
+	assert(ena_rx_refill(rx_ring, 8, mock_rx_alloc_jumbo_cb, NULL, &refilled) == 8);
+	assert(rx_ring->free_req_count == 8);
+
+	/* Jumbo TX from one large direct-DMA buffer completes. */
+	tx_buf = test_calloc(1, sizeof(*tx_buf));
+	assert(tx_buf != NULL);
 	tx_buf->phys_addr = 0x3000000;
 	tx_buf->len = 8960;
-
 	assert(netdev->ops->txq_xmit(netdev, 0, tx_buf) == 0);
 
 	mock_ena_hw_emulate_tx(&g_hw, g_adapter.tx_rings[0], 1);
-	unsigned int count = 0;
 	assert(ena_tx_poll_completions(g_adapter.tx_rings[0], 4, &count) == 1);
 	assert(count == 1);
 
-	mock_ena_hw_emulate_rx(&g_hw, g_adapter.rx_rings[0], 1, 8960, 0xABCDEF01,
+	/* An 8960-byte completion arrives for a 2048-byte buffer. */
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 8960, 0xABCDEF01,
 			       ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK);
 
-	struct uk_netbuf *rx_nb = NULL;
+	/* The driver drops it: nothing is delivered to the app. */
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_nb) == 0);
+	assert(rx_nb == NULL);
+
+	/* Dropped cleanly: no packet counted, slot cleared, request ID
+	 * returned to the pool, bounce pool untouched. */
+	assert(rx_ring->rx_packets == 0);
+	assert(rx_ring->buffers.rx_bufs[0].netbuf == NULL);
+	assert(rx_ring->free_req_count == 9);
+	assert(netdev->rx_queues[0].bounce_free_count == 16);
+
+	/* The ring still works: a normal-size completion is delivered. */
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 64, 0x12345678,
+			       ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK);
 	assert(netdev->ops->rxq_recv(netdev, 0, &rx_nb) == 1);
 	assert(rx_nb != NULL);
-	assert(rx_nb->len == 8960);
+	assert(rx_nb->len == 64);
 	test_free(rx_nb);
+	for (j = 0; j < g_jumbo_netbuf_count; j++) {
+		if (g_jumbo_netbufs[j] == rx_nb)
+			g_jumbo_netbufs[j] = NULL;
+	}
 
 	assert(netdev->ops->dev_stop(netdev) == 0);
-	for (int i = 0; i < g_adapter.rx_rings[0]->sq_depth; i++) {
-		if (g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf) {
-			test_free(g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf);
-			g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf = NULL;
+	for (i = 0; i < rx_ring->sq_depth; i++) {
+		if (rx_ring->buffers.rx_bufs[i].netbuf) {
+			for (j = 0; j < g_jumbo_netbuf_count; j++) {
+				if (g_jumbo_netbufs[j] == rx_ring->buffers.rx_bufs[i].netbuf)
+					g_jumbo_netbufs[j] = NULL;
+			}
+			test_free(rx_ring->buffers.rx_bufs[i].netbuf);
+			rx_ring->buffers.rx_bufs[i].netbuf = NULL;
 		}
+	}
+	/* Free the netbuf orphaned by the dropped completion. */
+	for (i = 0; i < g_jumbo_netbuf_count; i++) {
+		if (g_jumbo_netbufs[i])
+			test_free(g_jumbo_netbufs[i]);
 	}
 	test_free(tx_buf);
 	teardown_test_adapter(&g_adapter);
@@ -456,11 +520,11 @@ static void test_validation_audit_security_fixes(void)
 
 	/* Doorbell offset out of bounds rejected */
 	mock_pci_inject_fault(&g_hw, MOCK_PCI_FAULT_BAD_DB_OFFSET, 0x5000);
-	assert(ena_admin_create_cq(&g_adapter, 8, 0x1000, 0, 2, &cq_idx, &cq_db) == -EINVAL);
+	assert(ena_admin_create_cq(&g_adapter, 8, 0x1000, 0, 2, &cq_idx, &cq_db, NULL) == -EINVAL);
 
 	/* Valid CQ creation */
 	mock_pci_clear_faults(&g_hw);
-	assert(ena_admin_create_cq(&g_adapter, 8, 0x1000, 0, 2, &cq_idx, &cq_db) == 0);
+	assert(ena_admin_create_cq(&g_adapter, 8, 0x1000, 0, 2, &cq_idx, &cq_db, NULL) == 0);
 
 	/* RX completion length exceeding buffer rejected */
 	assert(ena_ring_alloc(&g_adapter, 0, ENA_RING_TYPE_RX, 8, 8, &rx_ring) == 0);
@@ -513,11 +577,11 @@ static void test_validation_boundary_unaligned_doorbell_offsets(void)
 
 	/* Inject unaligned CQ doorbell offset */
 	mock_pci_inject_fault(&g_hw, MOCK_PCI_FAULT_UNALIGNED_DB_OFFSET, 0x30);
-	assert(ena_admin_create_cq(&g_adapter, 8, 0x1000, 0, 2, &cq_idx, &cq_db) == -EINVAL);
+	assert(ena_admin_create_cq(&g_adapter, 8, 0x1000, 0, 2, &cq_idx, &cq_db, NULL) == -EINVAL);
 
 	/* Clear and create valid CQ */
 	mock_pci_clear_faults(&g_hw);
-	assert(ena_admin_create_cq(&g_adapter, 8, 0x1000, 0, 2, &cq_idx, &cq_db) == 0);
+	assert(ena_admin_create_cq(&g_adapter, 8, 0x1000, 0, 2, &cq_idx, &cq_db, NULL) == 0);
 
 	/* Inject unaligned SQ doorbell offset */
 	mock_pci_inject_fault(&g_hw, MOCK_PCI_FAULT_UNALIGNED_DB_OFFSET, 0x2C);
@@ -1078,7 +1142,7 @@ int main(void)
 	RUN_TEST(test_validation_t3_nano_profile);
 	RUN_TEST(test_validation_end_to_end_throughput);
 	RUN_TEST(test_validation_latency_roundtrip);
-	RUN_TEST(test_validation_jumbo_frames_9000);
+	RUN_TEST(test_validation_jumbo_rx_dropped);
 	RUN_TEST(test_validation_multi_queue_load);
 	RUN_TEST(test_validation_llq_vs_standard_perf);
 	RUN_TEST(test_validation_stress_aenq_recovery);

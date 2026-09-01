@@ -24,7 +24,7 @@ This RFC proposes the addition of `lib-ena`, a native driver for the Amazon Web 
 - **Circular DMA Rings**: Zero-copy TX/RX ring buffers with phase-bit synchronization and wrap tracking.
 - **Low Latency Queue (LLQ)**: Direct MMIO push of TX descriptors and packet headers into device BAR2 for reduced latency.
 - **Interrupts**: The driver runs in software polling mode by default. It allocates MSI-X vectors at probe time when the platform provides them. The pinned Unikraft platform (>=0.17.0) exposes no interrupt delivery API, so full MSI-X interrupt runtime support is in progress.
-- **Hardware Offloads & Jumbo Frames**: Supports hardware IPv4 checksum offload and configurable MTUs up to 9000 bytes.
+- **Hardware Offloads & Jumbo Frames**: Supports hardware IPv4 checksum offload. MTU up to 9000 bytes works on TX. RX uses 2048-byte single-descriptor buffers, so the driver drops received frames longer than 2048 bytes.
 - **uknetdev Integration**: Standard driver ops implementation (`rxq_recv`, `txq_xmit`, `info_get`, `configure`, `rxq_configure`, `txq_configure`).
 
 ---

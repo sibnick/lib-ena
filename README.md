@@ -16,7 +16,7 @@ The ENA driver provides high-performance networking for Unikraft unikernels runn
 | **TX / RX Rings** | Supported | Multi-queue circular descriptor rings with hardware checksum offload. |
 | **Low Latency Queue (LLQ)** | Supported | Direct push of packet headers and descriptors to BAR2 MMIO. |
 | **Interrupts / MSI-X** | Partial | The default mode is software polling. The driver allocates MSI-X vectors at probe time when the platform provides them. |
-| **Jumbo Frames** | Supported | Configurable MTU up to 9000 bytes. |
+| **Jumbo Frames** | Partial | TX supports MTU up to 9000 bytes. RX offers one 2048-byte buffer per descriptor. The driver drops received frames longer than 2048 bytes. |
 
 ## Supported EC2 Instance Types
 
