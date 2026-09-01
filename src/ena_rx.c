@@ -35,6 +35,11 @@ int ena_rx_submit_one(struct ena_ring *ring, void *netbuf, uint64_t phys_addr,
 	if (!ring || !netbuf || ring->ring_type != ENA_RING_TYPE_RX)
 		return -EINVAL;
 
+	/* Refuse to program a ring whose hardware was destroyed by a
+	 * reset. The netdev start path recreates the queue before refill. */
+	if (!ring->hw_valid)
+		return -ENODEV;
+
 	if (buf_len == 0 || buf_len > 0xFFFFu)
 		return -EINVAL;
 
@@ -130,7 +135,7 @@ int ena_rx_refill(struct ena_ring *ring, unsigned int count,
 
 void ena_rx_doorbell(struct ena_ring *ring)
 {
-	if (!ring || !ring->sq_db)
+	if (!ring || !ring->hw_valid || !ring->sq_db)
 		return;
 
 	ena_wmb();
@@ -151,6 +156,12 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 
 	if (!ring || !pkts || ring->ring_type != ENA_RING_TYPE_RX || !ring->cq_virt || max_pkts == 0)
 		return -EINVAL;
+
+	/* After a reset the CQ memory may hold stale entries and the
+	 * indices are fresh. Do not consume them until the queue is
+	 * re-created. */
+	if (!ring->hw_valid)
+		return 0;
 
 	ena_ring_lock(ring);
 

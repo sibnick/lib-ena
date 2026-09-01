@@ -20,6 +20,65 @@ void ena_admin_set_db_hook(ena_admin_db_hook *hook, void *cookie)
 }
 #endif
 
+/* Reset the driver-side software state of one ring to a fresh condition.
+ * The request pool is re-armed, in-flight flags cleared, and all indices,
+ * phase bits, queue ids, and doorbell pointers zeroed. The caller holds
+ * the ring lock. */
+static void ena_ring_reset_sw_state(struct ena_ring *ring)
+{
+	uint16_t i;
+
+	ring->hw_valid = false;
+	ring->sq_tail = 0;
+	ring->sq_head = 0;
+	ring->cq_head = 0;
+	ring->sq_phase = 1;
+	ring->cq_phase = 1;
+	ring->sq_idx = 0;
+	ring->cq_idx = 0;
+	ring->sq_db = NULL;
+	ring->cq_db = NULL;
+
+	if (ring->free_req_ids) {
+		for (i = 0; i < ring->sq_depth; i++)
+			ring->free_req_ids[i] = i;
+		ring->free_req_head = 0;
+		ring->free_req_tail = 0;
+		ring->free_req_count = ring->sq_depth;
+	}
+
+	if (ring->req_in_flight)
+		memset(ring->req_in_flight, 0, ring->sq_depth);
+}
+
+void ena_adapter_invalidate_io_rings(struct ena_adapter *adapter)
+{
+	uint16_t q;
+
+	if (!adapter)
+		return;
+
+	if (adapter->tx_rings) {
+		for (q = 0; q < adapter->num_tx_rings; q++) {
+			if (adapter->tx_rings[q]) {
+				ena_ring_lock(adapter->tx_rings[q]);
+				ena_ring_reset_sw_state(adapter->tx_rings[q]);
+				ena_ring_unlock(adapter->tx_rings[q]);
+			}
+		}
+	}
+
+	if (adapter->rx_rings) {
+		for (q = 0; q < adapter->num_rx_rings; q++) {
+			if (adapter->rx_rings[q]) {
+				ena_ring_lock(adapter->rx_rings[q]);
+				ena_ring_reset_sw_state(adapter->rx_rings[q]);
+				ena_ring_unlock(adapter->rx_rings[q]);
+			}
+		}
+	}
+}
+
 static int ena_depth_ok(uint16_t depth)
 {
 	return (depth >= 4) && ((depth & (depth - 1)) == 0);
@@ -296,6 +355,10 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 
 		ena_err("exec_cmd: timeout after %u polls (resetting device)", max_polls);
 		adapter->state = ENA_STATE_ERROR;
+		/* The reset destroys every IO queue on the device. Invalidate
+		 * the driver-side rings now so the data path stops touching
+		 * stale indices and doorbells while the reset runs. */
+		ena_adapter_invalidate_io_rings(adapter);
 		ena_device_reset(adapter);
 		ena_admin_lock_drop(&adapter->admin_lock);
 		reset_ret = ena_device_wait_reset_complete(adapter, 1000);
@@ -460,6 +523,10 @@ int ena_aenq_default_handler(void *arg, uint16_t group, uint16_t syndrome,
 		ena_err("aenq: fatal error (syndrome %u), resetting device",
 			(unsigned)syndrome);
 		adapter->state = ENA_STATE_ERROR;
+		/* The reset destroys every IO queue on the device. Invalidate
+		 * the driver-side rings now so the data path stops touching
+		 * stale indices and doorbells while the reset runs. */
+		ena_adapter_invalidate_io_rings(adapter);
 
 		/* The poll path does not hold the admin lock. Take it here so
 		 * the reset and re-init serialize with admin command use. */

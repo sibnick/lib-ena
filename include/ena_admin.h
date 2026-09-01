@@ -220,6 +220,20 @@ typedef int ena_aenq_handler(void *arg, uint16_t group, uint16_t syndrome,
 
 struct ena_adapter;
 struct ena_admin_device_attr_feature_desc;
+struct ena_ring;
+
+/**
+ * Invalidate the hardware state of all IO rings attached to the adapter.
+ *
+ * Called after a device reset, which destroys every IO queue on the
+ * device side. Marks each ring invalid, re-arms its request pool, and
+ * zeroes its indices and doorbell pointers. The netdev layer must stop
+ * and start the queues to restore them before the data path may be used
+ * again.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ */
+void ena_adapter_invalidate_io_rings(struct ena_adapter *adapter);
 
 /**
  * Default AENQ handler registered by the probe path.

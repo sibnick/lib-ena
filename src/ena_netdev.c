@@ -274,7 +274,30 @@ static void ena_netdev_free_txq_bounce(struct uk_netdev_tx_queue *txq)
 
 	txq->bounce_in_use = false;
 	txq->bounce_req_id = 0;
+	txq->bounce_wait_polls = 0;
 	txq->nb_desc = 0;
+}
+
+/* Release a TX bounce buffer whose completion never arrived. The request is
+ * treated as lost: the in-flight flag is cleared, the request id is returned
+ * to the ring free pool, and the bounce is available for the next transmit.
+ * Callers must hold no other claim on the ring; the ring lock is taken here. */
+static void ena_netdev_release_stuck_tx_bounce(struct ena_ring *ring,
+					       struct uk_netdev_tx_queue *txq)
+{
+	ena_ring_lock(ring);
+
+	if (ring->req_in_flight && txq->bounce_req_id < ring->sq_depth &&
+	    ring->req_in_flight[txq->bounce_req_id]) {
+		ring->req_in_flight[txq->bounce_req_id] = 0;
+		ena_ring_req_id_free(ring, txq->bounce_req_id);
+	}
+
+	ena_ring_unlock(ring);
+
+	txq->bounce_in_use = false;
+	txq->bounce_req_id = 0;
+	txq->bounce_wait_polls = 0;
 }
 
 /* Return a dropped RX netbuf bounce slot to the queue pool and free the netbuf */
@@ -519,6 +542,7 @@ static struct uk_netdev_tx_queue *ena_netdev_txq_configure(struct uk_netdev *dev
 	edev->tx_queues[queue_id].adapter = adapter;
 	edev->tx_queues[queue_id].bounce_in_use = false;
 	edev->tx_queues[queue_id].bounce_req_id = 0;
+	edev->tx_queues[queue_id].bounce_wait_polls = 0;
 	edev->tx_queues[queue_id].nb_desc = nb_desc;
 
 	edev->tx_queues[queue_id].bounce_buf = ena_dma_alloc(ENA_TX_BOUNCE_SIZE,
@@ -692,10 +716,21 @@ int ena_netdev_tx_one(struct uk_netdev *dev __attribute__((unused)),
 	ring = queue->ring;
 	ena_tx_poll_completions(ring, 32, NULL);
 
-	/* Check if previous bounce transmission completed */
+	/* Check if previous bounce transmission completed. If it never does
+	 * (a lost or stuck completion), release the bounce after a bounded
+	 * number of transmit attempts so low-memory transmit is not blocked
+	 * forever. */
 	if (queue->bounce_in_use) {
-		if (!ring->req_in_flight || !ring->req_in_flight[queue->bounce_req_id])
+		if (!ring->req_in_flight || !ring->req_in_flight[queue->bounce_req_id]) {
 			queue->bounce_in_use = false;
+			queue->bounce_wait_polls = 0;
+		} else if (queue->bounce_wait_polls >= ENA_TX_BOUNCE_STALL_LIMIT) {
+			ena_err("tx q%u: bounce completion not seen after %u polls; releasing bounce",
+				queue->queue_id, (unsigned)queue->bounce_wait_polls);
+			ena_netdev_release_stuck_tx_bounce(ring, queue);
+		} else {
+			queue->bounce_wait_polls++;
+		}
 	}
 
 	phys = (uint64_t)(uintptr_t)pkt->data;
@@ -731,6 +766,7 @@ int ena_netdev_tx_one(struct uk_netdev *dev __attribute__((unused)),
 		if (used_bounce) {
 			queue->bounce_in_use = true;
 			queue->bounce_req_id = req_id;
+			queue->bounce_wait_polls = 0;
 		}
 		return UK_NETDEV_STATUS_SUCCESS;
 	}
@@ -919,6 +955,7 @@ static int ena_netdev_txq_configure(struct uk_netdev *dev, uint16_t queue_id,
 	dev->tx_queues[queue_id].adapter = dev->adapter;
 	dev->tx_queues[queue_id].bounce_in_use = false;
 	dev->tx_queues[queue_id].bounce_req_id = 0;
+	dev->tx_queues[queue_id].bounce_wait_polls = 0;
 	dev->tx_queues[queue_id].nb_desc = nb_desc;
 
 	dev->tx_queues[queue_id].bounce_buf = ena_dma_alloc(ENA_TX_BOUNCE_SIZE,
@@ -1071,9 +1108,21 @@ static int ena_netdev_txq_xmit(struct uk_netdev *dev, uint16_t queue_id,
 	/* Poll completions to free up space */
 	ena_tx_poll_completions(ring, 16, NULL);
 
+	/* Check if previous bounce transmission completed. If it never does
+	 * (a lost or stuck completion), release the bounce after a bounded
+	 * number of transmit attempts so low-memory transmit is not blocked
+	 * forever. */
 	if (txq->bounce_in_use) {
-		if (!ring->req_in_flight || !ring->req_in_flight[txq->bounce_req_id])
+		if (!ring->req_in_flight || !ring->req_in_flight[txq->bounce_req_id]) {
 			txq->bounce_in_use = false;
+			txq->bounce_wait_polls = 0;
+		} else if (txq->bounce_wait_polls >= ENA_TX_BOUNCE_STALL_LIMIT) {
+			ena_err("tx q%u: bounce completion not seen after %u polls; releasing bounce",
+				queue_id, (unsigned)txq->bounce_wait_polls);
+			ena_netdev_release_stuck_tx_bounce(ring, txq);
+		} else {
+			txq->bounce_wait_polls++;
+		}
 	}
 
 	phys = pkt->phys_addr ? pkt->phys_addr : (uint64_t)(uintptr_t)pkt->data;
@@ -1110,6 +1159,7 @@ static int ena_netdev_txq_xmit(struct uk_netdev *dev, uint16_t queue_id,
 		if (used_bounce) {
 			txq->bounce_in_use = true;
 			txq->bounce_req_id = req_id;
+			txq->bounce_wait_polls = 0;
 		}
 	}
 

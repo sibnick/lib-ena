@@ -20,6 +20,9 @@ struct ena_adapter;
 /* Buffer sizes and memory limits */
 #define ENA_RX_BUF_SIZE         2048
 #define ENA_TX_BOUNCE_SIZE      4096
+/* Release a stuck TX bounce after this many transmit attempts without a
+ * completion. Bounds the time a lost completion blocks low-memory transmit. */
+#define ENA_TX_BOUNCE_STALL_LIMIT 256
 #define ENA_DMA_LOW_MEM_LIMIT   0x100000ULL
 #define ENA_NETDEV_IOALIGN      64
 #define ENA_NETDEV_MAX_QUEUES   8
@@ -164,6 +167,11 @@ struct ena_ring {
 	struct ena_adapter *adapter;
 	uint16_t qid;              /* Queue index */
 	enum ena_ring_type ring_type;
+
+	/* True while the hardware queues behind this ring are valid. Cleared
+	 * on device reset and on destroy; restored on create. Data path
+	 * functions refuse to touch a ring whose hardware is invalid. */
+	bool hw_valid;
 
 	/* Submission Queue (SQ) */
 	void *sq_virt;             /* Virtual address of SQ DMA ring */

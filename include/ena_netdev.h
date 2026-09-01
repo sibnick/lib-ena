@@ -51,6 +51,10 @@ struct uk_netdev_tx_queue {
 	uint64_t bounce_phys;
 	bool bounce_in_use;
 	uint16_t bounce_req_id;
+	/* Transmit attempts made while the bounce is in flight without a
+	 * completion. Reaching ENA_TX_BOUNCE_STALL_LIMIT releases the bounce
+	 * so a lost completion cannot block low-memory transmit forever. */
+	uint32_t bounce_wait_polls;
 	uint16_t nb_desc;
 };
 
