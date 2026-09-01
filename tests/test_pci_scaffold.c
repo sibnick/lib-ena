@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <stdio.h>
+#include <string.h>
 
 static void test_pci_id_matching(void)
 {
@@ -164,6 +165,36 @@ static void test_plat_dma_identity(void)
 	printf("[PASS] test_plat_dma_identity passed\n");
 }
 
+static void test_scaffold_reprobe_after_remove(void)
+{
+	printf("[TEST] Running test_scaffold_reprobe_after_remove...\n");
+
+	struct mock_ena_hw hw;
+	struct ena_adapter adapter;
+
+	mock_ena_hw_init(&hw);
+
+	/* First probe. */
+	assert(ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0)) == 0);
+	assert(adapter.state == ENA_STATE_PCI_PROBED);
+	assert(adapter.version == ((2 << 8) | 0));
+
+	/* Simulate a PCI remove: the driver releases the adapter state. */
+	memset(&adapter, 0, sizeof(adapter));
+	assert(adapter.state == ENA_STATE_UNINITIALIZED);
+	assert(adapter.bar0_base == 0);
+
+	/* Re-probe the same device: initialization must start from a
+	 * clean state and succeed again. */
+	assert(ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0)) == 0);
+	assert(adapter.state == ENA_STATE_PCI_PROBED);
+	assert(adapter.version == ((2 << 8) | 0));
+	assert(adapter.controller_version == 0x00020800);
+	assert(adapter.caps == 0x00040000);
+
+	printf("[PASS] test_scaffold_reprobe_after_remove passed\n");
+}
+
 int main(void)
 {
 	printf("========================================\n");
@@ -176,8 +207,9 @@ int main(void)
 	test_reset_in_progress_bit();
 	test_reset_fatal_error();
 	test_plat_dma_identity();
+	test_scaffold_reprobe_after_remove();
 	printf("========================================\n");
-	printf("ALL PHASE 1 SCAFFOLD TESTS PASSED (7/7) \n");
+	printf("ALL PHASE 1 SCAFFOLD TESTS PASSED (8/8) \n");
 	printf("========================================\n");
 	return 0;
 }

@@ -59,7 +59,7 @@ struct uk_netdev_tx_queue {
 struct ena_uk_device {
 	struct uk_netdev netdev;
 	struct ena_adapter adapter;
-	struct uk_pci_device *pdev;
+	struct pci_device *pdev;
 	void *bar0_vaddr;
 	void *bar2_vaddr;
 	struct uk_netdev_rx_queue rx_queues[ENA_NETDEV_MAX_QUEUES];
@@ -99,6 +99,24 @@ int ena_netdev_tx_one(struct uk_netdev *dev, struct uk_netdev_tx_queue *queue, s
  * @return true when the link is up, false when it is down.
  */
 bool ena_netdev_link_get(struct uk_netdev *dev);
+
+/**
+ * Tear down all driver-owned resources of the device: hardware queues
+ * (SQ and CQ of every ring, LLQ included), bounce buffers, software
+ * rings, MSI-X vectors, and admin queues.
+ *
+ * @param edev Pointer to the ENA device structure.
+ */
+void ena_netdev_teardown(struct ena_uk_device *edev);
+
+/**
+ * Release all driver-owned resources of a probed ENA device and detach
+ * it from the driver registry. The pinned UK netdev core has no
+ * unregister API, so the ENA device structure itself is not freed.
+ *
+ * @param pdev Pointer to the PCI device being removed.
+ */
+void ena_pci_remove_dev(struct pci_device *pdev);
 
 #else /* !__Unikraft__ */
 

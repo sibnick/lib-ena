@@ -7,6 +7,7 @@
 #include "ena.h"
 #include "ena_netdev.h"
 #include "ena_datapath.h"
+#include "ena_intr.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -403,6 +404,10 @@ static int ena_netdev_configure(struct uk_netdev *dev, const struct uk_netdev_co
 	if (!conf)
 		return -EINVAL;
 
+	/* Reject reconfiguration while the device is running. */
+	if (uk_netdev_state_get(dev) == UK_NETDEV_RUNNING)
+		return -EBUSY;
+
 	if (conf->nb_rx_queues == 0 || (adapter->max_rx_queues && conf->nb_rx_queues > adapter->max_rx_queues) || conf->nb_rx_queues > ENA_NETDEV_MAX_QUEUES)
 		return -EINVAL;
 
@@ -422,6 +427,10 @@ static struct uk_netdev_rx_queue *ena_netdev_rxq_configure(struct uk_netdev *dev
 	int ret;
 
 	if (queue_id >= ENA_NETDEV_MAX_QUEUES || (adapter->num_rx_rings && queue_id >= adapter->num_rx_rings))
+		return NULL;
+
+	/* Reject reconfiguration while the device is running. */
+	if (uk_netdev_state_get(dev) == UK_NETDEV_RUNNING)
 		return NULL;
 
 	ena_info("rxq_configure: qid=%u nb_desc=%u max_rx_ring_size=%u",
@@ -493,6 +502,10 @@ static struct uk_netdev_tx_queue *ena_netdev_txq_configure(struct uk_netdev *dev
 	(void)conf;
 
 	if (queue_id >= ENA_NETDEV_MAX_QUEUES || (adapter->num_tx_rings && queue_id >= adapter->num_tx_rings))
+		return NULL;
+
+	/* Reject reconfiguration while the device is running. */
+	if (uk_netdev_state_get(dev) == UK_NETDEV_RUNNING)
 		return NULL;
 
 	ena_info("txq_configure: qid=%u nb_desc=%u max_tx_ring_size=%u",
@@ -738,26 +751,52 @@ int ena_netdev_tx_one(struct uk_netdev *dev __attribute__((unused)),
 	return ret;
 }
 
-void ena_netdev_free(struct uk_netdev *netdev)
+/*
+ * Tear down all driver-owned resources of the device: the hardware
+ * queues (SQ and CQ of every ring, LLQ included), the bounce buffers,
+ * the software rings, the MSI-X vector table, and the admin queues.
+ * Each step is a no-op for a resource that was not allocated, so the
+ * sequence is safe after a failed setup and safe to call twice.
+ */
+void ena_netdev_teardown(struct ena_uk_device *edev)
 {
-	struct ena_uk_device *edev;
+	struct ena_adapter *adapter;
 	uint16_t q;
 
-	if (!netdev)
+	if (!edev)
 		return;
 
-	/* The current uknetdev API has no stop op. Stop the hardware rings
-	 * here, at device teardown, before the rings are released. */
-	ena_netdev_stop(netdev);
+	adapter = &edev->adapter;
 
-	edev = to_enadevice(netdev);
+	/* The uknetdev API has no stop op. The stop operation drains
+	 * the TX queues and destroys the hardware queues before the
+	 * rings are released. */
+	ena_netdev_stop(&edev->netdev);
 
 	for (q = 0; q < ENA_NETDEV_MAX_QUEUES; q++) {
 		ena_netdev_free_rxq_bounce(&edev->rx_queues[q]);
 		ena_netdev_free_txq_bounce(&edev->tx_queues[q]);
 	}
 
-	ena_netdev_cleanup_adapter_rings(&edev->adapter);
+	ena_netdev_cleanup_adapter_rings(adapter);
+
+	ena_intr_msix_fini(adapter);
+
+	/* Destroy the AQ, ACQ and AENQ and release the host info
+	 * buffer. Safe to call twice. */
+	ena_admin_fini(adapter);
+}
+
+void ena_netdev_free(struct uk_netdev *netdev)
+{
+	if (!netdev)
+		return;
+
+	/* The netdev struct is embedded in the ENA device struct owned
+	 * by the PCI layer, so the struct itself is not freed here.
+	 * The teardown stops the hardware and releases every
+	 * driver-owned resource of the device. */
+	ena_netdev_teardown(to_enadevice(netdev));
 }
 
 const struct uk_netdev_ops ena_ops = {
@@ -1152,13 +1191,25 @@ void ena_netdev_free(struct uk_netdev *netdev)
 	if (!netdev)
 		return;
 
+	/* The stop operation drains the TX queues and destroys the
+	 * hardware queues. It is a no-op when the device is not
+	 * running. */
+	ena_netdev_stop(netdev);
+
 	for (q = 0; q < ENA_NETDEV_MAX_QUEUES; q++) {
 		ena_netdev_free_rxq_bounce(&netdev->rx_queues[q]);
 		ena_netdev_free_txq_bounce(&netdev->tx_queues[q]);
 	}
 
-	if (netdev->adapter)
+	if (netdev->adapter) {
 		ena_netdev_cleanup_adapter_rings(netdev->adapter);
+
+		ena_intr_msix_fini(netdev->adapter);
+
+		/* Destroy the AQ, ACQ and AENQ and release the host
+		 * info buffer. Safe to call twice. */
+		ena_admin_fini(netdev->adapter);
+	}
 
 	free(netdev);
 }

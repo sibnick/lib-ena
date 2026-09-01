@@ -136,6 +136,83 @@ static const struct pci_device_id ena_pci_ids[] = {
 	{ PCI_ANY_DEVICE_ID }
 };
 
+/*
+ * Driver-owned registry of probed ENA devices. The pinned UK
+ * (0.17.0-0.21.0) struct pci_driver has no remove callback and
+ * struct pci_device has no driver data field, so the driver keeps
+ * its own mapping from the PCI device to the ENA device structure.
+ */
+#define ENA_PCI_MAX_DEVS 8
+
+static struct ena_uk_device *s_edevs[ENA_PCI_MAX_DEVS];
+
+static struct ena_uk_device *ena_pci_find_edev(struct pci_device *pdev)
+{
+	int i;
+
+	for (i = 0; i < ENA_PCI_MAX_DEVS; i++) {
+		if (s_edevs[i] && s_edevs[i]->pdev == pdev)
+			return s_edevs[i];
+	}
+	return NULL;
+}
+
+static int ena_pci_track_edev(struct ena_uk_device *edev, struct pci_device *pdev)
+{
+	int i;
+
+	edev->pdev = pdev;
+
+	for (i = 0; i < ENA_PCI_MAX_DEVS; i++) {
+		if (!s_edevs[i]) {
+			s_edevs[i] = edev;
+			return 0;
+		}
+	}
+
+	ena_warn("pci: no free device slot, remove support disabled");
+	return -ENOSPC;
+}
+
+/*
+ * Release all driver-owned resources of a probed ENA device. This
+ * mirrors the remove path of the Linux ENA driver: stop the datapath
+ * (destroy the SQ and CQ of every ring, LLQ included), release the
+ * bounce buffers, the software rings, the MSI-X vectors, the admin
+ * queues and the host info buffer.
+ *
+ * The pinned UK netdev core keeps the registered netdev in a global
+ * list and provides no unregister API, so the ENA device structure
+ * itself is not freed. The ops and queue callbacks are cleared to keep
+ * the stale list entry inert.
+ */
+void ena_pci_remove_dev(struct pci_device *pdev)
+{
+	struct ena_uk_device *edev;
+	int i;
+
+	edev = ena_pci_find_edev(pdev);
+	if (!edev) {
+		ena_warn("pci: remove: unknown device");
+		return;
+	}
+
+	ena_netdev_teardown(edev);
+
+	edev->netdev.ops = NULL;
+	edev->netdev.rx_one = NULL;
+	edev->netdev.tx_one = NULL;
+
+	for (i = 0; i < ENA_PCI_MAX_DEVS; i++) {
+		if (s_edevs[i] == edev) {
+			s_edevs[i] = NULL;
+			break;
+		}
+	}
+
+	ena_info("pci: device removed");
+}
+
 static int ena_pci_add_dev(struct pci_device *pdev)
 {
 	struct ena_uk_device *edev;
@@ -254,6 +331,8 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 	}
 
 	edev->uid = (uint16_t)ret;
+
+	ena_pci_track_edev(edev, pdev);
 
 	ena_info("probe: bound ENA device netdev_id=%u (mac=%02x:%02x:%02x:%02x:%02x:%02x)",
 		 edev->uid,

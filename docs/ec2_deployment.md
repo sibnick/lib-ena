@@ -20,7 +20,7 @@ Before you start deployment, make sure you have the following items:
 
 ## 3. Build the Unikraft Image
 
-Build the KVM image for x86_64 or ARM64 architecture:
+Build the KVM image for x86_64 architecture, the only architecture the driver supports at this time:
 
 ```bash
 kraft build --target kvm --plat qemu --arch x86_64
@@ -92,11 +92,10 @@ aws ec2 run-instances \
   --subnet-id subnet-0123456789abcdef0
 ```
 
-Recommended instance types:
+Recommended instance types (x86_64 only; ARM64 Graviton is not supported at this time):
 - **Testing and Validation**: `t3.nano`, `t3.micro`
 - **Compute Workloads**: `c5.large`, `c6i.large`, `c7i.large`
 - **Memory Workloads**: `r5.large`, `r6i.large`, `r7i.large`
-- **ARM64 Graviton**: `c6g.medium`, `c7g.medium`
 
 ---
 
