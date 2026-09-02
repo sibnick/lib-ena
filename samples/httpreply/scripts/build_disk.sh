@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-KERNEL_BIN="build/unikraft-test_qemu-x86_64"
+KERNEL_BIN="build/httpreply_qemu-x86_64"
 OUTPUT_IMG="build/disk.raw"
 STAGING_DIR="build/staging"
 

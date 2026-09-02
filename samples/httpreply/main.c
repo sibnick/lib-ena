@@ -3,7 +3,14 @@
  * Unikraft HTTP Reply Benchmark Server (app-httpreply)
  *
  * Micro-benchmark HTTP echo server running on native AWS ENA driver
- * and lwIP TCP/IP stack with asynchronous non-blocking I/O multiplexing.
+ * and lwIP TCP/IP stack in single-threaded (NO_SYS) mode.
+ *
+ * The lwIP stack runs without a dedicated stack thread. This one
+ * thread does everything: it polls the network device
+ * (uknetdev_poll_all()), drives the stack timers (sys_check_timeouts()),
+ * and multiplexes sockets with level-triggered epoll. There are no
+ * worker threads, no mailboxes, and no context switches between
+ * device, stack, and application.
  */
 
 #include <stdio.h>
@@ -11,12 +18,15 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
-#include <fcntl.h>
-#include <poll.h>
+#include <time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/epoll.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+
+#include <lwip/timeouts.h>
+#include "netif/uknetdev.h"
 
 #ifndef TCP_NODELAY
 #define TCP_NODELAY 1
@@ -24,9 +34,16 @@
 
 #define LISTEN_PORT 80
 #define BACKLOG 512
-#define MAX_CLIENTS 1024
+#define MAX_EVENTS 256
 #define RECV_BUF_SIZE 4096
 #define SOCK_BUF_SIZE 32768
+
+/*
+ * When no socket is ready, pause the CPU for this long (nanoseconds)
+ * before polling the device again. A network interrupt wakes the CPU
+ * early, so the added latency is bounded by this value.
+ */
+#define IDLE_SLEEP_NS (100 * 1000)
 
 static const char http_response[] =
 	"HTTP/1.1 200 OK\r\n"
@@ -36,14 +53,6 @@ static const char http_response[] =
 	"Server: Unikraft-ENA-Benchmark\r\n"
 	"\r\n"
 	"Hello, World!\n";
-
-static int set_nonblocking(int fd)
-{
-	int flags = fcntl(fd, F_GETFL, 0);
-	if (flags < 0)
-		return -1;
-	return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-}
 
 static void configure_socket_options(int fd)
 {
@@ -55,20 +64,32 @@ static void configure_socket_options(int fd)
 	setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size));
 }
 
+/*
+ * Drive the lwIP stack: receive pending packets from the network
+ * device and process pending stack timers (retransmits, polls).
+ */
+static void drive_stack(void)
+{
+	uknetdev_poll_all();
+	sys_check_timeouts();
+}
+
 int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 {
-	int server_fd;
 	struct sockaddr_in server_addr;
-	int opt = 1;
-	struct pollfd fds[MAX_CLIENTS];
-	nfds_t nfds = 1;
+	struct epoll_event events[MAX_EVENTS];
+	struct epoll_event ev;
 	char buffer[RECV_BUF_SIZE];
+	struct timespec idle_ts;
+	int epfd, server_fd;
+	int opt = 1;
+	int n, i;
 	size_t resp_len = sizeof(http_response) - 1;
 
 	printf("\n========================================\n");
 	printf(" Unikraft HTTP Benchmark Server (lib-ena)\n");
 	printf(" Port: %d (TCP)\n", LISTEN_PORT);
-	printf(" Mode: Asynchronous Non-blocking (poll)\n");
+	printf(" Mode: Single-threaded (NO_SYS, epoll)\n");
 	printf(" Driver: AWS ENA native netdev\n");
 	printf(" Stack: lwIP (IPv4/TCP/Sockets)\n");
 	printf("========================================\n\n");
@@ -86,11 +107,6 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 	}
 
 	configure_socket_options(server_fd);
-	if (set_nonblocking(server_fd) < 0) {
-		printf("[ERR] Failed to set non-blocking on server socket\n");
-		close(server_fd);
-		return 1;
-	}
 
 	memset(&server_addr, 0, sizeof(server_addr));
 	server_addr.sin_family = AF_INET;
@@ -109,99 +125,126 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 		return 1;
 	}
 
-	memset(fds, 0, sizeof(fds));
-	fds[0].fd = server_fd;
-	fds[0].events = POLLIN;
+	epfd = epoll_create1(0);
+	if (epfd < 0) {
+		printf("[ERR] Failed to create epoll: errno %d\n", errno);
+		close(server_fd);
+		return 1;
+	}
 
-	printf("[INFO] HTTP server listening on port %d (max clients: %d)...\n", LISTEN_PORT, MAX_CLIENTS);
+	ev.events = EPOLLIN;
+	ev.data.fd = server_fd;
+	if (epoll_ctl(epfd, EPOLL_CTL_ADD, server_fd, &ev) < 0) {
+		printf("[ERR] Failed to register listener on epoll: errno %d\n", errno);
+		close(server_fd);
+		return 1;
+	}
 
-	while (1) {
-		int nready = poll(fds, nfds, 100);
-		if (nready < 0) {
+	idle_ts.tv_sec = 0;
+	idle_ts.tv_nsec = IDLE_SLEEP_NS;
+
+	printf("[INFO] HTTP server listening on port %d (backlog: %d)...\n",
+	       LISTEN_PORT, BACKLOG);
+
+	for (;;) {
+		/* Receive packets and run stack timers first, so that
+		 * events raised by the stack are already visible to
+		 * epoll before we query it. */
+		drive_stack();
+
+		/* Non-blocking: timeout 0. */
+		n = epoll_wait(epfd, events, MAX_EVENTS, 0);
+		if (n < 0) {
 			if (errno == EINTR)
 				continue;
-			printf("[ERR] poll error: errno %d\n", errno);
+			printf("[ERR] epoll_wait error: errno %d\n", errno);
 			break;
 		}
 
-		if (nready == 0)
-			continue;
+		for (i = 0; i < n; i++) {
+			int fd = events[i].data.fd;
 
-		/* Check for new incoming connections */
-		if (fds[0].revents & POLLIN) {
-			while (1) {
-				struct sockaddr_in client_addr;
-				socklen_t client_len = sizeof(client_addr);
-				int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_len);
+			if (fd == server_fd) {
+				/* Accept all pending connections */
+				for (;;) {
+					struct sockaddr_in client_addr;
+					socklen_t client_len = sizeof(client_addr);
+					int cfd;
 
-				if (client_fd < 0) {
-					if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+					cfd = accept4(server_fd,
+						       (struct sockaddr *)&client_addr,
+						       &client_len, 0);
+					if (cfd < 0)
 						break;
-					break;
+
+					configure_socket_options(cfd);
+
+					ev.events = EPOLLIN | EPOLLRDHUP;
+					ev.data.fd = cfd;
+					if (epoll_ctl(epfd, EPOLL_CTL_ADD, cfd,
+						      &ev) < 0) {
+						close(cfd);
+						break;
+					}
 				}
-
-				if (nfds >= MAX_CLIENTS) {
-					close(client_fd);
-					break;
-				}
-
-				set_nonblocking(client_fd);
-				configure_socket_options(client_fd);
-
-				fds[nfds].fd = client_fd;
-				fds[nfds].events = POLLIN;
-				fds[nfds].revents = 0;
-				nfds++;
-			}
-		}
-
-		/* Process active client connections */
-		for (nfds_t i = 1; i < nfds; i++) {
-			int cfd = fds[i].fd;
-
-			if (fds[i].revents & (POLLERR | POLLHUP | POLLNVAL)) {
-				close(cfd);
-				fds[i] = fds[nfds - 1];
-				nfds--;
-				i--;
 				continue;
 			}
 
-			if (fds[i].revents & POLLIN) {
+			if (events[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
+				/* Peer closed the connection or an error
+				 * happened: drop the connection. */
+				epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+				close(fd);
+				continue;
+			}
+
+			if (events[i].events & (EPOLLIN | EPOLLRDNORM)) {
 				ssize_t bytes_read;
 				int should_close = 0;
 
-				while ((bytes_read = recv(cfd, buffer, sizeof(buffer) - 1, 0)) > 0) {
+				while ((bytes_read = recv(fd, buffer,
+							 sizeof(buffer) - 1,
+							 0)) > 0) {
 					buffer[bytes_read] = '\0';
 
-					ssize_t sent = send(cfd, http_response, resp_len, 0);
+					ssize_t sent =
+						send(fd, http_response,
+						     resp_len, 0);
 					if (sent < 0) {
-						if (errno == EAGAIN || errno == EWOULDBLOCK)
-							break;
-						should_close = 1;
+						if (errno != EAGAIN &&
+						    errno != EWOULDBLOCK)
+							should_close = 1;
 						break;
 					}
 
-					if (strstr(buffer, "Connection: close") != NULL ||
-					    strstr(buffer, "connection: close") != NULL) {
+					if (strstr(buffer,
+						   "Connection: close") != NULL ||
+					    strstr(buffer,
+						   "connection: close") != NULL) {
 						should_close = 1;
 						break;
 					}
 				}
 
 				if (bytes_read == 0 || should_close ||
-				    (bytes_read < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
-					close(cfd);
-					fds[i] = fds[nfds - 1];
-					nfds--;
-					i--;
+				    (bytes_read < 0 && errno != EAGAIN &&
+				     errno != EWOULDBLOCK)) {
+					epoll_ctl(epfd, EPOLL_CTL_DEL, fd,
+						  NULL);
+					close(fd);
 				}
 			}
 		}
+
+		if (n == 0) {
+			/* Nothing to do: pause the CPU briefly. A
+			 * network interrupt wakes us early. */
+			nanosleep(&idle_ts, NULL);
+		}
 	}
 
-	for (nfds_t i = 0; i < nfds; i++)
-		close(fds[i].fd);
+	close(server_fd);
+	close(epfd);
 
 	return 0;
 }

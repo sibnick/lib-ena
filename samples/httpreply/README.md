@@ -2,13 +2,15 @@
 
 This sample provides the official Unikraft HTTP reply benchmark server. It runs as a lightweight unikernel on AWS EC2 instances with the native AWS ENA driver (`lib-ena`) and the lwIP network stack.
 
+The lwIP stack runs in single-threaded (`NO_SYS`) mode: one thread polls the network device (`uknetdev_poll_all()`), drives the stack timers (`sys_check_timeouts()`), and multiplexes sockets with level-triggered `epoll`. There are no worker threads, no mailboxes, and no context switches between device, stack, and application.
+
 Use this sample to benchmark network throughput, latency percentiles, and connection scalability on AWS EC2, and compare against Linux.
 
 ## Directory Layout
 
 | Path | Purpose |
 | :--- | :--- |
-| `main.c` | High-throughput HTTP echo server using BSD sockets API |
+| `main.c` | Single-threaded HTTP echo server (NO_SYS lwIP, epoll-driven) |
 | `Config.uk` | Kconfig dependencies (`nolibc`, `lwip`, `lib-ena`, `uknetdev`) |
 | `Makefile.uk` | Build definitions for Unikraft build system |
 | `Kraftfile` | KraftKit specification referencing `lib-ena` from `../..` |
