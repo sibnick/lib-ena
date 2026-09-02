@@ -30,6 +30,11 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://get.kraftkit.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      - name: Configure KraftKit manifests
+        run: |
+          kraft pkg source add https://manifests.kraftkit.sh/index.yaml
+          kraft pkg update
+
       - name: Build ENA application for KVM/QEMU x86_64
         run: |
           kraft build --target kvm --plat qemu --arch x86_64 examples/ci-app
@@ -44,15 +49,19 @@ jobs:
       - name: Install aarch64 cross toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
       - name: Install KraftKit
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://get.kraftkit.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      - name: Configure KraftKit manifests
+        run: |
+          kraft pkg source add https://manifests.kraftkit.sh/index.yaml
+          kraft pkg update
+
       - name: Build ENA application for KVM/QEMU arm64
         run: |
-          export CC=aarch64-linux-gnu-gcc
           export CROSS_COMPILE=aarch64-linux-gnu-
           kraft build --target kvm --plat qemu --arch arm64 examples/ci-app
