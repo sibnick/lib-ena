@@ -54,6 +54,8 @@ static const char http_response[] =
 	"\r\n"
 	"Hello, World!\n";
 
+#include <sys/ioctl.h>
+
 static void configure_socket_options(int fd)
 {
 	int opt = 1;
@@ -62,6 +64,7 @@ static void configure_socket_options(int fd)
 	setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
 	setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size));
 	setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size));
+	ioctl(fd, FIONBIO, &opt);
 }
 
 /*
@@ -94,7 +97,7 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 	printf(" Stack: lwIP (IPv4/TCP/Sockets)\n");
 	printf("========================================\n\n");
 
-	server_fd = socket(AF_INET, SOCK_STREAM, 0);
+	server_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
 	if (server_fd < 0) {
 		printf("[ERR] Failed to create socket: errno %d\n", errno);
 		return 1;
@@ -173,7 +176,7 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 
 					cfd = accept4(server_fd,
 						       (struct sockaddr *)&client_addr,
-						       &client_len, 0);
+						       &client_len, SOCK_NONBLOCK);
 					if (cfd < 0)
 						break;
 
@@ -199,47 +202,26 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 			}
 
 			if (events[i].events & (EPOLLIN | EPOLLRDNORM)) {
-				ssize_t bytes_read;
-				int should_close = 0;
-
-				while ((bytes_read = recv(fd, buffer,
-							 sizeof(buffer) - 1,
-							 0)) > 0) {
+				ssize_t bytes_read = recv(fd, buffer, sizeof(buffer) - 1, 0);
+				if (bytes_read > 0) {
 					buffer[bytes_read] = '\0';
-
-					ssize_t sent =
-						send(fd, http_response,
-						     resp_len, 0);
-					if (sent < 0) {
-						if (errno != EAGAIN &&
-						    errno != EWOULDBLOCK)
-							should_close = 1;
-						break;
+					send(fd, http_response, resp_len, 0);
+					if (strstr(buffer, "Connection: close") != NULL ||
+					    strstr(buffer, "connection: close") != NULL) {
+						epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+						close(fd);
 					}
-
-					if (strstr(buffer,
-						   "Connection: close") != NULL ||
-					    strstr(buffer,
-						   "connection: close") != NULL) {
-						should_close = 1;
-						break;
-					}
-				}
-
-				if (bytes_read == 0 || should_close ||
-				    (bytes_read < 0 && errno != EAGAIN &&
-				     errno != EWOULDBLOCK)) {
-					epoll_ctl(epfd, EPOLL_CTL_DEL, fd,
-						  NULL);
+				} else if (bytes_read == 0 || (bytes_read < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+					epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
 					close(fd);
 				}
 			}
 		}
 
 		if (n == 0) {
-			/* Nothing to do: pause the CPU briefly. A
-			 * network interrupt wakes us early. */
-			nanosleep(&idle_ts, NULL);
+#if defined(__x86_64__)
+			__asm__ __volatile__("pause");
+#endif
 		}
 	}
 

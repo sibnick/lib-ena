@@ -716,38 +716,28 @@ int ena_netdev_rx_one(struct uk_netdev *dev,
 
 		ena_rx_refill(ring, 1, ena_netbuf_alloc_helper, queue, NULL);
 
-		/* Multi-descriptor packet reassembly (LRO & jumbo frames) */
-		if (rx_pkt.first && rx_pkt.last) {
-			/* Standard single-descriptor frame */
+		/* Packet reassembly: handle both single-descriptor and multi-descriptor (LRO/jumbo) chains */
+		if (!queue->chain_head) {
+			if (rx_pkt.first && !rx_pkt.last) {
+				/* Start of multi-descriptor frame */
+				queue->chain_head = nb;
+				queue->chain_tail = nb;
+				continue;
+			}
+			/* Complete single-descriptor frame */
 			*pkt = nb;
 			return UK_NETDEV_STATUS_SUCCESS;
-		} else if (rx_pkt.first && !rx_pkt.last) {
-			/* Start of multi-descriptor frame */
-			queue->chain_head = nb;
+		} else {
+			/* Continuation of multi-descriptor frame */
+			queue->chain_tail->next = nb;
 			queue->chain_tail = nb;
-			continue;
-		} else if (!rx_pkt.first && !rx_pkt.last) {
-			/* Middle descriptor in chain */
-			if (queue->chain_tail) {
-				queue->chain_tail->next = nb;
-				queue->chain_tail = nb;
-			} else {
-				ena_netdev_rxq_drop_netbuf(queue, nb);
-			}
-			continue;
-		} else if (!rx_pkt.first && rx_pkt.last) {
-			/* End of multi-descriptor frame */
-			if (queue->chain_tail) {
-				queue->chain_tail->next = nb;
-				queue->chain_tail = nb;
+			if (rx_pkt.last) {
 				*pkt = queue->chain_head;
 				queue->chain_head = NULL;
 				queue->chain_tail = NULL;
 				return UK_NETDEV_STATUS_SUCCESS;
-			} else {
-				ena_netdev_rxq_drop_netbuf(queue, nb);
-				return 0;
 			}
+			continue;
 		}
 	}
 }
@@ -1170,34 +1160,28 @@ static int ena_netdev_rxq_recv(struct uk_netdev *dev, uint16_t queue_id,
 			return 0;
 		}
 
-		/* Multi-descriptor packet reassembly */
-		if (rx_pkt.first && rx_pkt.last) {
+		/* Packet reassembly: handle both single-descriptor and multi-descriptor (LRO/jumbo) chains */
+		if (!rxq->chain_head) {
+			if (rx_pkt.first && !rx_pkt.last) {
+				/* Start of multi-descriptor frame */
+				rxq->chain_head = nb;
+				rxq->chain_tail = nb;
+				continue;
+			}
+			/* Complete single-descriptor frame */
 			*pkt = nb;
 			return 1;
-		} else if (rx_pkt.first && !rx_pkt.last) {
-			rxq->chain_head = nb;
+		} else {
+			/* Continuation of multi-descriptor frame */
+			rxq->chain_tail->next = nb;
 			rxq->chain_tail = nb;
-			continue;
-		} else if (!rx_pkt.first && !rx_pkt.last) {
-			if (rxq->chain_tail) {
-				rxq->chain_tail->next = nb;
-				rxq->chain_tail = nb;
-			} else {
-				ena_netdev_rxq_drop_netbuf(rxq, nb);
-			}
-			continue;
-		} else if (!rx_pkt.first && rx_pkt.last) {
-			if (rxq->chain_tail) {
-				rxq->chain_tail->next = nb;
-				rxq->chain_tail = nb;
+			if (rx_pkt.last) {
 				*pkt = rxq->chain_head;
 				rxq->chain_head = NULL;
 				rxq->chain_tail = NULL;
 				return 1;
-			} else {
-				ena_netdev_rxq_drop_netbuf(rxq, nb);
-				return 0;
 			}
+			continue;
 		}
 	}
 }
