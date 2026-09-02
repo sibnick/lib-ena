@@ -62,8 +62,7 @@ make test
 
 This repository includes working samples and test applications:
 
-- **[samples/httpreply](samples/httpreply/)**: Official Unikraft HTTP reply benchmark server (`app-httpreply`). Uses lwIP BSD sockets and native ENA networking. Includes automated `wrk` latency/throughput benchmark scripts and AWS deployment tools for performance comparison with Linux.
-- **[samples/http-server](samples/http-server/)**: A minimal `Hello, World!` HTTP server unikernel. Uses lwIP sockets and native ENA networking on AWS EC2 `t3.nano` instances. Includes deployment scripts for EBS snapshot and AMI creation.
+- **[samples/httpreply](samples/httpreply/)**: High-performance Unikraft HTTP reply benchmark server (`app-httpreply`). Uses single-threaded lwIP sockets (`NO_SYS` mode, `epoll`) and native ENA networking on AWS EC2. Includes automated `wrk` benchmark scripts and AWS deployment tools.
 - **[samples/low-latency-hft](samples/low-latency-hft/)**: A high-throughput, low-latency market data transport sample with Dlang `-betterC` network client, C++ benchmarking harness, and packet loss recovery.
 - **[examples/ci-app](examples/ci-app/)**: A minimal Unikraft application stub for CI build verification.
 
