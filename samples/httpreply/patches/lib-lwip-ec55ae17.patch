@@ -1,0 +1,418 @@
+diff --git a/Config.uk b/Config.uk
+index 05d1233..dd02f9c 100644
+--- a/Config.uk
++++ b/Config.uk
+@@ -6,6 +6,11 @@ menuconfig LIBLWIP
+ 	select LIBUKRANDOM
+ 	select LIBUKBITOPS if LIBPOSIX_NETLINK
+ 	select HAVE_NW_STACK
++	select LIBUKLOCK
++	select LIBUKLOCK_SEMAPHORE
++	select LIBUKLOCK_MUTEX
++	select LIBUKMPI
++	select LIBUKMPI_MBOX
+ 
+ if LIBLWIP
+ choice
+@@ -114,7 +119,9 @@ config LWIP_NOTHREADS
+ 	help
+ 		No thread is created to operate the stack. The stack has to be
+ 		called from the same context as all stack interactions. This
+-		includes polling network devices. The Socket API is unavailable.
++		includes polling network devices (uknetdev_poll_all()) and
++		processing timers (sys_check_timeouts()). The Socket API is
++		available; it runs synchronously in the caller's context.
+ 
+ config LWIP_THREADS
+ 	bool "Threaded"
+@@ -321,7 +328,7 @@ config LWIP_DNS_TABLE_SIZE
+ endif
+ 
+ menuconfig LWIP_SOCKET
+-	depends on LWIP_THREADS && (LWIP_UDP || LWIP_TCP)
++	depends on (LWIP_UDP || LWIP_TCP)
+ 	bool "Socket API"
+ 	select LIBPOSIX_SOCKET
+ 	default y
+diff --git a/Makefile.uk b/Makefile.uk
+index cae20a5..294fd3e 100644
+--- a/Makefile.uk
++++ b/Makefile.uk
+@@ -88,9 +88,9 @@ LIBLWIP_CXXFLAGS-y += -D__IN_LIBLWIP__
+ # Core
+ ################################################################################
+ LIBLWIP_SRCS-y += $(LIBLWIP_BASE)/alloc.c|unikraft
+-LIBLWIP_SRCS-$(CONFIG_LWIP_THREADS) += $(LIBLWIP_BASE)/mutex.c|unikraft
+-LIBLWIP_SRCS-$(CONFIG_LWIP_THREADS) += $(LIBLWIP_BASE)/semaphore.c|unikraft
+-LIBLWIP_SRCS-$(CONFIG_LWIP_THREADS) += $(LIBLWIP_BASE)/mailbox.c|unikraft
++LIBLWIP_SRCS-y += $(LIBLWIP_BASE)/mutex.c|unikraft
++LIBLWIP_SRCS-y += $(LIBLWIP_BASE)/semaphore.c|unikraft
++LIBLWIP_SRCS-y += $(LIBLWIP_BASE)/mailbox.c|unikraft
+ LIBLWIP_SRCS-$(CONFIG_LWIP_THREADS) += $(LIBLWIP_BASE)/threads.c|unikraft
+ LIBLWIP_SRCS-y += $(LIBLWIP_BASE)/init.c|unikraft
+ LIBLWIP_SRCS-y += $(LIBLWIP_BASE)/time.c|unikraft
+diff --git a/include/lwipopts.h b/include/lwipopts.h
+index 710c160..aadcf5f 100644
+--- a/include/lwipopts.h
++++ b/include/lwipopts.h
+@@ -62,7 +62,19 @@ void sys_free(void *ptr);
+  */
+ #if CONFIG_LWIP_NOTHREADS
+ #define NO_SYS 1
++/* Single-threaded: there is no inter-task contention to protect */
++#define SYS_LIGHTWEIGHT_PROT 0
++#define LWIP_TCPIP_CORE_LOCKING 0
+ #define LWIP_NETIF_LOOPBACK_MULTITHREADING 0
++/*
++ * Mailbox sizes for the sequential (netconn) API in mainloop mode.
++ * The recvmbox sizes must cover a full receive window of pending
++ * segments, the acceptmbox must cover the listen backlog.
++ */
++#define TCPIP_MBOX_SIZE 128
++#define DEFAULT_UDP_RECVMBOX_SIZE 64
++#define DEFAULT_TCP_RECVMBOX_SIZE 256
++#define DEFAULT_ACCEPTMBOX_SIZE 1024
+ #else  /* CONFIG_LWIP_NOTHREADS */
+ #define NO_SYS 0
+ #define LWIP_NETIF_LOOPBACK_MULTITHREADING 1
+@@ -299,7 +311,10 @@ void sys_free(void *ptr);
+ #ifndef MEMP_NUM_PBUF
+ #define MEMP_NUM_PBUF ((MEMP_NUM_TCP_PCB * (TCP_SND_QUEUELEN)) / 2)
+ #endif
++#if CONFIG_LWIP_THREADS
++/* The input message pool is only used by the threaded stack input queue */
+ #define MEMP_NUM_TCPIP_MSG_INPKT TCPIP_MBOX_SIZE
++#endif /* CONFIG_LWIP_THREADS */
+ #endif /* MEM_USE_POOLS */
+ 
+ /**
+@@ -329,9 +344,12 @@ void sys_free(void *ptr);
+ #define LWIP_DHCP 0
+ #endif
+ 
+-#if CONFIG_LWIP_NOTHREADS
+-#define LWIP_NETCONN 0
+-#else
++/*
++ * The netconn API is the foundation of the Socket API. In threaded
++ * mode it is always available. In mainloop mode it is driven directly
++ * from the application context and is only needed by the Socket API.
++ */
++#if !CONFIG_LWIP_NOTHREADS || CONFIG_LWIP_SOCKET
+ #define LWIP_NETCONN 1
+ /* maximum number of struct netconn entries, which limits the maximum
+  * number of open sockets */
+@@ -340,6 +358,8 @@ void sys_free(void *ptr);
+ #else
+ #define MEMP_NUM_NETCONN 64
+ #endif /* LWIP_TCP */
++#else
++#define LWIP_NETCONN 0
+ #endif
+ 
+ /**
+diff --git a/mailbox.c b/mailbox.c
+index 1467fbc..8d93295 100644
+--- a/mailbox.c
++++ b/mailbox.c
+@@ -114,6 +114,21 @@ err_t sys_mbox_trypost_fromisr(sys_mbox_t *mbox, void *msg)
+ 	return ERR_OK;
+ }
+ 
++#if CONFIG_LWIP_NOTHREADS
++/**
++ * In mainloop mode no other context posts to a mailbox that we are
++ * about to wait on, so waiting cannot succeed. Try once and report a
++ * timeout when the mailbox is empty.
++ */
++u32_t sys_arch_mbox_fetch(sys_mbox_t *mbox, void **msg, u32_t timeout __unused)
++{
++	UK_ASSERT(sys_mbox_valid(mbox));
++
++	if (uk_mbox_recv_try(mbox->mbox, msg) < 0)
++		return SYS_ARCH_TIMEOUT;
++	return 0;
++}
++#else
+ /**
+  * Blocks the thread until a message arrives in the mailbox, but does
+  * not block the thread longer than "timeout" milliseconds (similar to
+@@ -145,6 +160,7 @@ u32_t sys_arch_mbox_fetch(sys_mbox_t *mbox, void **msg, u32_t timeout)
+ 	}
+ 	return (u32_t) ukarch_time_nsec_to_msec(nsret);
+ }
++#endif /* CONFIG_LWIP_NOTHREADS */
+ 
+ /**
+  * This is similar to sys_arch_mbox_fetch, however if a message is not
+diff --git a/patches/0015-nosys-sequential-api.patch b/patches/0015-nosys-sequential-api.patch
+new file mode 100644
+index 0000000..88dd298
+--- /dev/null
++++ b/patches/0015-nosys-sequential-api.patch
+@@ -0,0 +1,190 @@
++--- a/src/api/api_msg.c	2021-11-10 19:58:51.000000000 +0100
+++++ b/src/api/api_msg.c	2026-09-02 22:26:57.194617999 +0200
++@@ -88,6 +88,10 @@
++ 
++ #if LWIP_TCPIP_CORE_LOCKING
++ #define TCPIP_APIMSG_ACK(m)
+++#elif NO_SYS
+++/* No separate stack thread exists: the API call runs in the caller's
+++   context, so nothing has to be signalled. */
+++#define TCPIP_APIMSG_ACK(m)
++ #else /* LWIP_TCPIP_CORE_LOCKING */
++ #define TCPIP_APIMSG_ACK(m)   do { sys_sem_signal(LWIP_API_MSG_SEM(m)); } while(0)
++ #endif /* LWIP_TCPIP_CORE_LOCKING */
++--- a/src/api/err.c	2021-11-10 19:58:51.000000000 +0100
+++++ b/src/api/err.c	2026-09-02 22:29:21.259617109 +0200
++@@ -42,7 +42,7 @@
++ 
++ #include "lwip/errno.h"
++ 
++-#if !NO_SYS
+++#if !NO_SYS || LWIP_SOCKET
++ /** Table to quickly map an lwIP error (err_t) to a socket error
++   * by using -err as an index */
++ static const int err_to_errno_table[] = {
++--- a/src/api/tcpip.c	2021-11-10 19:58:51.000000000 +0100
+++++ b/src/api/tcpip.c	2026-09-02 22:28:43.228505471 +0200
++@@ -655,4 +655,45 @@
++   return tcpip_try_callback(mem_free, m);
++ }
++ 
+++#else /* !NO_SYS */
+++
+++#include "lwip/priv/api_msg.h"
+++
+++/*
+++ * In single-threaded mode there is no separate stack thread. API
+++ * functions are executed directly in the caller's context and the
+++ * "wait" completes immediately.
+++ */
+++err_t
+++tcpip_send_msg_wait_sem(tcpip_callback_fn fn, void *apimsg, sys_sem_t *sem)
+++{
+++  LWIP_UNUSED_ARG(sem);
+++  fn(apimsg);
+++  return ERR_OK;
+++}
+++
+++err_t
+++tcpip_api_call(tcpip_api_call_fn fn, struct tcpip_api_call_data *call)
+++{
+++  return fn(call);
+++}
+++
+++err_t
+++tcpip_callback(tcpip_callback_fn function, void *ctx)
+++{
+++  if (function) {
+++    function(ctx);
+++  }
+++  return ERR_OK;
+++}
+++
+++err_t
+++tcpip_try_callback(tcpip_callback_fn function, void *ctx)
+++{
+++  if (function) {
+++    function(ctx);
+++  }
+++  return ERR_OK;
+++}
+++
++ #endif /* !NO_SYS */
++--- a/src/core/init.c	2021-11-10 19:58:51.000000000 +0100
+++++ b/src/core/init.c	2026-09-02 22:26:57.194617999 +0200
++@@ -172,9 +172,6 @@
++ #if (LWIP_NETIF_API && (NO_SYS==1))
++ #error "If you want to use NETIF API, you have to define NO_SYS=0 in your lwipopts.h"
++ #endif
++-#if ((LWIP_SOCKET || LWIP_NETCONN) && (NO_SYS==1))
++-#error "If you want to use Sequential API, you have to define NO_SYS=0 in your lwipopts.h"
++-#endif
++ #if (LWIP_PPP_API && (NO_SYS==1))
++ #error "If you want to use PPP API, you have to define NO_SYS=0 in your lwipopts.h"
++ #endif
++--- a/src/include/lwip/err.h	2021-11-10 19:58:51.000000000 +0100
+++++ b/src/include/lwip/err.h	2026-09-02 22:29:25.657860300 +0200
++@@ -106,9 +106,9 @@
++ #define lwip_strerr(x) ""
++ #endif /* LWIP_DEBUG */
++ 
++-#if !NO_SYS
+++#if !NO_SYS || LWIP_SOCKET
++ int err_to_errno(err_t err);
++-#endif /* !NO_SYS */
+++#endif /* !NO_SYS || LWIP_SOCKET */
++ 
++ #ifdef __cplusplus
++ }
++--- a/src/include/lwip/priv/tcpip_priv.h	2021-11-10 19:58:51.000000000 +0100
+++++ b/src/include/lwip/priv/tcpip_priv.h	2026-09-02 22:27:08.178226613 +0200
++@@ -39,7 +39,7 @@
++ 
++ #include "lwip/opt.h"
++ 
++-#if !NO_SYS /* don't build if not configured for use in lwipopts.h */
+++#if !NO_SYS || LWIP_NETCONN || LWIP_SOCKET
++ 
++ #include "lwip/tcpip.h"
++ #include "lwip/sys.h"
++--- a/src/include/lwip/sys.h	2021-11-10 19:58:51.000000000 +0100
+++++ b/src/include/lwip/sys.h	2026-09-02 22:26:57.194617999 +0200
++@@ -43,45 +43,11 @@
++ extern "C" {
++ #endif
++ 
++-#if NO_SYS
++-
++-/* For a totally minimal and standalone system, we provide null
++-   definitions of the sys_ functions. */
++-typedef u8_t sys_sem_t;
++-typedef u8_t sys_mutex_t;
++-typedef u8_t sys_mbox_t;
++-
++-#define sys_sem_new(s, c) ERR_OK
++-#define sys_sem_signal(s)
++-#define sys_sem_wait(s)
++-#define sys_arch_sem_wait(s,t)
++-#define sys_sem_free(s)
++-#define sys_sem_valid(s) 0
++-#define sys_sem_valid_val(s) 0
++-#define sys_sem_set_invalid(s)
++-#define sys_sem_set_invalid_val(s)
++-#define sys_mutex_new(mu) ERR_OK
++-#define sys_mutex_lock(mu)
++-#define sys_mutex_unlock(mu)
++-#define sys_mutex_free(mu)
++-#define sys_mutex_valid(mu) 0
++-#define sys_mutex_set_invalid(mu)
++-#define sys_mbox_new(m, s) ERR_OK
++-#define sys_mbox_fetch(m,d)
++-#define sys_mbox_tryfetch(m,d)
++-#define sys_mbox_post(m,d)
++-#define sys_mbox_trypost(m,d)
++-#define sys_mbox_free(m)
++-#define sys_mbox_valid(m)
++-#define sys_mbox_valid_val(m)
++-#define sys_mbox_set_invalid(m)
++-#define sys_mbox_set_invalid_val(m)
++-
++-#define sys_thread_new(n,t,a,s,p)
++-
++-#define sys_msleep(t)
++-
++-#else /* NO_SYS */
+++/*
+++ * The port provides the sys primitives (semaphores, mutexes, mailboxes)
+++ * in all operation modes, including single-threaded. The declarations
+++ * that follow therefore apply to both modes.
+++ */
++ 
++ /** Return code for timeouts from sys_arch_mbox_fetch and sys_arch_sem_wait */
++ #define SYS_ARCH_TIMEOUT 0xffffffffUL
++@@ -417,9 +383,9 @@
++  * @param arg parameter passed to 'thread'
++  * @param stacksize stack size in bytes for the new thread (may be ignored by ports)
++  * @param prio priority of the new thread (may be ignored by ports) */
+++#if !NO_SYS
++ sys_thread_t sys_thread_new(const char *name, lwip_thread_fn thread, void *arg, int stacksize, int prio);
++-
++-#endif /* NO_SYS */
+++#endif /* !NO_SYS */
++ 
++ /**
++  * @ingroup sys_misc
++--- a/src/include/lwip/tcpip.h	2021-11-10 19:58:51.000000000 +0100
+++++ b/src/include/lwip/tcpip.h	2026-09-02 22:28:17.231057516 +0200
++@@ -39,11 +39,12 @@
++ 
++ #include "lwip/opt.h"
++ 
++-#if !NO_SYS /* don't build if not configured for use in lwipopts.h */
+++#if !NO_SYS || LWIP_NETCONN || LWIP_SOCKET
++ 
++ #include "lwip/err.h"
++ #include "lwip/timeouts.h"
++ #include "lwip/netif.h"
+++#include "lwip/sys.h"
++ 
++ #ifdef __cplusplus
++ extern "C" {
+diff --git a/semaphore.c b/semaphore.c
+index cd40985..d819503 100644
+--- a/semaphore.c
++++ b/semaphore.c
+@@ -67,6 +67,20 @@ void sys_sem_signal(sys_sem_t *sem)
+ 	uk_semaphore_up(&sem->sem);
+ }
+ 
++#if CONFIG_LWIP_NOTHREADS
++/**
++ * In mainloop mode the semaphore is only ever consumed by the context
++ * that also signals it, so waiting can never succeed. Try once and
++ * report a timeout when the semaphore is not available.
++ */
++u32_t sys_arch_sem_wait(sys_sem_t *sem, u32_t timeout __unused)
++{
++	uk_pr_debug("sys_arch_sem_wait(%p, %"PRIu32")\n", sem, timeout);
++	if (uk_semaphore_down_try(&sem->sem) == 0)
++		return SYS_ARCH_TIMEOUT;
++	return 0;
++}
++#else
+ /**
+  * Blocks the thread while waiting for the semaphore to be
+  * signaled. If the "timeout" argument is non-zero, the thread should
+@@ -98,3 +112,4 @@ u32_t sys_arch_sem_wait(sys_sem_t *sem, u32_t timeout)
+ 
+ 	return (u32_t) ukarch_time_nsec_to_msec(nsret);
+ }
++#endif /* CONFIG_LWIP_NOTHREADS */
+diff --git a/sockets.c b/sockets.c
+index 258957f..4a75614 100644
+--- a/sockets.c
++++ b/sockets.c
+@@ -483,6 +483,30 @@ lwip_posix_socket_event_callback(struct lwip_sock *sock,
+ 	posix_sock_event_assign(sockobj, events);
+ }
+ 
++#if CONFIG_LIBPOSIX_SOCKET_POLLED
++/*
++ * On-demand event level for polled socket queues. The caller re-polls
++ * the live lwIP socket state, so the queue itself does not store
++ * levels: this callback is the single source of truth.
++ */
++static unsigned int
++lwip_posix_socket_poll(posix_sock *file, unsigned int mask)
++{
++	int lwip_fd;
++	unsigned int revents;
++	struct lwip_sock *sock;
++
++	lwip_fd = _lwip_getfd(file);
++
++	sock = lwip_socket_dbg_get_socket(lwip_fd);
++	if (unlikely(!sock || !sock->conn))
++		return 0;
++
++	revents = get_lwip_socket_events(sock);
++	return revents & mask;
++}
++#endif /* CONFIG_LIBPOSIX_SOCKET_POLLED */
++
+ static void
+ lwip_posix_socket_poll_setup(posix_sock *file)
+ {
+@@ -529,6 +553,9 @@ static struct posix_socket_ops lwip_posix_socket_ops = {
+ 	.write		= lwip_posix_socket_write,
+ 	.close		= lwip_posix_socket_close,
+ 	.ioctl		= lwip_posix_socket_ioctl,
++#if CONFIG_LIBPOSIX_SOCKET_POLLED
++	.poll		= lwip_posix_socket_poll,
++#endif /* CONFIG_LIBPOSIX_SOCKET_POLLED */
+ 	.poll_setup	= lwip_posix_socket_poll_setup,
+ };
+ 
