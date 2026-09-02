@@ -27,12 +27,12 @@ jobs:
 
       - name: Install KraftKit
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://get.kraftkit.sh | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          curl --proto '=https' --tlsv1.2 -sSf https://get.kraftkit.sh | sudo sh
+          echo "KRAFTKIT_NO_CHECK_UPDATES=true" >> "$GITHUB_ENV"
 
       - name: Configure KraftKit manifests
         run: |
-          kraft pkg source add https://manifests.kraftkit.sh/index.yaml
+          kraft pkg source https://manifests.kraftkit.sh/index.yaml
           kraft pkg update
 
       - name: Build ENA application for KVM/QEMU x86_64
@@ -53,12 +53,12 @@ jobs:
 
       - name: Install KraftKit
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://get.kraftkit.sh | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          curl --proto '=https' --tlsv1.2 -sSf https://get.kraftkit.sh | sudo sh
+          echo "KRAFTKIT_NO_CHECK_UPDATES=true" >> "$GITHUB_ENV"
 
       - name: Configure KraftKit manifests
         run: |
-          kraft pkg source add https://manifests.kraftkit.sh/index.yaml
+          kraft pkg source https://manifests.kraftkit.sh/index.yaml
           kraft pkg update
 
       - name: Build ENA application for KVM/QEMU arm64
