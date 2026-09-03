@@ -25,3 +25,4 @@ libraries:
     kconfig:
       - CONFIG_LIBENA=y
       - CONFIG_LIBENA_LLQ=y
+      - CONFIG_LIBUKPRINT_KLVL_INFO=y
