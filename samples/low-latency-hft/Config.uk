@@ -1,0 +1,22 @@
+config APPLOWLATENCYHFT_DEPENDENCIES
+	bool
+	default y
+	select LIBNOLIBC if !HAVE_LIBC
+	select LIBUKALLOC
+	select LIBUKBUS
+	select LIBUKBUS_PCI
+	select LIBUKNETDEV
+	select LIBLWIP
+	select LIBLWIP_IPV4
+	select LIBLWIP_NOTHREADS
+	select LIBLWIP_SOCKET
+	select LIBLWIP_UDP
+	select LIBPOSIX_POLL
+	select LIBPOSIX_SOCKET_POLLED
+	select LIBPOSIX_TIME
+	select LIBENA
+
+menuconfig APPLOWLATENCYHFT
+	bool "Low-Latency UDP Echo Server"
+	default y
+	select APPLOWLATENCYHFT_DEPENDENCIES
