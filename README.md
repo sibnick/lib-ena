@@ -63,7 +63,7 @@ make test
 This repository includes working samples and test applications:
 
 - **[samples/httpreply](samples/httpreply/)**: High-performance Unikraft HTTP reply benchmark server (`app-httpreply`). Uses single-threaded lwIP sockets (`NO_SYS` mode, `epoll`) and native ENA networking on AWS EC2. Includes automated `wrk` benchmark scripts and AWS deployment tools.
-- **[samples/low-latency-hft](samples/low-latency-hft/)**: A high-throughput, low-latency market data transport sample with Dlang `-betterC` network client, C++ benchmarking harness, and packet loss recovery.
+- **[samples/low-latency-hft](samples/low-latency-hft/)**: Low-latency UDP echo server and latency benchmarking client in C. Demonstrates zero-copy datagram echo loops, socket buffer tuning, and CPU core pinning. Runs on Linux and as a Unikraft unikernel with the native ENA driver.
 - **[examples/ci-app](examples/ci-app/)**: A minimal Unikraft application stub for CI build verification.
 
 ## AWS EC2 Deployment

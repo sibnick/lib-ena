@@ -1,0 +1,3 @@
+$(eval $(call addlib,applowlatencyhft))
+
+APPLOWLATENCYHFT_SRCS-y += $(APPLOWLATENCYHFT_BASE)/server.c
