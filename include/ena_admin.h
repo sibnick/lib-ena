@@ -115,6 +115,9 @@ enum ena_admin_completion_policy_type {
 	ENA_ADMIN_COMPLETION_POLICY_CQE_ON_DEMAND = 1,
 };
 
+#define ENA_ADMIN_AQ_CREATE_CQ_CMD_INTERRUPT_MODE_ENABLED_MASK (1u << 5)
+#define ENA_ADMIN_MSIX_NONE 0xFFFFFFFFu
+
 /* CREATE_CQ command and response descriptors */
 struct ena_admin_aq_create_cq_cmd {
 	struct ena_admin_aq_common_desc aq_common_descriptor;

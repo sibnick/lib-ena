@@ -38,7 +38,7 @@ enum ena_admin_os_type {
 /* Driver identity reported to the device. */
 #define ENA_INIT_OS_NAME		"Unikraft"
 #define ENA_INIT_DRIVER_NAME		"ena-unikraft"
-#define ENA_INIT_DRIVER_VERSION_MAJOR	1
+#define ENA_INIT_DRIVER_VERSION_MAJOR	2
 #define ENA_INIT_DRIVER_VERSION_MINOR	0
 #define ENA_INIT_DRIVER_VERSION_SUBMINOR 0
 #define ENA_INIT_DRIVER_MODULE_TYPE	0

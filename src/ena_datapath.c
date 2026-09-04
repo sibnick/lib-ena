@@ -65,6 +65,7 @@ int ena_ring_alloc(struct ena_adapter *adapter, uint16_t qid,
 	ring->hw_valid = true;
 	ring->sq_depth = sq_depth;
 	ring->cq_depth = cq_depth;
+	ring->cq_elem_size = (uint32_t)cq_elem_size;
 	ring->sq_phase = 1;
 	ring->cq_phase = 1;
 	ring->sq_tail = 0;
@@ -243,6 +244,7 @@ int ena_admin_create_cq(struct ena_adapter *adapter, uint16_t cq_depth,
 		return -EINVAL;
 
 	memset(&cmd, 0, sizeof(cmd));
+	cmd.cq_caps_1 = ENA_ADMIN_AQ_CREATE_CQ_CMD_INTERRUPT_MODE_ENABLED_MASK;
 	cmd.cq_caps_2 = entry_size_words ? entry_size_words : 4;
 	cmd.cq_depth = cq_depth;
 	cmd.msix_vector = msix_vector;
@@ -441,9 +443,10 @@ int ena_ring_create_hw(struct ena_ring *ring, uint32_t msix_vector)
 		    ENA_ADMIN_SQ_DIRECTION_TX : ENA_ADMIN_SQ_DIRECTION_RX;
 
 	/* 1. Create Completion Queue (always in host memory) */
-	uint8_t cq_entry_words = (ring->ring_type == ENA_RING_TYPE_TX) ? 2 : 4;
+	uint8_t cq_entry_words = (uint8_t)(ring->cq_elem_size / 4u);
+	uint32_t msix_vec = (msix_vector != 0) ? msix_vector : ENA_ADMIN_MSIX_NONE;
 	ret = ena_admin_create_cq(adapter, ring->cq_depth, ring->cq_phys,
-				  msix_vector, cq_entry_words, &ring->cq_idx,
+				  msix_vec, cq_entry_words, &ring->cq_idx,
 				  &ring->cq_db_offset, &ring->cq_unmask_db_offset);
 	if (ret) {
 		ena_err("ring create hw: failed to create CQ (%d)", ret);

@@ -146,6 +146,10 @@ struct ena_eth_io_rx_cdesc_ext {
 #define ENA_ETH_IO_RX_CDESC_BASE_LAST_SHIFT          27
 #define ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK           0x08000000u
 
+/* Standard Completion Queue entry sizes in 32-bit words (reference driver). */
+#define ENA_TX_CQ_ENTRY_SIZE_WORDS	2
+#define ENA_RX_CQ_ENTRY_SIZE_WORDS	4
+
 /* -------------------------------------------------------------------------
  * Software Buffer Tracking Structures
  * ------------------------------------------------------------------------- */
@@ -197,6 +201,7 @@ struct ena_ring {
 	uint16_t cq_depth;         /* CQ ring depth (must be power of 2) */
 	uint16_t cq_head;          /* Consumer head index */
 	uint8_t cq_phase;          /* Expected CQ phase bit (starts at 1) */
+	uint32_t cq_elem_size;     /* CQ entry stride in bytes (8 or 16) */
 	uint16_t cq_idx;           /* Device-assigned CQ hardware ID */
 	uint32_t cq_db_offset;     /* Offset from BAR0 to CQ doorbell / head DB */
 	volatile uint32_t *cq_db;  /* Mapped CQ doorbell address */
