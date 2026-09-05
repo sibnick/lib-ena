@@ -94,9 +94,9 @@ All 18 security audit findings are resolved. See [docs/security_audit.md](docs/s
 
 ## Performance Benchmarking
 
-No published benchmark results. A measurement method is described in [scripts/ec2_benchmark.sh](scripts/ec2_benchmark.sh).
+Benchmark measurements for the HTTP reply server on AWS EC2 `c6i.large` instances are documented in [samples/httpreply/README.md](samples/httpreply/README.md).
 
-Store measured results outside version control, for example in the Fossil unversioned store (`fossil uv`). Do not store unmeasured numbers in this repository.
+Store raw benchmark reports outside version control, for example in the Fossil unversioned store (`fossil uv`). Do not store unmeasured numbers in this repository.
 
 ## License
 

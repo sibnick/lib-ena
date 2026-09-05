@@ -603,6 +603,7 @@ static void *ena_netbuf_alloc_helper(void *arg, uint64_t *phys_out, uint32_t *le
 		uint16_t slot = rxq->bounce_free_ids[rxq->bounce_free_head];
 		rxq->bounce_free_head = (uint16_t)((rxq->bounce_free_head + 1) & (rxq->nb_desc - 1));
 		rxq->bounce_free_count--;
+		rxq->pending_slot = (int16_t)slot;
 
 		if (phys_out)
 			*phys_out = rxq->bounce_phys + ((uint64_t)slot * ENA_RX_BUF_SIZE);

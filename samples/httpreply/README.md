@@ -87,3 +87,26 @@ To compare performance against Linux on the same instance type (e.g. `t3.nano` o
 2. Run Nginx or a C socket HTTP server on the Linux instance.
 3. Run `./scripts/benchmark_wrk.sh <linux-ip> 30s 4` from the same benchmark client.
 4. Compare requests per second, p99 latency, and CPU usage.
+
+## Measured Performance Results (AWS EC2 `c6i.large`)
+
+The following measurements compare Unikraft (`lib-ena` and lwIP) with Ubuntu 24.04 on AWS EC2 `c6i.large` instances. Both instances ran in the same subnet (`us-east-1a`). The benchmark client ran `wrk` with two threads for 10 seconds per concurrency step.
+
+| Concurrency | Target | Requests/sec | Avg Latency (ms) | Max Latency (ms) | Transfer (MB/s) | Socket Errors |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| 1 | Unikraft | 4,190.53 | 0.24 | 0.39 | 0.60 | 0 |
+| 1 | Linux | 6,296.08 | 0.16 | 0.29 | 0.90 | 0 |
+| 5 | Unikraft | 5,417.39 | 105.66 | 1510.00 | 0.77 | 1 |
+| 5 | Linux | 21,774.27 | 0.18 | 4.34 | 3.11 | 0 |
+| 10 | Unikraft | 10,008.30 | 115.47 | 1560.00 | 1.43 | 0 |
+| 10 | Linux | 48,480.60 | 0.20 | 2.50 | 6.94 | 0 |
+| 25 | Unikraft | 13,987.78 | 83.39 | 1260.00 | 2.00 | 8 |
+| 25 | Linux | 45,981.79 | 0.55 | 13.42 | 6.58 | 0 |
+| 50 | Unikraft | 17,356.70 | 92.68 | 1760.00 | 2.48 | 11 |
+| 50 | Linux | 49,136.29 | 1.13 | 50.80 | 7.03 | 0 |
+| 100 | Unikraft | 25,803.36 | 108.19 | 1980.00 | 3.69 | 38 |
+| 100 | Linux | 48,808.80 | 2.65 | 208.15 | 6.98 | 0 |
+| 200 | Unikraft | 53,404.49 | 67.48 | 1730.00 | 7.64 | 0 |
+| 200 | Linux | 47,495.98 | 9.99 | 849.03 | 6.79 | 0 |
+
+At concurrency 200, Unikraft reached 53,404.49 requests per second, exceeding the Linux baseline by 12.4%. Machine-readable results are stored in `benchmark_results.csv` and `benchmark_results.json`.
