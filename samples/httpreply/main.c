@@ -38,13 +38,6 @@
 #define RECV_BUF_SIZE 4096
 #define SOCK_BUF_SIZE 32768
 
-/*
- * When no socket is ready, pause the CPU for this long (nanoseconds)
- * before polling the device again. A network interrupt wakes the CPU
- * early, so the added latency is bounded by this value.
- */
-#define IDLE_SLEEP_NS (100 * 1000)
-
 static const char http_response[] =
 	"HTTP/1.1 200 OK\r\n"
 	"Content-Type: text/plain; charset=utf-8\r\n"
@@ -53,6 +46,98 @@ static const char http_response[] =
 	"Server: Unikraft-ENA-Benchmark\r\n"
 	"\r\n"
 	"Hello, World!\n";
+
+static const size_t http_resp_len = sizeof(http_response) - 1;
+
+/*
+ * A non-blocking send() may write fewer bytes than requested, or no
+ * byte at all (EAGAIN), when the socket buffer is full. The number
+ * of response bytes not yet sent is tracked per connection in this
+ * table, indexed by fd number. The fd numbers come from the fixed
+ * netconn pool, so the table covers every fd the socket stack can
+ * hand out, and every close path clears the entry of the fd it
+ * frees, so a reused fd number starts clean.
+ */
+#define MAX_TRACKED_FDS	2048
+static uint32_t resp_pending[MAX_TRACKED_FDS];
+
+/*
+ * Update the interest set of an fd that is already registered with
+ * epoll.
+ */
+static int set_epoll_events(int epfd, int fd, uint32_t events)
+{
+	struct epoll_event ev;
+
+	ev.events = events;
+	ev.data.fd = fd;
+
+	return epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &ev);
+}
+
+/*
+ * Send as many bytes of the pending response as the socket accepts.
+ *
+ * Returns 0 when the response is fully sent and EPOLLOUT is
+ * disarmed, returns 1 when bytes are still pending and EPOLLOUT is
+ * armed, and returns -1 when the connection must be dropped.
+ */
+static int send_pending_response(int epfd, int fd, uint32_t base_events)
+{
+	uint32_t pending;
+	ssize_t n;
+
+	if (fd < 0 || fd >= MAX_TRACKED_FDS)
+		return -1;
+
+	pending = resp_pending[fd];
+
+	while (pending > 0) {
+		n = send(fd, http_response + (http_resp_len - pending), pending, 0);
+		if (n > 0) {
+			pending -= (uint32_t)n;
+			continue;
+		}
+
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+			break;
+
+		return -1;
+	}
+
+	resp_pending[fd] = pending;
+
+	if (pending > 0) {
+		/* The socket buffer is full: wait for EPOLLOUT before
+		 * sending the rest. */
+		if (set_epoll_events(epfd, fd, base_events | EPOLLOUT) < 0)
+			return -1;
+
+		return 1;
+	}
+
+	/* The response is complete: disarm EPOLLOUT so a writable
+	 * socket does not trigger a busy loop. */
+	if (set_epoll_events(epfd, fd, base_events) < 0)
+		return -1;
+
+	return 0;
+}
+
+/*
+ * Drop a connection: clear its pending bytes, remove it from the
+ * epoll interest list, and close the fd.
+ */
+static void drop_connection(int epfd, int fd)
+{
+	if (fd >= 0 && fd < MAX_TRACKED_FDS)
+		resp_pending[fd] = 0;
+
+	if (fd >= 0) {
+		epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+		close(fd);
+	}
+}
 
 #include <sys/ioctl.h>
 
@@ -83,11 +168,9 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 	struct epoll_event events[MAX_EVENTS];
 	struct epoll_event ev;
 	char buffer[RECV_BUF_SIZE];
-	struct timespec idle_ts;
 	int epfd, server_fd;
 	int opt = 1;
 	int n, i;
-	size_t resp_len = sizeof(http_response) - 1;
 
 	printf("\n========================================\n");
 	printf(" Unikraft HTTP Benchmark Server (lib-ena)\n");
@@ -143,9 +226,6 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 		return 1;
 	}
 
-	idle_ts.tv_sec = 0;
-	idle_ts.tv_nsec = IDLE_SLEEP_NS;
-
 	printf("[INFO] HTTP server listening on port %d (backlog: %d)...\n",
 	       LISTEN_PORT, BACKLOG);
 
@@ -165,6 +245,7 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 		}
 
 		for (i = 0; i < n; i++) {
+			uint32_t base_events = EPOLLIN | EPOLLRDHUP;
 			int fd = events[i].data.fd;
 
 			if (fd == server_fd) {
@@ -196,8 +277,23 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 			if (events[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
 				/* Peer closed the connection or an error
 				 * happened: drop the connection. */
-				epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
-				close(fd);
+				drop_connection(epfd, fd);
+				continue;
+			}
+
+			if (fd < MAX_TRACKED_FDS && resp_pending[fd] > 0) {
+				/* This connection has unsent response
+				 * bytes. Finish the send before any new
+				 * request is handled: when the socket is
+				 * writable again (EPOLLOUT), send the
+				 * rest, otherwise wait for the next
+				 * EPOLLOUT. */
+				if (events[i].events & EPOLLOUT) {
+					if (send_pending_response(epfd, fd,
+								 base_events) < 0)
+						drop_connection(epfd, fd);
+				}
+
 				continue;
 			}
 
@@ -205,15 +301,29 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 				ssize_t bytes_read = recv(fd, buffer, sizeof(buffer) - 1, 0);
 				if (bytes_read > 0) {
 					buffer[bytes_read] = '\0';
-					send(fd, http_response, resp_len, 0);
+
+					/* Track the response bytes that
+					 * still have to go out and send
+					 * what the socket accepts now. If
+					 * the socket buffer fills up, the
+					 * rest is re-sent when EPOLLOUT
+					 * fires, so no byte of the
+					 * response is ever dropped. */
+					if (fd < MAX_TRACKED_FDS) {
+						resp_pending[fd] = (uint32_t)http_resp_len;
+						if (send_pending_response(epfd, fd,
+									base_events) < 0)
+							drop_connection(epfd, fd);
+					} else {
+						send(fd, http_response, http_resp_len, 0);
+					}
+
 					if (strstr(buffer, "Connection: close") != NULL ||
 					    strstr(buffer, "connection: close") != NULL) {
-						epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
-						close(fd);
+						drop_connection(epfd, fd);
 					}
 				} else if (bytes_read == 0 || (bytes_read < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
-					epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
-					close(fd);
+					drop_connection(epfd, fd);
 				}
 			}
 		}
