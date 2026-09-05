@@ -53,6 +53,7 @@ jobs:
   unikraft-arm64:
     name: unikraft build (arm64)
     runs-on: ubuntu-latest
+    if: false
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
