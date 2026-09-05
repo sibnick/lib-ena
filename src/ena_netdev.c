@@ -650,6 +650,30 @@ static int ena_netdev_stop(struct uk_netdev *dev)
 	return ena_netdev_stop_rings_hw(adapter, adapter->num_rx_rings, adapter->num_tx_rings);
 }
 
+/* Maximum TX completions reaped from one ring per poll iteration. */
+#define ENA_NETDEV_TX_POLL_BUDGET	32
+
+/* Reap TX completions from all TX rings. The lwIP mainloop calls the
+ * RX poll on every loop iteration, including idle iterations, so this
+ * also runs while no new transmit is submitted. Reaping frees the
+ * request IDs and SQ descriptors of completed packets. Without it the
+ * completion queue drains only when the next packet is sent, and the
+ * ring exhausts while the peer pauses. */
+static void ena_netdev_poll_tx_completions(struct ena_adapter *adapter)
+{
+	uint16_t q, count;
+
+	if (!adapter || !adapter->tx_rings)
+		return;
+
+	count = adapter->num_tx_rings;
+	for (q = 0; q < count; q++) {
+		if (adapter->tx_rings[q])
+			ena_tx_poll_completions(adapter->tx_rings[q],
+						ENA_NETDEV_TX_POLL_BUDGET, NULL);
+	}
+}
+
 int ena_netdev_rx_one(struct uk_netdev *dev,
 		      struct uk_netdev_rx_queue *queue,
 		      struct uk_netbuf **pkt)
@@ -664,6 +688,10 @@ int ena_netdev_rx_one(struct uk_netdev *dev,
 
 	/* Drain asynchronous events on every poll iteration. */
 	ena_netdev_drain_aenq(&edev->adapter);
+
+	/* Reap TX completions on every poll iteration, including idle
+	 * ones, so descriptors are freed while the peer is quiet. */
+	ena_netdev_poll_tx_completions(&edev->adapter);
 
 	ring = queue->ring;
 
