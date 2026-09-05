@@ -25,11 +25,21 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@v4
 
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bison flex build-essential
+
       - name: Install KraftKit
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://get.kraftkit.sh | sh -s -- -y
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          curl --proto '=https' --tlsv1.2 -sSf https://get.kraftkit.sh | sudo sh -s -- -y || {
+            KRAFTKIT_VERSION=$(curl -fsSL https://get.kraftkit.sh/latest.txt 2>/dev/null || echo "0.12.15")
+            curl -fsSL "https://github.com/unikraft/kraftkit/releases/download/v${KRAFTKIT_VERSION}/kraftkit_${KRAFTKIT_VERSION}_linux_amd64.deb" -o /tmp/kraftkit.deb
+            sudo dpkg -i /tmp/kraftkit.deb
+            rm -f /tmp/kraftkit.deb
+          }
           echo "KRAFTKIT_NO_CHECK_UPDATES=true" >> "$GITHUB_ENV"
+          kraft version
 
       - name: Configure KraftKit manifests
         run: |
@@ -38,7 +48,7 @@ jobs:
 
       - name: Build ENA application for KVM/QEMU x86_64
         run: |
-          kraft build --target kvm --plat qemu --arch x86_64 examples/ci-app
+          kraft build --no-prompt --log-type basic --target kvm --plat qemu --arch x86_64 examples/ci-app < /dev/null
 
   unikraft-arm64:
     name: unikraft build (arm64)
@@ -47,16 +57,21 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@v4
 
-      - name: Install aarch64 cross toolchain
+      - name: Install aarch64 cross toolchain and build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bison flex build-essential
 
       - name: Install KraftKit
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://get.kraftkit.sh | sh -s -- -y
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          curl --proto '=https' --tlsv1.2 -sSf https://get.kraftkit.sh | sudo sh -s -- -y || {
+            KRAFTKIT_VERSION=$(curl -fsSL https://get.kraftkit.sh/latest.txt 2>/dev/null || echo "0.12.15")
+            curl -fsSL "https://github.com/unikraft/kraftkit/releases/download/v${KRAFTKIT_VERSION}/kraftkit_${KRAFTKIT_VERSION}_linux_amd64.deb" -o /tmp/kraftkit.deb
+            sudo dpkg -i /tmp/kraftkit.deb
+            rm -f /tmp/kraftkit.deb
+          }
           echo "KRAFTKIT_NO_CHECK_UPDATES=true" >> "$GITHUB_ENV"
+          kraft version
 
       - name: Configure KraftKit manifests
         run: |
@@ -66,4 +81,4 @@ jobs:
       - name: Build ENA application for KVM/QEMU arm64
         run: |
           export CROSS_COMPILE=aarch64-linux-gnu-
-          kraft build --target kvm --plat qemu --arch arm64 examples/ci-app
+          kraft build --no-prompt --log-type basic --target kvm --plat qemu --arch arm64 examples/ci-app < /dev/null
