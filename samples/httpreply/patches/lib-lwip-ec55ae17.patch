@@ -417,7 +417,7 @@ index 258957f..4a75614 100644
  };
  
 diff --git a/uknetdev.c b/uknetdev.c
-index b13c5aa..9a2e5fa 100644
+index b13c5aa..effc6f2 100644
 --- a/uknetdev.c
 +++ b/uknetdev.c
 @@ -92,6 +92,11 @@ struct lwip_netdev_data {
@@ -432,7 +432,7 @@ index b13c5aa..9a2e5fa 100644
  };
  
  /*
-@@ -318,6 +323,44 @@ void uknetdev_poll(struct netif *nf)
+@@ -318,6 +323,47 @@ void uknetdev_poll(struct netif *nf)
  }
  
  #ifdef CONFIG_LWIP_NOTHREADS
@@ -466,7 +466,10 @@ index b13c5aa..9a2e5fa 100644
 +	if (ip4_addr_isany_val(ip))
 +		return;
 +
-+	if (ip4_addr_cmp(&ip, &lwip_data->last_grat_arp_ip) == 0)
++	/* ip4_addr_cmp expands without outer parentheses. Comparing its
++	 * result to zero inverts the test. Compare the fields directly.
++	 */
++	if (ip.addr == lwip_data->last_grat_arp_ip.addr)
 +		return;
 +
 +	lwip_data->last_grat_arp_ip = ip;
@@ -477,7 +480,7 @@ index b13c5aa..9a2e5fa 100644
  void uknetdev_poll_all(void)
  {
  	struct netif *nf;
-@@ -330,8 +373,14 @@ void uknetdev_poll_all(void)
+@@ -330,8 +376,14 @@ void uknetdev_poll_all(void)
  	 */
  	NETIF_FOREACH(nf) {
  		if (nf->name[0] == UKNETDEV_NETIF_NAME0
@@ -493,7 +496,7 @@ index b13c5aa..9a2e5fa 100644
  	}
  }
  
-@@ -485,6 +534,9 @@ err_t uknetdev_init(struct netif *nf)
+@@ -485,6 +537,9 @@ err_t uknetdev_init(struct netif *nf)
  	if (!lwip_data->dev_info.max_rx_queues
  	    || !lwip_data->dev_info.max_tx_queues)
  		return ERR_IF;
