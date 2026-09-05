@@ -416,3 +416,90 @@ index 258957f..4a75614 100644
  	.poll_setup	= lwip_posix_socket_poll_setup,
  };
  
+diff --git a/uknetdev.c b/uknetdev.c
+index b13c5aa..9a2e5fa 100644
+--- a/uknetdev.c
++++ b/uknetdev.c
+@@ -92,6 +92,11 @@ struct lwip_netdev_data {
+ 	char *_name; /* Thread name */
+ 	struct uk_sched *sched; /* Scheduler information */
+ #endif /* CONFIG_HAVE_SCHED */
++#if LWIP_IPV4
++	/* Last IPv4 address for which a gratuitous ARP was sent.
++	 * Zero means no gratuitous ARP was sent yet. */
++	ip4_addr_t last_grat_arp_ip;
++#endif /* LWIP_IPV4 */
+ };
+ 
+ /*
+@@ -318,6 +323,44 @@ void uknetdev_poll(struct netif *nf)
+ }
+ 
+ #ifdef CONFIG_LWIP_NOTHREADS
++#if LWIP_IPV4 && LWIP_ARP
++/*
++ * Send a Gratuitous ARP for the current IPv4 address of the netif.
++ *
++ * A reused IP address may leave stale entries in the neighbor tables
++ * of the other hosts on the segment. Broadcasting the "this IP is at
++ * this MAC" mapping from the new owner updates those tables. The
++ * Gratuitous ARP goes out when the interface comes up with an
++ * address and again whenever the address changes (for example a new
++ * DHCP lease).
++ */
++static void uknetdev_send_gratuitous_arp(struct netif *nf)
++{
++	struct uk_netdev *dev;
++	struct lwip_netdev_data *lwip_data;
++	ip4_addr_t ip;
++
++	UK_ASSERT(nf);
++	dev = netif_to_uknetdev(nf);
++	UK_ASSERT(dev);
++	lwip_data = (struct lwip_netdev_data *)dev->scratch_pad;
++
++	if (!(nf->flags & (NETIF_FLAG_UP | NETIF_FLAG_LINK_UP |
++			   NETIF_FLAG_ETHARP)))
++		return;
++
++	ip = *netif_ip4_addr(nf);
++	if (ip4_addr_isany_val(ip))
++		return;
++
++	if (ip4_addr_cmp(&ip, &lwip_data->last_grat_arp_ip) == 0)
++		return;
++
++	lwip_data->last_grat_arp_ip = ip;
++	etharp_gratuitous(nf);
++}
++#endif /* LWIP_IPV4 && LWIP_ARP */
++
+ void uknetdev_poll_all(void)
+ {
+ 	struct netif *nf;
+@@ -330,8 +373,14 @@ void uknetdev_poll_all(void)
+ 	 */
+ 	NETIF_FOREACH(nf) {
+ 		if (nf->name[0] == UKNETDEV_NETIF_NAME0
+-		    && nf->name[1] == UKNETDEV_NETIF_NAME1)
++		    && nf->name[1] == UKNETDEV_NETIF_NAME1) {
++#if LWIP_IPV4 && LWIP_ARP
++			/* Announce the address when the interface comes up
++			 * or the address changes. */
++			uknetdev_send_gratuitous_arp(nf);
++#endif /* LWIP_IPV4 && LWIP_ARP */
+ 			uknetdev_poll(nf);
++		}
+ 	}
+ }
+ 
+@@ -485,6 +534,9 @@ err_t uknetdev_init(struct netif *nf)
+ 	if (!lwip_data->dev_info.max_rx_queues
+ 	    || !lwip_data->dev_info.max_tx_queues)
+ 		return ERR_IF;
++#if LWIP_IPV4
++	lwip_data->last_grat_arp_ip.addr = 0;
++#endif /* LWIP_IPV4 */
+ #if CONFIG_LWIP_UKNETDEV_POLLONLY
+ 	/* Unset receive interrupt support: We force polling mode */
+ 	lwip_data->dev_info.features &= ~UK_NETDEV_F_RXQ_INTR;
