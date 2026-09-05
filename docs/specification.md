@@ -52,13 +52,13 @@ The ENA device exposes Memory Mapped I/O (MMIO) BARs:
 6. Write updated consumer index to `ENA_REGS_ACQ_TAIL_OFF` (`0x30`).
 
 ### 2.2 Core Admin Commands
-- `ENA_ADMIN_DEVICE_ATTRIBUTES` (`0x1`): Retrieves MAC address, max MTU, max queues, and capabilities.
-- `ENA_ADMIN_CREATE_SQ` (`0x2`): Creates a TX or RX Submission Queue.
-- `ENA_ADMIN_DESTROY_SQ` (`0x3`): Destroys a Submission Queue.
-- `ENA_ADMIN_CREATE_CQ` (`0x4`): Creates a Completion Queue.
-- `ENA_ADMIN_DESTROY_CQ` (`0x5`): Destroys a Completion Queue.
-- `ENA_ADMIN_GET_FEATURE` (`0x6`): Reads feature parameters (RSS, MTU, offload capabilities).
-- `ENA_ADMIN_SET_FEATURE` (`0x7`): Writes feature settings to the controller.
+- `ENA_ADMIN_CREATE_SQ` (`0x1`): Creates a TX or RX Submission Queue.
+- `ENA_ADMIN_DESTROY_SQ` (`0x2`): Destroys a Submission Queue.
+- `ENA_ADMIN_CREATE_CQ` (`0x3`): Creates a Completion Queue.
+- `ENA_ADMIN_DESTROY_CQ` (`0x4`): Destroys a Completion Queue.
+- `ENA_ADMIN_GET_FEATURE` (`0x8`): Reads feature parameters (device attributes, RSS, MTU, offload capabilities).
+- `ENA_ADMIN_SET_FEATURE` (`0x9`): Writes feature settings to the controller.
+- `ENA_ADMIN_GET_STATS` (`0xb` / `11`): Reads hardware and queue statistics counters.
 
 ---
 

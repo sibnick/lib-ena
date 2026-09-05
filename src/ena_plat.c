@@ -211,7 +211,7 @@ void ena_delay_us(unsigned int us)
 {
 	__nsec deadline = ukplat_monotonic_clock() + ((__nsec)us * 1000ULL);
 	while (ukplat_monotonic_clock() < deadline) {
-		__asm__ __volatile__("pause");
+		ena_pause();
 	}
 }
 

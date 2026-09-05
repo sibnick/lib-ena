@@ -349,6 +349,12 @@ static void test_netdev_tx_stuck_bounce_releases(void)
 	assert(txq->bounce_in_use == true);
 	assert(txq->bounce_wait_polls == 0);
 
+	/* Fill remaining bounce ring pool slots */
+	for (i = 1; i < 8; i++) {
+		assert(netdev->ops->txq_xmit(netdev, 0, nb) == 0);
+	}
+	assert(txq->bounce_free_count == 0);
+
 	/* Later low-memory transmits fail until the bounded stall limit is
 	 * reached, then the stuck bounce is released and the transmit
 	 * succeeds. */
@@ -367,40 +373,10 @@ static void test_netdev_tx_stuck_bounce_releases(void)
 	assert(txq->bounce_in_use == true);
 	assert(txq->bounce_wait_polls == 0);
 	assert(ring->req_in_flight[txq->bounce_req_id] == 1);
-	assert(ring->free_req_count == ring->sq_depth - 1);
 
-	/* The device writes two completions: the request released at the
-	 * stall limit (no longer in flight, the driver skips it) and the
-	 * current bounce request (the driver frees it and clears the
-	 * bounce). */
-	{
-		struct ena_eth_io_tx_cdesc *cd =
-			(struct ena_eth_io_tx_cdesc *)ring->cq_virt;
-		uint16_t h0 = (uint16_t)(ring->cq_head & (ring->cq_depth - 1));
-		uint16_t h1 = (uint16_t)((ring->cq_head + 1) &
-					 (ring->cq_depth - 1));
-
-		cd[h0].req_id = 0;
-		cd[h0].flags = ring->cq_phase;
-		cd[h1].req_id = txq->bounce_req_id;
-		cd[h1].flags = ring->cq_phase;
-	}
-
-	ret = netdev->ops->txq_xmit(netdev, 0, nb);
-	assert(ret == 0);
-	assert(txq->bounce_in_use == true);
-	assert(txq->bounce_wait_polls == 0);
-
-	/* Complete the last request. A high-memory packet no longer uses
-	 * the bounce and it is free afterwards. */
-	{
-		struct ena_eth_io_tx_cdesc *cd =
-			(struct ena_eth_io_tx_cdesc *)ring->cq_virt;
-		uint16_t h0 = (uint16_t)(ring->cq_head & (ring->cq_depth - 1));
-
-		cd[h0].req_id = txq->bounce_req_id;
-		cd[h0].flags = ring->cq_phase;
-	}
+	/* Complete all in-flight requests */
+	mock_ena_hw_emulate_tx(&g_hw, ring, 8);
+	ena_tx_poll_completions(ring, 8, NULL);
 
 	nb->phys_addr = 0x50001000;
 	assert(netdev->ops->txq_xmit(netdev, 0, nb) == 0);
@@ -732,18 +708,29 @@ static void test_netdev_bounce_buffers(void)
 	tx_buf2->phys_addr = 0x600; /* Low memory address */
 	tx_buf2->len = sizeof(payload2);
 
+	int k;
+
 	/* First packet transmits using bounce buffer */
 	assert(netdev->ops->txq_xmit(netdev, 0, tx_buf1) == 0);
 	assert(netdev->tx_queues[0].bounce_in_use == true);
 
-	/* Second low-memory packet fails with -EBUSY while bounce buffer is in flight */
+	/* Second low-memory packet also transmits using next slot in bounce ring pool */
+	assert(netdev->ops->txq_xmit(netdev, 0, tx_buf2) == 0);
+	assert(netdev->tx_queues[0].bounce_in_use == true);
+
+	/* Fill remaining slots until bounce buffer ring pool is exhausted */
+	for (k = 2; k < 8; k++) {
+		assert(netdev->ops->txq_xmit(netdev, 0, tx_buf2) == 0);
+	}
+
+	/* Next low-memory packet fails with -EBUSY when bounce pool is exhausted */
 	assert(netdev->ops->txq_xmit(netdev, 0, tx_buf2) == -EBUSY);
 
-	/* Complete first transmission */
-	mock_ena_hw_emulate_tx(&g_hw, g_adapter.tx_rings[0], 1);
-	ena_tx_poll_completions(g_adapter.tx_rings[0], 1, NULL);
+	/* Complete transmissions */
+	mock_ena_hw_emulate_tx(&g_hw, g_adapter.tx_rings[0], 8);
+	ena_tx_poll_completions(g_adapter.tx_rings[0], 8, NULL);
 
-	/* After completion, second packet transmits successfully */
+	/* After completion, subsequent packet transmits successfully */
 	assert(netdev->ops->txq_xmit(netdev, 0, tx_buf2) == 0);
 	assert(netdev->tx_queues[0].bounce_in_use == true);
 

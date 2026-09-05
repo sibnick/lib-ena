@@ -28,12 +28,12 @@ Follow the Unikraft commit message conventions:
 
 ## Pull Request Workflow
 
-1. Create a branch from `trunk` for your changes.
+1. Create a feature or bugfix branch from `main` (or `trunk`) for your changes.
 2. Implement your code changes and add tests.
 3. Make sure all unit tests pass before you commit.
 4. Run `make clean && make test` to verify your changes.
 5. Commit your changes with a DCO sign-off line.
-6. Open a pull request against the `trunk` branch.
+6. Open a pull request against the `main` branch.
 
 ## Coding Conventions
 

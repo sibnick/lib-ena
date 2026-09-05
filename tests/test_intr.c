@@ -226,9 +226,11 @@ static void test_poll_step_engine(void)
 	assert(setup_test_adapter(&hw, &adapter) == 0);
 
 	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8, &adapter.tx_rings[0]) == 0);
+	adapter.num_tx_rings = 1;
 	assert(ena_ring_create_hw(adapter.tx_rings[0], 0) == 0);
 
 	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 8, 8, &adapter.rx_rings[0]) == 0);
+	adapter.num_rx_rings = 1;
 	assert(ena_ring_create_hw(adapter.rx_rings[0], 0) == 0);
 
 	/* Populate 2 RX buffers */

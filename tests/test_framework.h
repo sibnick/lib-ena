@@ -75,6 +75,9 @@ static inline void test_free(void *ptr)
 	free(ptr);
 }
 
+/* The RUN_TEST leak check tracks allocations made through test_malloc,
+ * test_calloc, and test_free. Driver-internal heap allocations (rings,
+ * DMA buffers) are monitored via AddressSanitizer and teardown assertions. */
 #define RUN_TEST(fn) do { \
 	if (g_test_setup_hook) \
 		g_test_setup_hook(); \

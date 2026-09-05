@@ -99,8 +99,16 @@ static int send_pending_response(int epfd, int fd, uint32_t base_events)
 			continue;
 		}
 
-		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS || errno == EBUSY)) {
+			/* Drive network stack to poll completions and relieve netdev congestion */
+			drive_stack();
+			n = send(fd, http_response + (http_resp_len - pending), pending, 0);
+			if (n > 0) {
+				pending -= (uint32_t)n;
+				continue;
+			}
 			break;
+		}
 
 		return -1;
 	}
@@ -331,6 +339,8 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 		if (n == 0) {
 #if defined(__x86_64__)
 			__asm__ __volatile__("pause");
+#elif defined(__aarch64__)
+			__asm__ __volatile__("yield");
 #endif
 		}
 	}

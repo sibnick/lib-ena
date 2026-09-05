@@ -200,8 +200,13 @@ int ena_poll_step(struct ena_poll_ctx *ctx, unsigned int *work_done)
 	if (ctx->rx_budget == 0)
 		ctx->rx_budget = 32;
 
-	num_tx = ctx->adapter->num_tx_rings ? ctx->adapter->num_tx_rings : ctx->adapter->max_tx_queues;
-	num_rx = ctx->adapter->num_rx_rings ? ctx->adapter->num_rx_rings : ctx->adapter->max_rx_queues;
+	num_tx = ctx->adapter->num_tx_rings;
+	num_rx = ctx->adapter->num_rx_rings;
+	if (num_tx == 0 && num_rx == 0) {
+		if (work_done)
+			*work_done = 0;
+		return 0;
+	}
 
 	/* TX completion polling */
 	if (ctx->adapter->tx_rings) {
