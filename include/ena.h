@@ -146,7 +146,7 @@ int ena_device_wait_reset_complete(struct ena_adapter *adapter, unsigned int max
  * Check if the device is in a ready state.
  *
  * @param adapter Pointer to the master ENA adapter structure.
- * @return 0 if the device is ready, or -ENODEV if not ready.
+ * @return 0 if the device is ready, -EBUSY if not ready, or -EINVAL on invalid arguments.
  */
 int ena_device_check_ready(const struct ena_adapter *adapter);
 

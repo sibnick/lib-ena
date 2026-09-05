@@ -275,31 +275,77 @@ static void ena_netdev_free_txq_bounce(struct uk_netdev_tx_queue *txq)
 		txq->bounce_phys = 0;
 	}
 
+	if (txq->bounce_free_ids) {
+		free(txq->bounce_free_ids);
+		txq->bounce_free_ids = NULL;
+	}
+
+	if (txq->bounce_map) {
+		free(txq->bounce_map);
+		txq->bounce_map = NULL;
+	}
+
 	txq->bounce_in_use = false;
 	txq->bounce_req_id = 0;
 	txq->bounce_wait_polls = 0;
+	txq->bounce_free_head = 0;
+	txq->bounce_free_tail = 0;
+	txq->bounce_free_count = 0;
 	txq->nb_desc = 0;
 }
 
-/* Release a TX bounce buffer whose completion never arrived. The request is
- * treated as lost: the in-flight flag is cleared, the request id is returned
- * to the ring free pool, and the bounce is available for the next transmit.
- * Callers must hold no other claim on the ring; the ring lock is taken here. */
+/* Reclaim TX bounce slots whose requests have completed */
+static void ena_netdev_reclaim_tx_bounce(struct ena_ring *ring,
+					 struct uk_netdev_tx_queue *txq)
+{
+	uint16_t req_id;
+
+	if (!ring || !txq || !txq->bounce_map || !ring->req_in_flight)
+		return;
+
+	for (req_id = 0; req_id < txq->nb_desc; req_id++) {
+		int16_t slot = txq->bounce_map[req_id];
+		if (slot >= 0 && !ring->req_in_flight[req_id]) {
+			txq->bounce_map[req_id] = -1;
+			if (txq->bounce_free_ids && txq->nb_desc > 0) {
+				txq->bounce_free_ids[txq->bounce_free_tail] = (uint16_t)slot;
+				txq->bounce_free_tail = (uint16_t)((txq->bounce_free_tail + 1) & (txq->nb_desc - 1));
+				txq->bounce_free_count++;
+			}
+			txq->bounce_wait_polls = 0;
+		}
+	}
+	txq->bounce_in_use = (txq->bounce_free_count < txq->nb_desc);
+}
+
+/* Release the oldest in-flight TX bounce slot whose completion never arrived */
 static void ena_netdev_release_stuck_tx_bounce(struct ena_ring *ring,
 					       struct uk_netdev_tx_queue *txq)
 {
+	uint16_t req_id;
+
 	ena_ring_lock(ring);
 
-	if (ring->req_in_flight && txq->bounce_req_id < ring->sq_depth &&
-	    ring->req_in_flight[txq->bounce_req_id]) {
-		ring->req_in_flight[txq->bounce_req_id] = 0;
-		ena_ring_req_id_free(ring, txq->bounce_req_id);
+	if (ring->req_in_flight && txq->bounce_map) {
+		for (req_id = 0; req_id < txq->nb_desc; req_id++) {
+			int16_t slot = txq->bounce_map[req_id];
+			if (slot >= 0 && ring->req_in_flight[req_id]) {
+				ring->req_in_flight[req_id] = 0;
+				ena_ring_req_id_free(ring, req_id);
+				txq->bounce_map[req_id] = -1;
+				if (txq->bounce_free_ids && txq->nb_desc > 0) {
+					txq->bounce_free_ids[txq->bounce_free_tail] = (uint16_t)slot;
+					txq->bounce_free_tail = (uint16_t)((txq->bounce_free_tail + 1) & (txq->nb_desc - 1));
+					txq->bounce_free_count++;
+				}
+				break;
+			}
+		}
 	}
 
 	ena_ring_unlock(ring);
 
-	txq->bounce_in_use = false;
-	txq->bounce_req_id = 0;
+	txq->bounce_in_use = (txq->bounce_free_count < txq->nb_desc);
 	txq->bounce_wait_polls = 0;
 }
 
@@ -553,6 +599,8 @@ static struct uk_netdev_tx_queue *ena_netdev_txq_configure(struct uk_netdev *dev
 	if (adapter->tx_rings)
 		adapter->tx_rings[queue_id] = ring;
 
+	uint16_t i;
+
 	edev->tx_queues[queue_id].ring = ring;
 	edev->tx_queues[queue_id].queue_id = queue_id;
 	edev->tx_queues[queue_id].adapter = adapter;
@@ -561,7 +609,7 @@ static struct uk_netdev_tx_queue *ena_netdev_txq_configure(struct uk_netdev *dev
 	edev->tx_queues[queue_id].bounce_wait_polls = 0;
 	edev->tx_queues[queue_id].nb_desc = nb_desc;
 
-	edev->tx_queues[queue_id].bounce_buf = ena_dma_alloc(ENA_TX_BOUNCE_SIZE,
+	edev->tx_queues[queue_id].bounce_buf = ena_dma_alloc((size_t)nb_desc * ENA_TX_BOUNCE_SIZE,
 							     &edev->tx_queues[queue_id].bounce_phys);
 	if (!edev->tx_queues[queue_id].bounce_buf) {
 		ena_ring_free(ring);
@@ -569,6 +617,32 @@ static struct uk_netdev_tx_queue *ena_netdev_txq_configure(struct uk_netdev *dev
 			adapter->tx_rings[queue_id] = NULL;
 		return NULL;
 	}
+
+	edev->tx_queues[queue_id].bounce_free_ids = calloc(nb_desc, sizeof(uint16_t));
+	if (!edev->tx_queues[queue_id].bounce_free_ids) {
+		ena_netdev_free_txq_bounce(&edev->tx_queues[queue_id]);
+		ena_ring_free(ring);
+		if (adapter->tx_rings)
+			adapter->tx_rings[queue_id] = NULL;
+		return NULL;
+	}
+
+	edev->tx_queues[queue_id].bounce_map = malloc(nb_desc * sizeof(int16_t));
+	if (!edev->tx_queues[queue_id].bounce_map) {
+		ena_netdev_free_txq_bounce(&edev->tx_queues[queue_id]);
+		ena_ring_free(ring);
+		if (adapter->tx_rings)
+			adapter->tx_rings[queue_id] = NULL;
+		return NULL;
+	}
+
+	for (i = 0; i < nb_desc; i++) {
+		edev->tx_queues[queue_id].bounce_free_ids[i] = i;
+		edev->tx_queues[queue_id].bounce_map[i] = -1;
+	}
+	edev->tx_queues[queue_id].bounce_free_head = 0;
+	edev->tx_queues[queue_id].bounce_free_tail = 0;
+	edev->tx_queues[queue_id].bounce_free_count = nb_desc;
 
 	return &edev->tx_queues[queue_id];
 }
@@ -780,6 +854,7 @@ int ena_netdev_tx_one(struct uk_netdev *dev __attribute__((unused)),
 	uint16_t req_id = 0;
 	uint64_t phys;
 	bool used_bounce = false;
+	uint16_t slot = 0;
 	int ret;
 
 	if (!queue || !queue->ring || !pkt)
@@ -787,17 +862,12 @@ int ena_netdev_tx_one(struct uk_netdev *dev __attribute__((unused)),
 
 	ring = queue->ring;
 	ena_tx_poll_completions(ring, 32, NULL);
+	ena_netdev_reclaim_tx_bounce(ring, queue);
 
-	/* Check if previous bounce transmission completed. If it never does
-	 * (a lost or stuck completion), release the bounce after a bounded
-	 * number of transmit attempts so low-memory transmit is not blocked
-	 * forever. */
-	if (queue->bounce_in_use) {
-		if (!ring->req_in_flight || !ring->req_in_flight[queue->bounce_req_id]) {
-			queue->bounce_in_use = false;
-			queue->bounce_wait_polls = 0;
-		} else if (queue->bounce_wait_polls >= ENA_TX_BOUNCE_STALL_LIMIT) {
-			ena_err("tx q%u: bounce completion not seen after %u polls; releasing bounce",
+	/* Check for bounce stall if pool is exhausted */
+	if (queue->bounce_free_count == 0 && queue->nb_desc > 0) {
+		if (queue->bounce_wait_polls >= ENA_TX_BOUNCE_STALL_LIMIT) {
+			ena_err("tx q%u: bounce pool exhausted after %u polls; releasing stuck bounce",
 				queue->queue_id, (unsigned)queue->bounce_wait_polls);
 			ena_netdev_release_stuck_tx_bounce(ring, queue);
 		} else {
@@ -807,20 +877,20 @@ int ena_netdev_tx_one(struct uk_netdev *dev __attribute__((unused)),
 
 	phys = (uint64_t)(uintptr_t)pkt->data;
 	if (phys < ENA_DMA_LOW_MEM_LIMIT) {
-		if (queue->bounce_in_use)
+		if (queue->bounce_free_count == 0)
 			return -EBUSY;
-
-		if (!queue->bounce_buf) {
-			queue->bounce_buf = ena_dma_alloc(ENA_TX_BOUNCE_SIZE, &queue->bounce_phys);
-			if (!queue->bounce_buf)
-				return -ENOMEM;
-		}
 
 		if (pkt->len > ENA_TX_BOUNCE_SIZE)
 			return -EINVAL;
 
-		memcpy(queue->bounce_buf, pkt->data, pkt->len);
-		phys = queue->bounce_phys;
+		slot = queue->bounce_free_ids[queue->bounce_free_head];
+		queue->bounce_free_head = (uint16_t)((queue->bounce_free_head + 1) & (queue->nb_desc - 1));
+		queue->bounce_free_count--;
+		queue->bounce_in_use = (queue->bounce_free_count < queue->nb_desc);
+
+		void *slot_virt = (uint8_t *)queue->bounce_buf + ((size_t)slot * ENA_TX_BOUNCE_SIZE);
+		phys = queue->bounce_phys + ((uint64_t)slot * ENA_TX_BOUNCE_SIZE);
+		memcpy(slot_virt, pkt->data, pkt->len);
 		used_bounce = true;
 	}
 
@@ -831,16 +901,24 @@ int ena_netdev_tx_one(struct uk_netdev *dev __attribute__((unused)),
 	ena_netdev_classify_tx_pkt(pkt, &tx_pkt);
 
 	ret = ena_netdev_tx_xmit_one(ring, &tx_pkt,
-				     used_bounce ? queue->bounce_buf :
+				     used_bounce ? (const void *)((uint8_t *)queue->bounce_buf + ((size_t)slot * ENA_TX_BOUNCE_SIZE)) :
 						     (const void *)pkt->data,
 				     &req_id);
 	if (ret == 0) {
 		if (used_bounce) {
-			queue->bounce_in_use = true;
+			queue->bounce_map[req_id] = (int16_t)slot;
 			queue->bounce_req_id = req_id;
 			queue->bounce_wait_polls = 0;
+			queue->bounce_in_use = (queue->bounce_free_count < queue->nb_desc);
 		}
 		return UK_NETDEV_STATUS_SUCCESS;
+	} else {
+		if (used_bounce) {
+			queue->bounce_free_ids[queue->bounce_free_tail] = slot;
+			queue->bounce_free_tail = (uint16_t)((queue->bounce_free_tail + 1) & (queue->nb_desc - 1));
+			queue->bounce_free_count++;
+			queue->bounce_in_use = (queue->bounce_free_count < queue->nb_desc);
+		}
 	}
 
 	return ret;
@@ -1060,6 +1138,8 @@ static int ena_netdev_txq_configure(struct uk_netdev *dev, uint16_t queue_id,
 	if (dev->adapter->tx_rings)
 		dev->adapter->tx_rings[queue_id] = ring;
 
+	uint16_t i;
+
 	dev->tx_queues[queue_id].ring = ring;
 	dev->tx_queues[queue_id].queue_id = queue_id;
 	dev->tx_queues[queue_id].adapter = dev->adapter;
@@ -1068,7 +1148,7 @@ static int ena_netdev_txq_configure(struct uk_netdev *dev, uint16_t queue_id,
 	dev->tx_queues[queue_id].bounce_wait_polls = 0;
 	dev->tx_queues[queue_id].nb_desc = nb_desc;
 
-	dev->tx_queues[queue_id].bounce_buf = ena_dma_alloc(ENA_TX_BOUNCE_SIZE,
+	dev->tx_queues[queue_id].bounce_buf = ena_dma_alloc((size_t)nb_desc * ENA_TX_BOUNCE_SIZE,
 							    &dev->tx_queues[queue_id].bounce_phys);
 	if (!dev->tx_queues[queue_id].bounce_buf) {
 		ena_ring_free(ring);
@@ -1076,6 +1156,32 @@ static int ena_netdev_txq_configure(struct uk_netdev *dev, uint16_t queue_id,
 			dev->adapter->tx_rings[queue_id] = NULL;
 		return -ENOMEM;
 	}
+
+	dev->tx_queues[queue_id].bounce_free_ids = calloc(nb_desc, sizeof(uint16_t));
+	if (!dev->tx_queues[queue_id].bounce_free_ids) {
+		ena_netdev_free_txq_bounce(&dev->tx_queues[queue_id]);
+		ena_ring_free(ring);
+		if (dev->adapter->tx_rings)
+			dev->adapter->tx_rings[queue_id] = NULL;
+		return -ENOMEM;
+	}
+
+	dev->tx_queues[queue_id].bounce_map = malloc(nb_desc * sizeof(int16_t));
+	if (!dev->tx_queues[queue_id].bounce_map) {
+		ena_netdev_free_txq_bounce(&dev->tx_queues[queue_id]);
+		ena_ring_free(ring);
+		if (dev->adapter->tx_rings)
+			dev->adapter->tx_rings[queue_id] = NULL;
+		return -ENOMEM;
+	}
+
+	for (i = 0; i < nb_desc; i++) {
+		dev->tx_queues[queue_id].bounce_free_ids[i] = i;
+		dev->tx_queues[queue_id].bounce_map[i] = -1;
+	}
+	dev->tx_queues[queue_id].bounce_free_head = 0;
+	dev->tx_queues[queue_id].bounce_free_tail = 0;
+	dev->tx_queues[queue_id].bounce_free_count = nb_desc;
 
 	return 0;
 }
@@ -1241,19 +1347,16 @@ static int ena_netdev_txq_xmit(struct uk_netdev *dev, uint16_t queue_id,
 	ring = dev->adapter->tx_rings[queue_id];
 	txq = &dev->tx_queues[queue_id];
 
+	uint16_t slot = 0;
+
 	/* Poll completions to free up space */
 	ena_tx_poll_completions(ring, 16, NULL);
+	ena_netdev_reclaim_tx_bounce(ring, txq);
 
-	/* Check if previous bounce transmission completed. If it never does
-	 * (a lost or stuck completion), release the bounce after a bounded
-	 * number of transmit attempts so low-memory transmit is not blocked
-	 * forever. */
-	if (txq->bounce_in_use) {
-		if (!ring->req_in_flight || !ring->req_in_flight[txq->bounce_req_id]) {
-			txq->bounce_in_use = false;
-			txq->bounce_wait_polls = 0;
-		} else if (txq->bounce_wait_polls >= ENA_TX_BOUNCE_STALL_LIMIT) {
-			ena_err("tx q%u: bounce completion not seen after %u polls; releasing bounce",
+	/* Check for bounce stall if pool is exhausted */
+	if (txq->bounce_free_count == 0 && txq->nb_desc > 0) {
+		if (txq->bounce_wait_polls >= ENA_TX_BOUNCE_STALL_LIMIT) {
+			ena_err("tx q%u: bounce pool exhausted after %u polls; releasing stuck bounce",
 				queue_id, (unsigned)txq->bounce_wait_polls);
 			ena_netdev_release_stuck_tx_bounce(ring, txq);
 		} else {
@@ -1263,21 +1366,21 @@ static int ena_netdev_txq_xmit(struct uk_netdev *dev, uint16_t queue_id,
 
 	phys = pkt->phys_addr ? pkt->phys_addr : (uint64_t)(uintptr_t)pkt->data;
 	if (phys < ENA_DMA_LOW_MEM_LIMIT) {
-		if (txq->bounce_in_use)
+		if (txq->bounce_free_count == 0)
 			return -EBUSY;
-
-		if (!txq->bounce_buf) {
-			txq->bounce_buf = ena_dma_alloc(ENA_TX_BOUNCE_SIZE, &txq->bounce_phys);
-			if (!txq->bounce_buf)
-				return -ENOMEM;
-		}
 
 		if (pkt->len > ENA_TX_BOUNCE_SIZE)
 			return -EINVAL;
 
+		slot = txq->bounce_free_ids[txq->bounce_free_head];
+		txq->bounce_free_head = (uint16_t)((txq->bounce_free_head + 1) & (txq->nb_desc - 1));
+		txq->bounce_free_count--;
+		txq->bounce_in_use = (txq->bounce_free_count < txq->nb_desc);
+
+		void *slot_virt = (uint8_t *)txq->bounce_buf + ((size_t)slot * ENA_TX_BOUNCE_SIZE);
+		phys = txq->bounce_phys + ((uint64_t)slot * ENA_TX_BOUNCE_SIZE);
 		if (pkt->data)
-			memcpy(txq->bounce_buf, pkt->data, pkt->len);
-		phys = txq->bounce_phys;
+			memcpy(slot_virt, pkt->data, pkt->len);
 		used_bounce = true;
 	}
 
@@ -1288,14 +1391,22 @@ static int ena_netdev_txq_xmit(struct uk_netdev *dev, uint16_t queue_id,
 	ena_netdev_classify_tx_pkt(pkt, &tx_pkt);
 
 	ret = ena_netdev_tx_xmit_one(ring, &tx_pkt,
-				     used_bounce ? txq->bounce_buf :
+				     used_bounce ? (const void *)((uint8_t *)txq->bounce_buf + ((size_t)slot * ENA_TX_BOUNCE_SIZE)) :
 						     (const void *)pkt->data,
 				     &req_id);
 	if (ret == 0) {
 		if (used_bounce) {
-			txq->bounce_in_use = true;
+			txq->bounce_map[req_id] = (int16_t)slot;
 			txq->bounce_req_id = req_id;
 			txq->bounce_wait_polls = 0;
+			txq->bounce_in_use = (txq->bounce_free_count < txq->nb_desc);
+		}
+	} else {
+		if (used_bounce) {
+			txq->bounce_free_ids[txq->bounce_free_tail] = slot;
+			txq->bounce_free_tail = (uint16_t)((txq->bounce_free_tail + 1) & (txq->nb_desc - 1));
+			txq->bounce_free_count++;
+			txq->bounce_in_use = (txq->bounce_free_count < txq->nb_desc);
 		}
 	}
 

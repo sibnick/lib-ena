@@ -328,16 +328,29 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 	entry->aq_common_desc.opcode = opcode;
 	entry->aq_common_desc.flags = adapter->aq_phase & ENA_ADMIN_AQ_PHASE_MASK;
 
+	/* Prepare the ACQ entry pointer. */
+	acq = (struct ena_admin_acq_entry *)adapter->acq_base +
+	      (adapter->acq_head & acq_mask);
+
+	if (command_id == 1 && adapter->acq_head > 0) {
+		/* When next_command_id wraps back to 1, reset expected ACQ phase
+		 * and update ACQ tail register to current head. Invalidate the ACQ
+		 * entry so a late completion from an earlier cycle cannot match. */
+		if (adapter->acq_depth > 0)
+			adapter->acq_phase = (uint8_t)(1 ^ ((adapter->acq_head / adapter->acq_depth) & 1));
+		ena_wmb();
+		ena_reg_write32(adapter->bar0_base + ENA_REGS_ACQ_TAIL_OFF,
+				adapter->acq_head);
+		ena_mb();
+		memset(acq, 0, sizeof(*acq));
+	}
+
 	/* Reserve the slot and ring the doorbell. */
 	adapter->aq_tail++;
 	if ((adapter->aq_tail & aq_mask) == 0)
 		adapter->aq_phase ^= 1;
 
 	ena_admin_ring_aq_db(adapter, adapter->aq_tail);
-
-	/* Poll the ACQ for the matching completion. */
-	acq = (struct ena_admin_acq_entry *)adapter->acq_base +
-	      (adapter->acq_head & acq_mask);
 
 	for (unsigned int i = 0; i < max_polls; i++) {
 		volatile const uint8_t *flags_ptr =

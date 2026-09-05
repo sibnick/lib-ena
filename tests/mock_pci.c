@@ -710,11 +710,11 @@ void mock_ena_hw_emulate_tx(struct mock_ena_hw *hw, struct ena_ring *ring,
 
 		cq_idx = hw->io_tx_cq_state[qid].cq_tail & (ring->cq_depth - 1);
 		memset(&cq_descs[cq_idx], 0, sizeof(cq_descs[cq_idx]));
-		cq_descs[cq_idx].req_id = req_id;
+		cq_descs[cq_idx].req_id = ena_cpu_to_le16(req_id);
 		cq_descs[cq_idx].status = 0;
 		cq_descs[cq_idx].flags = hw->io_tx_cq_state[qid].cq_phase;
-		cq_descs[cq_idx].sub_qid = ring->qid;
-		cq_descs[cq_idx].sq_head_idx = (sq_idx + 1) & (ring->sq_depth - 1);
+		cq_descs[cq_idx].sub_qid = ena_cpu_to_le16(ring->qid);
+		cq_descs[cq_idx].sq_head_idx = ena_cpu_to_le16((sq_idx + 1) & (ring->sq_depth - 1));
 
 		hw->io_tx_cq_state[qid].cq_tail++;
 		if ((hw->io_tx_cq_state[qid].cq_tail & (ring->cq_depth - 1)) == 0)
@@ -762,11 +762,11 @@ void mock_ena_hw_emulate_rx(struct mock_ena_hw *hw, struct ena_ring *ring,
 		status = ((uint32_t)hw->io_rx_cq_state[qid].cq_phase << ENA_ETH_IO_RX_CDESC_BASE_PHASE_SHIFT);
 		status |= first_last_flags | status_flags;
 
-		cq_descs[cq_idx].status = status;
-		cq_descs[cq_idx].length = hw->inject_corrupt_len ? hw->corrupt_len : pkt_len;
-		cq_descs[cq_idx].req_id = req_id;
-		cq_descs[cq_idx].hash = hash;
-		cq_descs[cq_idx].sub_qid = ring->qid;
+		cq_descs[cq_idx].status = ena_cpu_to_le32(status);
+		cq_descs[cq_idx].length = ena_cpu_to_le16(hw->inject_corrupt_len ? hw->corrupt_len : pkt_len);
+		cq_descs[cq_idx].req_id = ena_cpu_to_le16(req_id);
+		cq_descs[cq_idx].hash = ena_cpu_to_le32(hash);
+		cq_descs[cq_idx].sub_qid = ena_cpu_to_le16(ring->qid);
 
 		hw->io_rx_cq_state[qid].cq_tail++;
 		if ((hw->io_rx_cq_state[qid].cq_tail & (ring->cq_depth - 1)) == 0)

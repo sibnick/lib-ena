@@ -60,6 +60,11 @@ struct uk_netdev_tx_queue {
 	 * so a lost completion cannot block low-memory transmit forever. */
 	uint32_t bounce_wait_polls;
 	uint16_t nb_desc;
+	uint16_t bounce_free_head;
+	uint16_t bounce_free_tail;
+	uint16_t bounce_free_count;
+	uint16_t *bounce_free_ids;
+	int16_t *bounce_map;
 };
 
 #ifdef __Unikraft__
