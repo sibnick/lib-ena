@@ -25,8 +25,10 @@
  * ring is NULL. Every other worker is a uk_thread pinned to its own
  * vCPU, fed by a lock-free SPSC ring of accepted file descriptors.
  * The accept / distribute loop runs on the main thread (ticket
- * 063257c57d); the HTTP request parsing and response is added in
- * ticket 2500f30961.
+ * 063257c57d); the HTTP request and response handling runs on each
+ * worker (ticket 2500f30961). The lwIP tcpip thread and the uknetdev
+ * dispatcher threads drive the network stack, so the workers never
+ * poll the device or run the stack timers.
  */
 
 #include <stdio.h>
@@ -58,12 +60,32 @@
 #define BACKLOG 512
 #define SOCK_BUF_SIZE 32768
 
+/*
+ * The fd numbers come from the fixed lwIP socket pool, so a table of
+ * this size covers every fd the socket stack can hand out. Each
+ * worker owns its own table: a given fd is registered on exactly one
+ * worker's epoll set, so indexing by fd is safe per worker.
+ */
+#define MAX_TRACKED_FDS 2048
+
+static const char http_response[] =
+	"HTTP/1.1 200 OK\r\n"
+	"Content-Type: text/plain; charset=utf-8\r\n"
+	"Content-Length: 14\r\n"
+	"Connection: keep-alive\r\n"
+	"Server: Unikraft-ENA-Benchmark-MC\r\n"
+	"\r\n"
+	"Hello, World!\n";
+
+static const size_t http_resp_len = sizeof(http_response) - 1;
+
 struct worker_ctx {
 	int worker_id;
 	int epoll_fd;
 	struct spsc_ring *ring;
 	int conn_count;
-	unsigned char *recv_buf;
+	char *recv_buf;
+	uint32_t *resp_pending;
 };
 
 static struct spsc_ring mc_rings[MC_MAX_WORKERS];
@@ -175,7 +197,7 @@ static void distribute_fd(int fd)
 		/* The main thread keeps the connection itself. */
 		struct epoll_event ev;
 
-		ev.events = EPOLLIN;
+		ev.events = EPOLLIN | EPOLLRDHUP;
 		ev.data.fd = fd;
 		epoll_ctl(mc_workers[0].epoll_fd, EPOLL_CTL_ADD, fd, &ev);
 		mc_workers[0].conn_count++;
@@ -189,10 +211,165 @@ static void distribute_fd(int fd)
 }
 
 /*
+ * Update the interest set of an fd that is already registered with
+ * the worker's epoll instance.
+ */
+static int set_epoll_events(struct worker_ctx *w, int fd, uint32_t events)
+{
+	struct epoll_event ev;
+
+	ev.events = events;
+	ev.data.fd = fd;
+
+	return epoll_ctl(w->epoll_fd, EPOLL_CTL_MOD, fd, &ev);
+}
+
+/*
+ * Send as many bytes of the pending response as the socket accepts.
+ * The socket is non-blocking: when the socket buffer is full, the
+ * send fails and the rest is re-sent when EPOLLOUT fires. The lwIP
+ * tcpip thread makes room in the socket buffer in the meantime.
+ *
+ * Returns 0 when the response is fully sent and EPOLLOUT is
+ * disarmed, returns 1 when bytes are still pending and EPOLLOUT is
+ * armed, and returns -1 when the connection must be dropped.
+ */
+static int send_pending_response(struct worker_ctx *w, int fd, uint32_t base_events)
+{
+	uint32_t pending;
+	ssize_t n;
+
+	if (fd < 0 || fd >= MAX_TRACKED_FDS)
+		return -1;
+
+	pending = w->resp_pending[fd];
+
+	while (pending > 0) {
+		n = send(fd, http_response + (http_resp_len - pending), pending, 0);
+		if (n > 0) {
+			pending -= (uint32_t)n;
+			continue;
+		}
+
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK ||
+			   errno == ENOBUFS || errno == EBUSY))
+			break;
+
+		return -1;
+	}
+
+	w->resp_pending[fd] = pending;
+
+	if (pending > 0) {
+		/* The socket buffer is full: wait for EPOLLOUT before
+		 * sending the rest. */
+		if (set_epoll_events(w, fd, base_events | EPOLLOUT) < 0)
+			return -1;
+
+		return 1;
+	}
+
+	/* The response is complete: disarm EPOLLOUT so a writable
+	 * socket does not trigger a busy loop. */
+	if (set_epoll_events(w, fd, base_events) < 0)
+		return -1;
+
+	return 0;
+}
+
+/*
+ * Drop a connection: clear its pending bytes, remove it from the
+ * worker's epoll interest list, and close the fd.
+ */
+static void drop_connection(struct worker_ctx *w, int fd)
+{
+	if (fd >= 0 && fd < MAX_TRACKED_FDS)
+		w->resp_pending[fd] = 0;
+
+	if (fd >= 0) {
+		epoll_ctl(w->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+		close(fd);
+	}
+}
+
+/*
+ * Handle a batch of epoll events for one worker. An error, hangup,
+ * or remote close drops the connection. A connection with unsent
+ * response bytes finishes the send when the socket is writable
+ * again. A readable connection receives the request and sends the
+ * response; a "Connection: close" request drops the connection
+ * after the reply.
+ */
+static void handle_worker_events(struct worker_ctx *w,
+				 struct epoll_event *evs, int n)
+{
+	int i;
+
+	for (i = 0; i < n; i++) {
+		uint32_t base_events = EPOLLIN | EPOLLRDHUP;
+		int fd = evs[i].data.fd;
+
+		if (evs[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
+			/* Peer closed the connection or an error
+			 * happened: drop the connection. */
+			drop_connection(w, fd);
+			continue;
+		}
+
+		if (fd < MAX_TRACKED_FDS && w->resp_pending[fd] > 0) {
+			/* This connection has unsent response bytes.
+			 * Finish the send before any new request is
+			 * handled: when the socket is writable again
+			 * (EPOLLOUT), send the rest, otherwise wait
+			 * for the next EPOLLOUT. */
+			if (evs[i].events & EPOLLOUT) {
+				if (send_pending_response(w, fd,
+							  base_events) < 0)
+					drop_connection(w, fd);
+			}
+
+			continue;
+		}
+
+		if (evs[i].events & (EPOLLIN | EPOLLRDNORM)) {
+			ssize_t r = recv(fd, w->recv_buf, MC_RECVBUF_SIZE - 1, 0);
+
+			if (r > 0) {
+				w->recv_buf[r] = '\0';
+
+				/* Track the response bytes that still
+				 * have to go out and send what the
+				 * socket accepts now. If the socket
+				 * buffer fills up, the rest is
+				 * re-sent when EPOLLOUT fires, so no
+				 * byte of the response is dropped. */
+				if (fd < MAX_TRACKED_FDS) {
+					w->resp_pending[fd] = (uint32_t)http_resp_len;
+					if (send_pending_response(w, fd,
+								 base_events) < 0)
+						drop_connection(w, fd);
+				} else {
+					send(fd, http_response, http_resp_len, 0);
+				}
+
+				if (strstr(w->recv_buf, "Connection: close") != NULL ||
+				    strstr(w->recv_buf, "connection: close") != NULL)
+					drop_connection(w, fd);
+			} else if (r == 0 || (r < 0 && errno != EAGAIN &&
+					   errno != EWOULDBLOCK)) {
+				drop_connection(w, fd);
+			}
+		}
+	}
+}
+
+/*
  * Per-worker loop. A worker with a ring drains it first: every fd
  * pushed by the accept loop is registered for read on the worker's
- * own epoll instance. The worker then polls its epoll set and
- * yields, so an idle worker does not busy-wait its core.
+ * own epoll instance. The worker then polls its epoll set with a
+ * zero timeout, handles the events, and yields, so an idle worker
+ * does not busy-wait its core. The lwIP tcpip thread and the uknetdev
+ * dispatcher threads drive the network stack.
  */
 static __noreturn void worker_loop(void *arg)
 {
@@ -200,27 +377,29 @@ static __noreturn void worker_loop(void *arg)
 	struct epoll_event evs[64];
 	int fd;
 	int n;
-	int i;
 
 	for(;;) {
 		if (w->ring != NULL) {
 			while (spsc_ring_pop(w->ring, &fd)) {
 				struct epoll_event ev;
 
-				ev.events = EPOLLIN;
+				ev.events = EPOLLIN | EPOLLRDHUP;
 				ev.data.fd = fd;
 				epoll_ctl(w->epoll_fd, EPOLL_CTL_ADD, fd, &ev);
 				w->conn_count++;
 			}
 		}
 
-		n = epoll_wait(w->epoll_fd, evs, 64, 1);
-		if (n > 0) {
-			for (i = 0; i < n; i++) {
-				/* HTTP request parsing and response are added in ticket 2500f30961. */
-				(void)evs[i];
-			}
+		n = epoll_wait(w->epoll_fd, evs, 64, 0);
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			/* Other poll errors are not fatal: yield and
+			 * retry on the next iteration. */
 		}
+
+		if (n > 0)
+			handle_worker_events(w, evs, n);
 
 		uk_sched_yield();
 	}
@@ -229,9 +408,9 @@ static __noreturn void worker_loop(void *arg)
 /*
  * Main thread loop: worker 0. Each iteration accepts every pending
  * connection on the listener and distributes the file descriptors
- * over the workers, then polls worker 0's own epoll set for the
- * connections it keeps. The loop yields, so an idle worker does not
- * busy-wait its core.
+ * over the workers, then polls worker 0's own epoll set with a zero
+ * timeout and handles the events for the connections it keeps. The
+ * loop yields, so an idle worker does not busy-wait its core.
  */
 static __noreturn void main_loop(void)
 {
@@ -240,7 +419,6 @@ static __noreturn void main_loop(void)
 	socklen_t client_len;
 	int cfd;
 	int n;
-	int i;
 
 	for(;;) {
 		/* Accept all pending connections: the listener is
@@ -254,15 +432,16 @@ static __noreturn void main_loop(void)
 			distribute_fd(cfd);
 		}
 
-		/* Service the connections that worker 0 keeps on
-		 * its own epoll set. */
-		n = epoll_wait(mc_workers[0].epoll_fd, evs, 64, 1);
-		if (n > 0) {
-			for (i = 0; i < n; i++) {
-				/* HTTP request parsing and response are added in ticket 2500f30961. */
-				(void)evs[i];
-			}
+		/* Service the connections that worker 0 keeps on its
+		 * own epoll set. */
+		n = epoll_wait(mc_workers[0].epoll_fd, evs, 64, 0);
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
 		}
+
+		if (n > 0)
+			handle_worker_events(&mc_workers[0], evs, n);
 
 		uk_sched_yield();
 	}
@@ -293,6 +472,8 @@ int main(int argc, char **argv)
 		mc_workers[i].worker_id = i;
 		mc_workers[i].epoll_fd = epoll_create(1);
 		mc_workers[i].recv_buf = malloc(MC_RECVBUF_SIZE);
+		mc_workers[i].resp_pending = calloc(MAX_TRACKED_FDS,
+						    sizeof(uint32_t));
 		mc_workers[i].conn_count = 0;
 		spsc_ring_init(&mc_rings[i]);
 		/* Worker 0 is the main thread: it keeps its own
