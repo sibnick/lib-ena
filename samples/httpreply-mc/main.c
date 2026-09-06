@@ -24,14 +24,22 @@
  * main thread runs as worker 0 and keeps its own connections, so its
  * ring is NULL. Every other worker is a uk_thread pinned to its own
  * vCPU, fed by a lock-free SPSC ring of accepted file descriptors.
- * The accept / distribute loop is added in ticket 063257c57d, and
- * the HTTP request parsing and response in ticket 2500f30961.
+ * The accept / distribute loop runs on the main thread (ticket
+ * 063257c57d); the HTTP request parsing and response is added in
+ * ticket 2500f30961.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <sys/epoll.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include <uk/sched.h>
 #include <uk/sched_impl.h>
@@ -41,6 +49,14 @@
 
 #define MC_MAX_WORKERS 2
 #define MC_RECVBUF_SIZE 8192
+
+#ifndef TCP_NODELAY
+#define TCP_NODELAY 1
+#endif
+
+#define LISTEN_PORT 80
+#define BACKLOG 512
+#define SOCK_BUF_SIZE 32768
 
 struct worker_ctx {
 	int worker_id;
@@ -52,6 +68,15 @@ struct worker_ctx {
 
 static struct spsc_ring mc_rings[MC_MAX_WORKERS];
 static struct worker_ctx mc_workers[MC_MAX_WORKERS];
+
+/* Listener socket owned by the main thread (worker 0). */
+static int mc_listener_fd;
+/* Number of workers, counted from the scheduler list in main(). */
+static int mc_nworkers;
+/* Round-robin index over the workers for accepted connections. */
+static int mc_rr_counter;
+/* Connections dropped when a worker ring was full. */
+static int mc_dropped;
 
 /*
  * Get the scheduler that owns vCPU idx by walking uk_sched_head,
@@ -72,6 +97,95 @@ static struct uk_sched *mc_get_sched(int idx)
 	}
 
 	return s;
+}
+
+static void configure_socket_options(int fd)
+{
+	int opt = 1;
+	int buf_size = SOCK_BUF_SIZE;
+
+	setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+	setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size));
+	setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size));
+	ioctl(fd, FIONBIO, &opt);
+}
+
+/*
+ * Create the non-blocking listener socket on LISTEN_PORT and put it
+ * into the listening state. Returns the fd on success, or -1 on
+ * error.
+ */
+static int create_listener(void)
+{
+	struct sockaddr_in addr;
+	int opt = 1;
+	int fd;
+
+	fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+	if (fd < 0) {
+		printf("httpreply-mc: [ERR] socket failed: errno %d\n", errno);
+		return -1;
+	}
+
+	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+		printf("httpreply-mc: [ERR] SO_REUSEADDR failed: errno %d\n",
+		       errno);
+		close(fd);
+		return -1;
+	}
+
+	configure_socket_options(fd);
+
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_addr.s_addr = htonl(INADDR_ANY);
+	addr.sin_port = htons(LISTEN_PORT);
+
+	if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+		printf("httpreply-mc: [ERR] bind failed: errno %d\n", errno);
+		close(fd);
+		return -1;
+	}
+
+	if (listen(fd, BACKLOG) < 0) {
+		printf("httpreply-mc: [ERR] listen failed: errno %d\n", errno);
+		close(fd);
+		return -1;
+	}
+
+	return fd;
+}
+
+/*
+ * Hand an accepted connection to a worker, chosen round-robin over
+ * the worker count: fd N goes to worker N % mc_nworkers. Worker 0
+ * is the main thread and keeps the connection on its own epoll set.
+ * Every other worker gets the fd through its SPSC ring; the worker
+ * registers the fd on its own epoll set and counts the connection.
+ * When a ring is full, the connection is dropped.
+ */
+static void distribute_fd(int fd)
+{
+	int t = mc_rr_counter++;
+
+	t = t % mc_nworkers;
+	configure_socket_options(fd);
+
+	if (t == 0) {
+		/* The main thread keeps the connection itself. */
+		struct epoll_event ev;
+
+		ev.events = EPOLLIN;
+		ev.data.fd = fd;
+		epoll_ctl(mc_workers[0].epoll_fd, EPOLL_CTL_ADD, fd, &ev);
+		mc_workers[0].conn_count++;
+	} else {
+		if (!spsc_ring_push(&mc_rings[t], fd)) {
+			/* The ring is full: drop the connection. */
+			close(fd);
+			mc_dropped++;
+		}
+	}
 }
 
 /*
@@ -112,9 +226,50 @@ static __noreturn void worker_loop(void *arg)
 	}
 }
 
+/*
+ * Main thread loop: worker 0. Each iteration accepts every pending
+ * connection on the listener and distributes the file descriptors
+ * over the workers, then polls worker 0's own epoll set for the
+ * connections it keeps. The loop yields, so an idle worker does not
+ * busy-wait its core.
+ */
+static __noreturn void main_loop(void)
+{
+	struct epoll_event evs[64];
+	struct sockaddr_in client_addr;
+	socklen_t client_len;
+	int cfd;
+	int n;
+	int i;
+
+	for(;;) {
+		/* Accept all pending connections: the listener is
+		 * non-blocking, so the loop drains the queue of
+		 * connections waiting for an accept. */
+		client_len = sizeof(client_addr);
+		while ((cfd = accept4(mc_listener_fd,
+				      (struct sockaddr *)&client_addr,
+				      &client_len, SOCK_NONBLOCK)) >= 0) {
+			client_len = sizeof(client_addr);
+			distribute_fd(cfd);
+		}
+
+		/* Service the connections that worker 0 keeps on
+		 * its own epoll set. */
+		n = epoll_wait(mc_workers[0].epoll_fd, evs, 64, 1);
+		if (n > 0) {
+			for (i = 0; i < n; i++) {
+				/* HTTP request parsing and response are added in ticket 2500f30961. */
+				(void)evs[i];
+			}
+		}
+
+		uk_sched_yield();
+	}
+}
+
 int main(int argc, char **argv)
 {
-	int nworkers = 0;
 	int i;
 	struct uk_sched *s;
 
@@ -125,16 +280,16 @@ int main(int argc, char **argv)
 	printf("httpreply-mc: mode=multi-core (threaded lwIP, 2 vCPU)\n");
 
 	for (s = uk_sched_head; s != NULL; s = s->next)
-		nworkers++;
+		mc_nworkers++;
 
-	if (nworkers < 1)
-		nworkers = 1;
-	if (nworkers > MC_MAX_WORKERS)
-		nworkers = MC_MAX_WORKERS;
+	if (mc_nworkers < 1)
+		mc_nworkers = 1;
+	if (mc_nworkers > MC_MAX_WORKERS)
+		mc_nworkers = MC_MAX_WORKERS;
 
-	printf("httpreply-mc: workers=%d\n", nworkers);
+	printf("httpreply-mc: workers=%d\n", mc_nworkers);
 
-	for (i = 0; i < nworkers; i++) {
+	for (i = 0; i < mc_nworkers; i++) {
 		mc_workers[i].worker_id = i;
 		mc_workers[i].epoll_fd = epoll_create(1);
 		mc_workers[i].recv_buf = malloc(MC_RECVBUF_SIZE);
@@ -145,7 +300,7 @@ int main(int argc, char **argv)
 		mc_workers[i].ring = (i == 0) ? NULL : &mc_rings[i];
 	}
 
-	for (i = 1; i < nworkers; i++) {
+	for (i = 1; i < mc_nworkers; i++) {
 		struct uk_sched *ws = mc_get_sched(i);
 		struct uk_thread *th;
 
@@ -162,7 +317,16 @@ int main(int argc, char **argv)
 		}
 	}
 
-	worker_loop(&mc_workers[0]);
+	mc_listener_fd = create_listener();
+	if (mc_listener_fd < 0) {
+		printf("httpreply-mc: [ERR] failed to create the listener\n");
+		return 1;
+	}
+
+	printf("httpreply-mc: [INFO] listening on port %d (backlog: %d)\n",
+	       LISTEN_PORT, BACKLOG);
+
+	main_loop();
 
 	return 0;
 }
