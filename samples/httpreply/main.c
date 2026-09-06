@@ -61,6 +61,8 @@ static const size_t http_resp_len = sizeof(http_response) - 1;
 #define MAX_TRACKED_FDS	2048
 static uint32_t resp_pending[MAX_TRACKED_FDS];
 
+static void drive_stack(void);
+
 /*
  * Update the interest set of an fd that is already registered with
  * epoll.
