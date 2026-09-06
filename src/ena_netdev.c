@@ -70,7 +70,10 @@ static int ena_netdev_alloc_ring_arrays(struct ena_adapter *adapter,
 	return 0;
 }
 
-/* Create hardware queues for all configured rings with rollback on error */
+/* Create hardware queues for all configured rings with rollback on
+ * error. IO queue q is bound to MSI-X vector q+1. Vector 0 is reserved
+ * for the admin and AENQ events. Without an MSI-X table, every ring
+ * uses ENA_ADMIN_MSIX_NONE (software polling mode). */
 static int ena_netdev_start_rings_hw(struct ena_adapter *adapter,
 				     uint16_t nb_rx, uint16_t nb_tx)
 {
@@ -85,7 +88,7 @@ static int ena_netdev_start_rings_hw(struct ena_adapter *adapter,
 	/* Create hardware queues for TX rings */
 	for (q = 0; q < nb_tx; q++) {
 		if (adapter->tx_rings && adapter->tx_rings[q]) {
-			uint32_t vector = (adapter->irq_vectors) ? q : 0;
+			uint32_t vector = (adapter->irq_vectors) ? (uint32_t)(q + 1) : 0;
 			ret = ena_ring_create_hw(adapter->tx_rings[q], vector);
 			if (ret)
 				goto err_rollback;
@@ -96,7 +99,7 @@ static int ena_netdev_start_rings_hw(struct ena_adapter *adapter,
 	/* Create hardware queues for RX rings */
 	for (q = 0; q < nb_rx; q++) {
 		if (adapter->rx_rings && adapter->rx_rings[q]) {
-			uint32_t vector = (adapter->irq_vectors) ? q : 0;
+			uint32_t vector = (adapter->irq_vectors) ? (uint32_t)(q + 1) : 0;
 			ret = ena_ring_create_hw(adapter->rx_rings[q], vector);
 			if (ret)
 				goto err_rollback;
