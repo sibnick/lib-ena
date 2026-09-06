@@ -94,19 +94,20 @@ The following measurements compare Unikraft (`lib-ena` and lwIP) with Ubuntu 24.
 
 | Concurrency | Target | Requests/sec | Avg Latency (ms) | Max Latency (ms) | Transfer (MB/s) | Socket Errors |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| 1 | Unikraft | 4,190.53 | 0.24 | 0.39 | 0.60 | 0 |
-| 1 | Linux | 6,296.08 | 0.16 | 0.29 | 0.90 | 0 |
-| 5 | Unikraft | 5,417.39 | 105.66 | 1510.00 | 0.77 | 1 |
-| 5 | Linux | 21,774.27 | 0.18 | 4.34 | 3.11 | 0 |
-| 10 | Unikraft | 10,008.30 | 115.47 | 1560.00 | 1.43 | 0 |
-| 10 | Linux | 48,480.60 | 0.20 | 2.50 | 6.94 | 0 |
-| 25 | Unikraft | 13,987.78 | 83.39 | 1260.00 | 2.00 | 8 |
-| 25 | Linux | 45,981.79 | 0.55 | 13.42 | 6.58 | 0 |
-| 50 | Unikraft | 17,356.70 | 92.68 | 1760.00 | 2.48 | 11 |
-| 50 | Linux | 49,136.29 | 1.13 | 50.80 | 7.03 | 0 |
-| 100 | Unikraft | 25,803.36 | 108.19 | 1980.00 | 3.69 | 38 |
-| 100 | Linux | 48,808.80 | 2.65 | 208.15 | 6.98 | 0 |
-| 200 | Unikraft | 53,404.49 | 67.48 | 1730.00 | 7.64 | 0 |
-| 200 | Linux | 47,495.98 | 9.99 | 849.03 | 6.79 | 0 |
+| 1 | Unikraft | 4,270.75 | 0.24 | 8.29 | 0.61 | 0 |
+| 1 | Linux | 4,753.77 | 0.21 | 5.56 | 0.64 | 0 |
+| 5 | Unikraft | 16,894.78 | 0.24 | 0.65 | 2.42 | 0 |
+| 5 | Linux | 18,172.36 | 0.22 | 1.84 | 2.46 | 0 |
+| 10 | Unikraft | 37,804.21 | 0.26 | 0.77 | 5.41 | 0 |
+| 10 | Linux | 40,589.70 | 0.25 | 6.62 | 5.50 | 0 |
+| 25 | Unikraft | 78,089.40 | 0.30 | 4.42 | 11.17 | 0 |
+| 25 | Linux | 92,654.49 | 0.25 | 0.82 | 12.55 | 0 |
+| 50 | Unikraft | 133,790.20 | 0.36 | 1.03 | 19.14 | 0 |
+| 50 | Linux | 167,900.84 | 0.29 | 1.59 | 22.74 | 0 |
+| 100 | Unikraft | 153,725.24 | 0.63 | 1.50 | 21.99 | 0 |
+| 100 | Linux | 201,097.16 | 0.48 | 7.18 | 27.23 | 0 |
+| 200 | Unikraft | 155,213.30 | 1.27 | 2.20 | 22.20 | 0 |
+| 200 | Linux | 194,057.73 | 1.00 | 26.09 | 26.28 | 0 |
 
-At concurrency 200, Unikraft reached 53,404.49 requests per second, exceeding the Linux baseline by 12.4%. Machine-readable results are stored in `benchmark_results.csv` and `benchmark_results.json`.
+The TX bounce buffer ring pool and transmit congestion handling eliminated all socket errors (0 socket errors across all concurrency levels). Max latency on Unikraft dropped from 1,730 ms to 2.20 ms at concurrency 200 (a 99.8% decrease). Unikraft throughput reached 155,213.30 requests per second. Machine-readable results are stored in `benchmark_results.csv` and `benchmark_results.json`.
+
