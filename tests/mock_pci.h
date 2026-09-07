@@ -114,6 +114,9 @@ struct mock_ena_hw {
 	uint32_t cq_destroyed_count;
 	uint32_t sq_destroyed_count;
 
+	/* msix_vector passed to each CREATE_CQ, indexed by CQ id */
+	uint32_t cq_msix[MOCK_MAX_IO_QUEUES];
+
 	/* Phase 9: LLQ BAR2 emulation (0 = device without a BAR2) */
 	uint32_t dev_llq_bar_size;
 	uint32_t llq_next_off;

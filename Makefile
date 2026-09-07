@@ -15,6 +15,7 @@ TEST7 = $(BUILD)/test_netdev
 TEST8 = $(BUILD)/test_intr
 TEST9 = $(BUILD)/test_llq
 TEST10 = $(BUILD)/test_validation
+TEST11 = $(BUILD)/test_spsc
 
 ENA_SRCS = src/ena_pci.c src/ena_com.c src/ena_plat.c
 ENA_SRCS_P2 = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena_init.c src/ena_datapath.c src/ena_tx.c src/ena_rx.c
@@ -37,7 +38,7 @@ sanitize: test-sanitize
 test-sanitize: CFLAGS += -fsanitize=address,undefined -g
 test-sanitize: clean test
 
-test: $(TEST1) $(TEST2) $(TEST3) $(TEST4) $(TEST5) $(TEST6) $(TEST7) $(TEST8) $(TEST9) $(TEST10)
+test: $(TEST1) $(TEST2) $(TEST3) $(TEST4) $(TEST5) $(TEST6) $(TEST7) $(TEST8) $(TEST9) $(TEST10) $(TEST11)
 	./$(TEST1)
 	./$(TEST2)
 	./$(TEST3)
@@ -48,6 +49,7 @@ test: $(TEST1) $(TEST2) $(TEST3) $(TEST4) $(TEST5) $(TEST6) $(TEST7) $(TEST8) $(
 	./$(TEST8)
 	./$(TEST9)
 	./$(TEST10)
+	./$(TEST11)
 
 $(TEST1): tests/test_pci_scaffold.c tests/mock_pci.c tests/mock_pci.h $(ENA_SRCS) $(ENA_HDRS)
 	@mkdir -p $(BUILD)
@@ -88,6 +90,10 @@ $(TEST9): tests/test_llq.c tests/mock_pci.c tests/mock_pci.h $(ENA_SRCS_P9) $(EN
 $(TEST10): tests/test_validation.c tests/mock_pci.c tests/mock_pci.h $(ENA_SRCS_ALL) $(ENA_HDRS)
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -o $@ tests/test_validation.c tests/mock_pci.c $(ENA_SRCS_ALL)
+
+$(TEST11): tests/test_spsc.c samples/httpreply-mc/spsc.h
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -Isamples/httpreply-mc -o $@ tests/test_spsc.c -pthread
 
 clean:
 	rm -rf $(BUILD)

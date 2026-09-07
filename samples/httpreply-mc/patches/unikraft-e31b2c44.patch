@@ -1,0 +1,34 @@
+diff --git a/lib/posix-fdio/fdctl.c b/lib/posix-fdio/fdctl.c
+index 04bc0ed..1cbb4b6 100644
+--- a/lib/posix-fdio/fdctl.c
++++ b/lib/posix-fdio/fdctl.c
+@@ -35,7 +35,6 @@ int uk_sys_ioctl(struct uk_ofile *of, int cmd, void *arg)
+ 			uk_or(&of->mode, O_NONBLOCK);
+ 		else
+ 			uk_and(&of->mode, ~O_NONBLOCK);
+-		return 0;
+ 	}
+ 
+ 	iolock = _SHOULD_LOCK(of->mode);
+diff --git a/lib/uksched/exportsyms.uk b/lib/uksched/exportsyms.uk
+index 47e6a7d..3b5de2b 100644
+--- a/lib/uksched/exportsyms.uk
++++ b/lib/uksched/exportsyms.uk
+@@ -40,3 +40,4 @@ __uk_sched_thread_current
+ sched_yield
+ sched_getaffinity
+ sched_setaffinity
++uk_sched_head
+diff --git a/plat/kvm/x86/link64.lds.S b/plat/kvm/x86/link64.lds.S
+index fc156a0..5ad621f 100644
+--- a/plat/kvm/x86/link64.lds.S
++++ b/plat/kvm/x86/link64.lds.S
+@@ -37,8 +37,6 @@ PHDRS
+ 	text PT_LOAD FLAGS(PHDRS_PF_RX);
+ 	rodata PT_LOAD FLAGS(PHDRS_PF_R);
+ 	data PT_LOAD;
+-	tls PT_TLS;
+-	tls_load PT_LOAD;
+ 	stack PT_GNU_STACK FLAGS(PHDRS_PF_RW);
+ }
+ 

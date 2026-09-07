@@ -15,6 +15,10 @@
 #include <errno.h>
 #include <string.h>
 
+/* Print a per-queue datapath stats summary to the console every N
+ * received packets (gated by CONFIG_LIBENA_VERBOSE_STATS). */
+#define ENA_VERBOSE_STATS_INTERVAL 50000UL
+
 uint16_t ena_rx_free_space(const struct ena_ring *ring)
 {
 	if (!ring || ring->ring_type != ENA_RING_TYPE_RX)
@@ -270,6 +274,32 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 		ena_reg_write32(ring->cq_db, ring->cq_head);
 
 	ena_ring_unlock(ring);
+
+#ifdef CONFIG_LIBENA_VERBOSE_STATS
+	if (rcvd > 0) {
+		uint64_t txp = 0, txb = 0;
+		struct ena_adapter *a = ring->adapter;
+
+		ring->stats_print_acc += rcvd;
+
+		if (a && a->tx_rings && ring->qid < a->num_tx_rings &&
+		    a->tx_rings[ring->qid]) {
+			txp = a->tx_rings[ring->qid]->tx_packets;
+			txb = a->tx_rings[ring->qid]->tx_bytes;
+		}
+
+		if (ring->stats_print_acc >= ENA_VERBOSE_STATS_INTERVAL) {
+			ring->stats_print_acc = 0;
+			ena_info("verbose-stats q%u: rx_pkts=%lu rx_bytes=%lu "
+				"tx_pkts=%lu tx_bytes=%lu",
+				ring->qid,
+				(unsigned long)ring->rx_packets,
+				(unsigned long)ring->rx_bytes,
+				(unsigned long)txp,
+				(unsigned long)txb);
+		}
+	}
+#endif
 
 	return (int)rcvd;
 }

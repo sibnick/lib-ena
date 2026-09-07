@@ -107,6 +107,7 @@ void mock_ena_hw_init(struct mock_ena_hw *hw)
 	hw->sq_created_count = 0;
 	hw->cq_destroyed_count = 0;
 	hw->sq_destroyed_count = 0;
+	memset(hw->cq_msix, 0, sizeof(hw->cq_msix));
 
 	/* Phase 9: LLQ BAR2 emulation */
 	hw->dev_llq_bar_size = 0;
@@ -221,6 +222,8 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 				hw->cq_created_count++;
 				hw->last_cq_depth = cmd->cq_depth;
 				hw->last_cq_phys = cmd->cq_ba.mem_addr_low;
+				if (cq_idx < MOCK_MAX_IO_QUEUES)
+					hw->cq_msix[cq_idx] = cmd->msix_vector;
 				resp->cq_idx = cq_idx;
 				resp->cq_actual_depth = cmd->cq_depth;
 				resp->cq_head_db_register_offset =

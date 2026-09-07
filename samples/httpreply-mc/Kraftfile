@@ -1,0 +1,32 @@
+spec: v0.6
+
+name: httpreply-mc-ena
+version: 0.1.0
+description: Official Unikraft multi-core HTTP reply benchmark server (threaded lwIP + per-core workers) with native AWS ENA driver
+
+unikraft:
+  version: stable
+
+targets:
+  - name: aws-t3-x86_64
+    architecture: x86_64
+    platform: kvm
+
+libraries:
+  lwip:
+    version: stable
+    kconfig:
+      - CONFIG_LWIP_IPV4=y
+      - CONFIG_LWIP_SOCKET=y
+      - CONFIG_LWIP_THREADS=y
+      - CONFIG_LWIP_DHCP=y
+      - CONFIG_LWIP_TCP=y
+  ena:
+    source: ../..
+    version: main
+    kconfig:
+      - CONFIG_LIBENA=y
+      - CONFIG_LIBENA_LLQ=y
+      - CONFIG_LIBENA_MAX_QUEUES=8
+      - CONFIG_LIBUKNETDEV_MAXNBQUEUES=2
+      - CONFIG_LIBUKNETDEV_DISPATCHERTHREADS=y

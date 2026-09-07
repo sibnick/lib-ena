@@ -10,6 +10,7 @@
 #include "ena_intr.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -70,7 +71,10 @@ static int ena_netdev_alloc_ring_arrays(struct ena_adapter *adapter,
 	return 0;
 }
 
-/* Create hardware queues for all configured rings with rollback on error */
+/* Create hardware queues for all configured rings with rollback on
+ * error. IO queue q is bound to MSI-X vector q+1. Vector 0 is reserved
+ * for the admin and AENQ events. Without an MSI-X table, every ring
+ * uses ENA_ADMIN_MSIX_NONE (software polling mode). */
 static int ena_netdev_start_rings_hw(struct ena_adapter *adapter,
 				     uint16_t nb_rx, uint16_t nb_tx)
 {
@@ -85,7 +89,7 @@ static int ena_netdev_start_rings_hw(struct ena_adapter *adapter,
 	/* Create hardware queues for TX rings */
 	for (q = 0; q < nb_tx; q++) {
 		if (adapter->tx_rings && adapter->tx_rings[q]) {
-			uint32_t vector = (adapter->irq_vectors) ? q : 0;
+			uint32_t vector = (adapter->irq_vectors) ? (uint32_t)(q + 1) : 0;
 			ret = ena_ring_create_hw(adapter->tx_rings[q], vector);
 			if (ret)
 				goto err_rollback;
@@ -96,11 +100,40 @@ static int ena_netdev_start_rings_hw(struct ena_adapter *adapter,
 	/* Create hardware queues for RX rings */
 	for (q = 0; q < nb_rx; q++) {
 		if (adapter->rx_rings && adapter->rx_rings[q]) {
-			uint32_t vector = (adapter->irq_vectors) ? q : 0;
+			uint32_t vector = (adapter->irq_vectors) ? (uint32_t)(q + 1) : 0;
 			ret = ena_ring_create_hw(adapter->rx_rings[q], vector);
 			if (ret)
 				goto err_rollback;
 			rx_created++;
+		}
+	}
+
+	/*
+	 * Report the created queues and their MSI-X vectors at boot so that
+	 * queue-per-core binding can be verified on the target.
+	 */
+	{
+		char txvec[64];
+		char rxvec[64];
+		size_t txp = 0;
+		size_t rxp = 0;
+		uint16_t k;
+
+		txvec[0] = '\0';
+		rxvec[0] = '\0';
+
+		if (adapter->irq_vectors) {
+			for (k = 0; k < tx_created && txp < sizeof(txvec); k++)
+				txp += (size_t)snprintf(txvec + txp, sizeof(txvec) - txp,
+							" q%u=%u", k, (unsigned)(k + 1));
+			for (k = 0; k < rx_created && rxp < sizeof(rxvec); k++)
+				rxp += (size_t)snprintf(rxvec + rxp, sizeof(rxvec) - rxp,
+							" q%u=%u", k, (unsigned)(k + 1));
+			ena_info("rings: %u tx / %u rx queues created (msix tx:%s rx:%s)",
+				 (unsigned)tx_created, (unsigned)rx_created, txvec, rxvec);
+		} else {
+			ena_info("rings: %u tx / %u rx queues created (polling, no msix)",
+				 (unsigned)tx_created, (unsigned)rx_created);
 		}
 	}
 

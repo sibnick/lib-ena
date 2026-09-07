@@ -8,6 +8,7 @@
 #include "ena_init.h"
 #include "ena_datapath.h"
 #include "ena_netdev.h"
+#include "ena_intr.h"
 #include "mock_pci.h"
 #include "test_framework.h"
 
@@ -259,6 +260,69 @@ static void test_netdev_configure_and_lifecycle(void)
 
 	teardown_test_adapter(&g_adapter);
 	ena_netdev_free(netdev);
+}
+
+static void test_netdev_multi_queue_msix_mapping(void)
+{
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+	void *rx_arr;
+	void *tx_arr;
+
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
+
+	/* Four MSI-X vectors: vector 0 for the admin/AENQ queue,
+	 * vectors 1..3 for the IO queues. */
+	ena_plat_set_mock_msix_vectors(4);
+	assert(ena_intr_setup(&g_adapter, NULL) == 0);
+	assert(g_adapter.num_irq_vectors == 4);
+	assert(g_adapter.irq_vectors[0].is_admin == true);
+
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	rx_arr = g_adapter.rx_rings;
+	tx_arr = g_adapter.tx_rings;
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 2;
+	conf.nb_tx_queues = 2;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+	assert(netdev->ops->rxq_configure(netdev, 0, 8, NULL) == 0);
+	assert(netdev->ops->rxq_configure(netdev, 1, 8, NULL) == 0);
+	assert(netdev->ops->txq_configure(netdev, 0, 8, NULL) == 0);
+	assert(netdev->ops->txq_configure(netdev, 1, 8, NULL) == 0);
+
+	/* Start device */
+	assert(netdev->ops->dev_start(netdev) == 0);
+	assert(netdev->state == UK_NETDEV_RUNNING);
+
+	/* Every configured queue is live after start */
+	assert(g_adapter.rx_rings[0] != NULL);
+	assert(g_adapter.rx_rings[1] != NULL);
+	assert(g_adapter.tx_rings[0] != NULL);
+	assert(g_adapter.tx_rings[1] != NULL);
+
+	/* IO queue q is bound to MSI-X vector q+1. Vector 0 stays
+	 * reserved for the admin/AENQ queue. */
+	assert(g_hw.cq_msix[g_adapter.tx_rings[0]->cq_idx] == 1);
+	assert(g_hw.cq_msix[g_adapter.tx_rings[1]->cq_idx] == 2);
+	assert(g_hw.cq_msix[g_adapter.rx_rings[0]->cq_idx] == 1);
+	assert(g_hw.cq_msix[g_adapter.rx_rings[1]->cq_idx] == 2);
+
+	/* Stop device */
+	assert(netdev->ops->dev_stop(netdev) == 0);
+	assert(netdev->state == UK_NETDEV_STOPPED);
+
+	ena_netdev_free(netdev);
+
+	/* Restore polling mode for the remaining tests */
+	ena_plat_set_mock_msix_vectors(0);
+
+	if (rx_arr)
+		test_track_free(rx_arr);
+	if (tx_arr)
+		test_track_free(tx_arr);
 }
 
 static void test_netdev_txq_xmit(void)
@@ -1027,6 +1091,7 @@ int main(void)
 
 	RUN_TEST(test_netdev_alloc_and_info_get);
 	RUN_TEST(test_netdev_configure_and_lifecycle);
+	RUN_TEST(test_netdev_multi_queue_msix_mapping);
 	RUN_TEST(test_netdev_txq_xmit);
 	RUN_TEST(test_netdev_tx_stuck_bounce_releases);
 	RUN_TEST(test_netdev_rxq_recv);
@@ -1041,7 +1106,7 @@ int main(void)
 	RUN_TEST(test_netdev_free_not_running);
 
 	printf("========================================\n");
-	printf("ALL PHASE 7 NETDEV TESTS PASSED (14/14) \n");
+	printf("ALL PHASE 7 NETDEV TESTS PASSED (15/15) \n");
 	printf("========================================\n");
 	return 0;
 }
