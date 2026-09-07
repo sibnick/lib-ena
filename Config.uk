@@ -18,4 +18,12 @@ config LIBENA_MAX_QUEUES
 	default 8
 	help
 	  Maximum number of TX and RX queue pairs allocated per device.
+
+config LIBENA_VERBOSE_STATS
+	bool "ena: periodic per-queue datapath stats print"
+	default n
+	help
+	  Print the per-queue TX and RX packet and byte counters to the
+	  console every N received packets. This verifies that traffic is
+	  spread over all ENA queue pairs. Off by default.
 endif

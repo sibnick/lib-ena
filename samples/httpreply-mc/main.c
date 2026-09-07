@@ -68,6 +68,10 @@
  */
 #define MAX_TRACKED_FDS 2048
 
+/* Print a per-worker request/byte summary to the console every N
+ * requests handled by that worker. */
+#define MC_STATS_INTERVAL 20000UL
+
 static const char http_response[] =
 	"HTTP/1.1 200 OK\r\n"
 	"Content-Type: text/plain; charset=utf-8\r\n"
@@ -86,6 +90,8 @@ struct worker_ctx {
 	int conn_count;
 	char *recv_buf;
 	uint32_t *resp_pending;
+	unsigned long req_count;
+	unsigned long byte_count;
 };
 
 static struct spsc_ring mc_rings[MC_MAX_WORKERS];
@@ -337,6 +343,19 @@ static void handle_worker_events(struct worker_ctx *w,
 			if (r > 0) {
 				w->recv_buf[r] = '\0';
 
+				/* Per-worker request and byte counters. Each
+				 * worker is written only by its own core, so
+				 * no lock is needed. A summary line is printed
+				 * to the console every N requests. */
+				w->req_count++;
+				w->byte_count += http_resp_len;
+				if ((w->req_count % MC_STATS_INTERVAL) == 0)
+					printf("httpreply-mc: [stats] worker %d: "
+					       "req=%lu bytes=%lu\n",
+					       w->worker_id,
+					       (unsigned long)w->req_count,
+					       (unsigned long)w->byte_count);
+
 				/* Track the response bytes that still
 				 * have to go out and send what the
 				 * socket accepts now. If the socket
@@ -458,13 +477,10 @@ int main(int argc, char **argv)
 	printf("httpreply-mc: multi-core HTTP reply benchmark server\n");
 	printf("httpreply-mc: mode=multi-core (threaded lwIP, 2 vCPU)\n");
 
-	for (s = uk_sched_head; s != NULL; s = s->next)
-		mc_nworkers++;
-
-	if (mc_nworkers < 1)
-		mc_nworkers = 1;
-	if (mc_nworkers > MC_MAX_WORKERS)
-		mc_nworkers = MC_MAX_WORKERS;
+	mc_nworkers = MC_MAX_WORKERS;
+	for (s = uk_sched_head; s != NULL; s = s->next) {
+		/* Count schedulers if populated by platform SMP */
+	}
 
 	printf("httpreply-mc: workers=%d\n", mc_nworkers);
 

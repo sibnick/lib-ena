@@ -238,6 +238,7 @@ struct ena_ring {
 	uint64_t tx_bytes;
 	uint64_t rx_packets;
 	uint64_t rx_bytes;
+	uint64_t stats_print_acc;
 	/* Phase 9: Low Latency Queue (LLQ) metadata */
 	bool is_llq;
 	void *push_buf_virt;

@@ -11,12 +11,12 @@ import csv
 import sys
 import time
 
-CONCURRENCIES = [1, 5, 10, 25, 50, 100, 200]
+CONCURRENCIES = [1, 5, 10, 25, 50, 100, 200, 500]
 DURATION = "10s"
-THREADS = 2
+THREADS = 4
 
 TARGETS = {
-    "Unikraft (Optimized ENA + lwIP)": "http://172.31.16.153/",
+    "Unikraft Multi-Core (httpreply-mc)": "http://172.31.16.153/",
     "Linux (Ubuntu 24.04 ENA)": "http://172.31.16.160/"
 }
 
@@ -28,7 +28,11 @@ def parse_wrk_output(output):
         "latency_stdev_ms": 0.0,
         "latency_max_ms": 0.0,
         "total_requests": 0,
-        "socket_errors": 0
+        "socket_errors": 0,
+        "p50_ms": 0.0,
+        "p75_ms": 0.0,
+        "p90_ms": 0.0,
+        "p99_ms": 0.0
     }
     
     # Requests/sec: 1234.56
@@ -47,19 +51,26 @@ def parse_wrk_output(output):
             val *= 1024.0 * 1024.0
         data["transfer_kb_sec"] = val
 
+    def to_ms(v, u):
+        v = float(v)
+        if u == "us": return v / 1000.0
+        if u == "ms": return v
+        if u == "s": return v * 1000.0
+        if u == "m": return v * 60000.0
+        return v
+
     # Thread Stats Latency
     lat_match = re.search(r"Latency\s+([\d\.]+)(\w+)\s+([\d\.]+)(\w+)\s+([\d\.]+)(\w+)", output)
     if lat_match:
-        def to_ms(v, u):
-            v = float(v)
-            if u == "us": return v / 1000.0
-            if u == "ms": return v
-            if u == "s": return v * 1000.0
-            if u == "m": return v * 60000.0
-            return v
         data["latency_avg_ms"] = to_ms(lat_match.group(1), lat_match.group(2))
         data["latency_stdev_ms"] = to_ms(lat_match.group(3), lat_match.group(4))
         data["latency_max_ms"] = to_ms(lat_match.group(5), lat_match.group(6))
+
+    # Latency Percentiles
+    for p in ["50", "75", "90", "99"]:
+        pm = re.search(rf"\s+{p}%\s+([\d\.]+)(\w+)", output)
+        if pm:
+            data[f"p{p}_ms"] = to_ms(pm.group(1), pm.group(2))
 
     # Total requests
     tot_match = re.search(r"(\d+)\s+requests in", output)
@@ -97,7 +108,7 @@ def main():
                     **parsed
                 }
                 results.append(entry)
-                print(f"  -> {parsed['requests_sec']:.2f} req/s, avg latency: {parsed['latency_avg_ms']:.2f}ms, max latency: {parsed['latency_max_ms']:.2f}ms, errors: {parsed['socket_errors']}")
+                print(f"  -> {parsed['requests_sec']:.2f} req/s, avg latency: {parsed['latency_avg_ms']:.2f}ms, p99: {parsed['p99_ms']:.2f}ms, max latency: {parsed['latency_max_ms']:.2f}ms, errors: {parsed['socket_errors']}")
             except Exception as e:
                 print(f"  -> Error running wrk: {e}")
             time.sleep(1)
@@ -110,7 +121,8 @@ def main():
     # Save to CSV
     with open("benchmark_results.csv", "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
-            "concurrency", "target", "requests_sec", "latency_avg_ms", "latency_stdev_ms", "latency_max_ms", "transfer_kb_sec", "total_requests", "socket_errors"
+            "concurrency", "target", "requests_sec", "latency_avg_ms", "latency_stdev_ms", "latency_max_ms",
+            "p50_ms", "p75_ms", "p90_ms", "p99_ms", "transfer_kb_sec", "total_requests", "socket_errors"
         ], extrasaction='ignore')
         writer.writeheader()
         for r in results:
