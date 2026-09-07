@@ -125,6 +125,18 @@ struct mock_ena_hw {
 	/* Phase 4: Mock CQ internal state tracking per queue */
 	struct mock_io_cq_state io_tx_cq_state[MOCK_MAX_IO_QUEUES];
 	struct mock_io_cq_state io_rx_cq_state[MOCK_MAX_IO_QUEUES];
+
+	/* Phase 14: RSS emulation */
+	uint32_t rss_hash_func;
+	uint32_t rss_hash_key[10];
+	uint16_t rss_tcp4_fields;
+	uint16_t rss_udp4_fields;
+	uint16_t rss_ip4_fields;
+	uint16_t rss_ind_table[128];
+	uint16_t rss_ind_table_size;
+	uint32_t rss_set_key_count;
+	uint32_t rss_set_ctrl_count;
+	uint32_t rss_set_ind_count;
 };
 
 void mock_ena_hw_init(struct mock_ena_hw *hw);

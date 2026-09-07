@@ -1131,6 +1131,101 @@ static void test_validation_aenq_runtime_wiring(void)
 	ena_netdev_free(netdev);
 }
 
+static void test_validation_rss_configuration(void)
+{
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+	int ret;
+
+	/* Setup adapter with 4 queue pairs */
+	assert(setup_test_adapter(&g_hw, &g_adapter, 1500, 1500) == 0);
+
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 4;
+	conf.nb_tx_queues = 4;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+
+	for (uint16_t q = 0; q < 4; q++) {
+		assert(netdev->ops->rxq_configure(netdev, q, 32, NULL) == 0);
+		assert(netdev->ops->txq_configure(netdev, q, 32, NULL) == 0);
+	}
+
+	/* Starting device triggers hardware queue creation and RSS configuration */
+	ret = netdev->ops->dev_start(netdev);
+	assert(ret == 0);
+
+	/* Verify RSS state on adapter */
+	assert(g_adapter.rss_info.enabled == true);
+	assert(g_adapter.rss_info.supported == true);
+	assert(g_adapter.rss_info.ind_table_size == 128);
+
+	/* Verify mock hardware received RSS settings */
+	assert(g_hw.rss_set_key_count == 1);
+	assert(g_hw.rss_hash_func == ENA_ADMIN_TOEPLITZ);
+	assert(g_hw.rss_set_ctrl_count == 1);
+	assert(g_hw.rss_tcp4_fields == (ENA_ADMIN_RSS_L3_SA | ENA_ADMIN_RSS_L3_DA |
+					ENA_ADMIN_RSS_L4_SP | ENA_ADMIN_RSS_L4_DP));
+	assert(g_hw.rss_udp4_fields == (ENA_ADMIN_RSS_L3_SA | ENA_ADMIN_RSS_L3_DA |
+					ENA_ADMIN_RSS_L4_SP | ENA_ADMIN_RSS_L4_DP));
+	assert(g_hw.rss_ip4_fields == (ENA_ADMIN_RSS_L3_SA | ENA_ADMIN_RSS_L3_DA));
+
+	assert(g_hw.rss_set_ind_count == 1);
+	assert(g_hw.rss_ind_table_size == 128);
+
+	/* Verify indirection table routes across all 4 queues */
+	for (int i = 0; i < 128; i++) {
+		assert(g_hw.rss_ind_table[i] == (i % 4));
+	}
+
+	/* Stop netdev and verify clean teardown */
+	assert(netdev->ops->dev_stop(netdev) == 0);
+
+	for (uint16_t q = 0; q < 4; q++) {
+		for (int i = 0; i < g_adapter.rx_rings[q]->sq_depth; i++) {
+			if (g_adapter.rx_rings[q]->buffers.rx_bufs[i].netbuf) {
+				test_free(g_adapter.rx_rings[q]->buffers.rx_bufs[i].netbuf);
+				g_adapter.rx_rings[q]->buffers.rx_bufs[i].netbuf = NULL;
+			}
+		}
+	}
+
+	teardown_test_adapter(&g_adapter);
+	ena_netdev_free(netdev);
+
+	/* Verify single-queue mode: when 1 queue is configured, RSS is not enabled */
+	assert(setup_test_adapter(&g_hw, &g_adapter, 1500, 1500) == 0);
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 1;
+	conf.nb_tx_queues = 1;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+
+	assert(netdev->ops->rxq_configure(netdev, 0, 32, NULL) == 0);
+	assert(netdev->ops->txq_configure(netdev, 0, 32, NULL) == 0);
+
+	g_hw.rss_set_ind_count = 0;
+	assert(netdev->ops->dev_start(netdev) == 0);
+
+	/* Single queue: RSS not configured */
+	assert(g_hw.rss_set_ind_count == 0);
+	assert(g_adapter.rss_info.enabled == false);
+
+	assert(netdev->ops->dev_stop(netdev) == 0);
+	for (int i = 0; i < g_adapter.rx_rings[0]->sq_depth; i++) {
+		if (g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf) {
+			test_free(g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf);
+			g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf = NULL;
+		}
+	}
+	teardown_test_adapter(&g_adapter);
+	ena_netdev_free(netdev);
+}
+
 int main(void)
 {
 	printf("========================================\n");
@@ -1159,9 +1254,10 @@ int main(void)
 	RUN_TEST(test_validation_fault_tx_fake_req_id);
 	RUN_TEST(test_validation_fault_rx_corrupt_length);
 	RUN_TEST(test_validation_aenq_runtime_wiring);
+	RUN_TEST(test_validation_rss_configuration);
 
 	printf("========================================\n");
-	printf("ALL PHASE 10 VALIDATION TESTS PASSED (19/19)\n");
+	printf("ALL PHASE 10 VALIDATION TESTS PASSED (20/20)\n");
 	printf("========================================\n");
 	return 0;
 }

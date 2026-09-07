@@ -214,6 +214,8 @@ static void ena_netdev_cleanup_adapter_rings(struct ena_adapter *adapter)
 		adapter->tx_rings = NULL;
 		adapter->num_tx_rings = 0;
 	}
+
+	ena_rss_fini(adapter);
 }
 
 /* Inspect packet payload and classify L3 and L4 protocols */
@@ -747,6 +749,15 @@ static int ena_netdev_start(struct uk_netdev *dev)
 		}
 	}
 
+#if !defined(__Unikraft__) || defined(CONFIG_LIBENA_RSS)
+	if (adapter->num_rx_rings > 1) {
+		ret = ena_rss_configure(adapter, adapter->num_rx_rings);
+		if (ret) {
+			ena_warn("netdev start: RSS configuration failed (%d)", ret);
+		}
+	}
+#endif
+
 	return 0;
 }
 
@@ -1232,6 +1243,13 @@ static int ena_netdev_start(struct uk_netdev *dev)
 	ret = ena_netdev_start_rings_hw(dev->adapter, dev->nb_rx_queues, dev->nb_tx_queues);
 	if (ret)
 		return ret;
+
+	if (dev->nb_rx_queues > 1) {
+		ret = ena_rss_configure(dev->adapter, dev->nb_rx_queues);
+		if (ret) {
+			ena_warn("netdev start: RSS configuration failed (%d)", ret);
+		}
+	}
 
 	dev->state = UK_NETDEV_RUNNING;
 	return 0;

@@ -19,6 +19,14 @@ config LIBENA_MAX_QUEUES
 	help
 	  Maximum number of TX and RX queue pairs allocated per device.
 
+config LIBENA_RSS
+	bool "Hardware Receive Side Scaling (RSS)"
+	default y
+	help
+	  Distribute incoming packets across multiple hardware RX queues
+	  using Toeplitz hash on TCP/IPv4 headers. When disabled, all
+	  packets arrive on RX Queue 0.
+
 config LIBENA_VERBOSE_STATS
 	bool "ena: periodic per-queue datapath stats print"
 	default n

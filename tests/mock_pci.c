@@ -10,6 +10,7 @@
 #include "ena_init.h"
 #include "ena_datapath.h"
 #include "ena_llq.h"
+#include "ena_rss.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -70,7 +71,10 @@ void mock_ena_hw_init(struct mock_ena_hw *hw)
 				     (1u << ENA_ADMIN_MAX_QUEUES_NUM) |
 				     (1u << ENA_ADMIN_MTU) |
 				     (1u << ENA_ADMIN_HOST_ATTR_CONFIG) |
-				     (1u << ENA_ADMIN_LLQ);
+				     (1u << ENA_ADMIN_LLQ) |
+				     (1u << ENA_ADMIN_RSS_HASH_FUNCTION) |
+				     (1u << ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG) |
+				     (1u << ENA_ADMIN_RSS_HASH_INPUT);
 	hw->dev_capabilities = 1; /* ENA_ADMIN_ENI_STATS */
 	hw->dev_phys_addr_width = 48;
 	hw->dev_virt_addr_width = 48;
@@ -113,6 +117,18 @@ void mock_ena_hw_init(struct mock_ena_hw *hw)
 	hw->dev_llq_bar_size = 0;
 	hw->llq_next_off = 0x1000;
 	hw->last_sq_placement = 0;
+
+	/* Phase 14: RSS emulation */
+	hw->rss_hash_func = 0;
+	memset(hw->rss_hash_key, 0, sizeof(hw->rss_hash_key));
+	hw->rss_tcp4_fields = 0;
+	hw->rss_udp4_fields = 0;
+	hw->rss_ip4_fields = 0;
+	memset(hw->rss_ind_table, 0, sizeof(hw->rss_ind_table));
+	hw->rss_ind_table_size = 0;
+	hw->rss_set_key_count = 0;
+	hw->rss_set_ctrl_count = 0;
+	hw->rss_set_ind_count = 0;
 
 	for (i = 0; i < MOCK_MAX_IO_QUEUES; i++) {
 		hw->io_tx_cq_state[i].cq_tail = 0;
@@ -392,6 +408,48 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 					hw->host_info_debug_size = feat->raw[4];
 				}
 			} else if (feat->feature_id == ENA_ADMIN_LLQ) {
+				filled = 1;
+			} else if (feat->feature_id == ENA_ADMIN_RSS_HASH_FUNCTION) {
+				uint64_t ctrl_phys = (uint64_t)feat->ctrl_lo |
+						     ((uint64_t)feat->ctrl_hi << 32);
+				const struct ena_admin_feature_rss_flow_hash_control *ctrl =
+					(const struct ena_admin_feature_rss_flow_hash_control *)(uintptr_t)ctrl_phys;
+				const struct ena_admin_feature_rss_flow_hash_function *func =
+					(const struct ena_admin_feature_rss_flow_hash_function *)feat->raw;
+
+				hw->rss_hash_func = func->selected_func;
+				if (ctrl && feat->ctrl_len >= sizeof(*ctrl)) {
+					memcpy(hw->rss_hash_key, ctrl->key, sizeof(hw->rss_hash_key));
+					hw->rss_set_key_count++;
+				}
+				filled = 1;
+			} else if (feat->feature_id == ENA_ADMIN_RSS_HASH_INPUT) {
+				uint64_t ctrl_phys = (uint64_t)feat->ctrl_lo |
+						     ((uint64_t)feat->ctrl_hi << 32);
+				const struct ena_admin_feature_rss_hash_control *ctrl =
+					(const struct ena_admin_feature_rss_hash_control *)(uintptr_t)ctrl_phys;
+
+				if (ctrl && feat->ctrl_len >= sizeof(*ctrl)) {
+					hw->rss_tcp4_fields = ctrl->selected_fields[ENA_ADMIN_RSS_TCP4].fields;
+					hw->rss_udp4_fields = ctrl->selected_fields[ENA_ADMIN_RSS_UDP4].fields;
+					hw->rss_ip4_fields = ctrl->selected_fields[ENA_ADMIN_RSS_IP4].fields;
+					hw->rss_set_ctrl_count++;
+				}
+				filled = 1;
+			} else if (feat->feature_id == ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG) {
+				uint64_t ctrl_phys = (uint64_t)feat->ctrl_lo |
+						     ((uint64_t)feat->ctrl_hi << 32);
+				const struct ena_admin_feature_rss_ind_table *ind_req =
+					(const struct ena_admin_feature_rss_ind_table *)feat->raw;
+				const struct ena_admin_rss_ind_table_entry *tbl =
+					(const struct ena_admin_rss_ind_table_entry *)(uintptr_t)ctrl_phys;
+
+				if (tbl && ind_req->size <= 128) {
+					hw->rss_ind_table_size = ind_req->size;
+					for (int k = 0; k < ind_req->size; k++)
+						hw->rss_ind_table[k] = tbl[k].cq_idx;
+					hw->rss_set_ind_count++;
+				}
 				filled = 1;
 			} else {
 				status = ENA_ADMIN_ILLEGAL_PARAMETER;
