@@ -62,10 +62,10 @@ index cae20a5..9cca88c 100644
  LIBLWIP_SRCS-y += $(LIBLWIP_BASE)/time.c|unikraft
 diff --git a/include/lwip_percore.h b/include/lwip_percore.h
 new file mode 100644
-index 0000000..b8a00b9
+index 0000000..41951d3
 --- /dev/null
 +++ b/include/lwip_percore.h
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,170 @@
 +/* SPDX-License-Identifier: BSD-3-Clause */
 +/*
 + * Per-core stack state for lwIP in NO_SYS mode.
@@ -114,13 +114,15 @@ index 0000000..b8a00b9
 +#endif
 +#endif
 +
-+#ifndef MEMP_MAX
-+#define MEMP_MAX 32
++#ifndef LWIP_MEMP_MAX
++#define LWIP_MEMP_MAX 32
 +#endif
 +
 +struct tcp_pcb;
 +struct tcp_pcb_listen;
 +struct memp;
++struct lwip_select_cb;
++struct etharp_q_entry;
 +
 +#ifndef TCP_LISTEN_PCBS_T_DEFINED
 +#define TCP_LISTEN_PCBS_T_DEFINED
@@ -134,7 +136,7 @@ index 0000000..b8a00b9
 +#define ETHARP_ENTRY_DEFINED
 +struct etharp_entry {
 +#if ARP_QUEUEING
-+	void *q;
++	struct etharp_q_entry *q;
 +#else
 +	struct pbuf *q;
 +#endif
@@ -166,7 +168,7 @@ index 0000000..b8a00b9
 +	int tcpip_tcp_timer_active;
 +
 +	/* Memory pool free list heads */
-+	struct memp *memp_tabs[MEMP_MAX];
++	struct memp *memp_tabs[LWIP_MEMP_MAX];
 +
 +	/* ARP Cache */
 +	struct etharp_entry arp_table[ARP_TABLE_SIZE];
@@ -177,7 +179,7 @@ index 0000000..b8a00b9
 +	/* Socket table */
 +#if LWIP_SOCKET
 +	struct lwip_sock sockets[NUM_SOCKETS];
-+	void *select_cb_list;
++	struct lwip_select_cb *select_cb_list;
 +	volatile int select_cb_ctr;
 +#endif
 +} __align(64);
@@ -563,10 +565,10 @@ index 0000000..88dd298
 + extern "C" {
 diff --git a/patches/0016-per-core-stack-state.patch b/patches/0016-per-core-stack-state.patch
 new file mode 100644
-index 0000000..872f19d
+index 0000000..56a790d
 --- /dev/null
 +++ b/patches/0016-per-core-stack-state.patch
-@@ -0,0 +1,403 @@
+@@ -0,0 +1,411 @@
 +--- a/src/include/lwip/priv/tcp_priv.h
 ++++ b/src/include/lwip/priv/tcp_priv.h
 +@@ -323,6 +323,17 @@
@@ -587,9 +589,15 @@ index 0000000..872f19d
 + extern struct tcp_pcb *tcp_input_pcb;
 + extern u32_t tcp_ticks;
 + extern u8_t tcp_active_pcbs_changed;
-+@@ -342,6 +353,7 @@
++@@ -338,10 +349,13 @@
++               state in which they accept or send
++               data. */
++ extern struct tcp_pcb *tcp_tw_pcbs;      /* List of all TCP PCBs in TIME-WAIT. */
+++#endif /* !LWIP_PERCORE */
++ 
 + #define NUM_TCP_PCB_LISTS_NO_TIME_WAIT  3
 + #define NUM_TCP_PCB_LISTS               4
+++#if !LWIP_PERCORE
 + extern struct tcp_pcb ** const tcp_pcb_lists[NUM_TCP_PCB_LISTS];
 ++#endif /* !LWIP_PERCORE */
 + 
@@ -597,23 +605,25 @@ index 0000000..872f19d
 +    1) Every TCP PCB that is not CLOSED is in one of the lists.
 +--- a/src/core/tcp.c
 ++++ b/src/core/tcp.c
-+@@ -159,12 +159,14 @@
++@@ -159,7 +159,9 @@
 + static u16_t tcp_port = TCP_LOCAL_PORT_RANGE_START;
 + 
 + /* Incremented every coarse grained timer shot (typically every 500 ms). */
-+-u32_t tcp_ticks;
+++#if !LWIP_PERCORE
++ u32_t tcp_ticks;
+++#endif
 + static const u8_t tcp_backoff[13] =
 + { 1, 2, 3, 4, 5, 6, 7, 7, 7, 7, 7, 7, 7};
 + /* Times per slowtmr hits */
-+ static const u8_t tcp_persist_backoff[7] = { 3, 6, 12, 24, 48, 96, 120 };
++@@ -167,6 +169,7 @@
 + 
-++#if !LWIP_PERCORE
-++u32_t tcp_ticks;
-++
 + /* The TCP PCB lists. */
 + 
+++#if !LWIP_PERCORE
 + /** List of all TCP PCBs bound but not yet (connected || listening) */
-+@@ -187,6 +189,10 @@
++ struct tcp_pcb *tcp_bound_pcbs;
++ /** List of all TCP PCBs in LISTEN state */
++@@ -187,6 +190,10 @@
 + /** Timer counter to handle calling slow-timer from tcp_tmr() */
 + static u8_t tcp_timer;
 + static u8_t tcp_timer_ctr;
@@ -624,20 +634,18 @@ index 0000000..872f19d
 + static u16_t tcp_new_port(void);
 + 
 + static err_t tcp_close_shutdown_fin(struct tcp_pcb *pcb);
-+@@ -200,6 +206,13 @@
-+ void
-+ tcp_init(void)
-+ {
-++#if LWIP_PERCORE
-++  struct lwip_core_state *cs = lwip_get_core_state();
-++  cs->tcp_pcb_lists[0] = &cs->tcp_listen_pcbs.pcbs;
-++  cs->tcp_pcb_lists[1] = &cs->tcp_bound_pcbs;
-++  cs->tcp_pcb_lists[2] = &cs->tcp_active_pcbs;
-++  cs->tcp_pcb_lists[3] = &cs->tcp_tw_pcbs;
++--- a/src/core/tcp_in.c
+++++ b/src/core/tcp_in.c
++@@ -85,7 +85,9 @@
++ static u8_t recv_flags;
++ static struct pbuf *recv_data;
++ 
+++#if !LWIP_PERCORE
++ struct tcp_pcb *tcp_input_pcb;
 ++#endif
-+ #ifdef LWIP_RAND
-+   tcp_port = TCP_ENSURE_LOCAL_PORT_RANGE(LWIP_RAND());
-+ #endif /* LWIP_RAND */
++ 
++ /* Forward declarations. */
++ static err_t tcp_process(struct tcp_pcb *pcb);
 +--- a/src/core/timeouts.c
 ++++ b/src/core/timeouts.c
 +@@ -119,21 +119,34 @@
@@ -820,16 +828,18 @@ index 0000000..872f19d
 + 
 + #if LWIP_SOCKET_SELECT || LWIP_SOCKET_POLL
 + #if LWIP_TCPIP_CORE_LOCKING
-+@@ -280,7 +286,9 @@
++@@ -278,7 +284,11 @@
++ /** This counter is increased from lwip_select when the list is changed
++     and checked in select_check_waiters to see if it has changed. */
+++#if !LWIP_PERCORE
 + static volatile int select_cb_ctr;
+++#endif
 + #endif /* LWIP_TCPIP_CORE_LOCKING */
 + /** The global list of tasks waiting for select */
 ++#if !LWIP_PERCORE
 + static struct lwip_select_cb *select_cb_list;
 ++#endif
 + #endif /* LWIP_SOCKET_SELECT || LWIP_SOCKET_POLL */
-+ 
-+ #define sock_set_errno(sk, e) do { \
 +@@ -417,11 +425,24 @@
 + tryget_socket_unconn_nouse(int fd)
 + {
