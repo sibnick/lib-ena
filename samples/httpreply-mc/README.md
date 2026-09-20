@@ -2,50 +2,60 @@
 
 ## 1. Overview
 
-This sample provides a multi-core HTTP reply benchmark server for Unikraft on AWS EC2. It uses the native AWS ENA driver (`lib-ena`) and the threaded lwIP network stack.
+This sample provides a multi-core HTTP reply benchmark server for Unikraft on AWS EC2. It uses the native AWS ENA driver (`lib-ena`) and the lwIP network stack in `NO_SYS` mode.
 
-The single-core sample runs lwIP in `NO_SYS` mode with one thread. This multi-core sample runs with multiple threads:
-- It configures multiple ENA queue pairs (one pair per core).
-- It runs one dispatcher thread per receive queue.
-- It distributes accepted connections to worker threads through lock-free SPSC rings.
-- Each worker thread handles requests with its own epoll instance.
+The sample implements a shared-nothing run-to-completion architecture:
+- Each CPU core binds to an independent ENA hardware queue pair.
+- Hardware Receive Side Scaling (RSS) steers incoming TCP traffic across RX queues.
+- Each core runs an isolated polling loop with local lwIP stack state.
+- Sockets bind to port 80 with `SO_REUSEPORT` on each core.
+- Workers transmit packets directly on their dedicated hardware TX queues.
+- There are no inter-core locks, queues, or context switches.
 
 ## 2. Architecture
 
-The server separates connection acceptance, packet dispatch, and HTTP processing across threads:
+The server pins one run-to-completion worker to each CPU core:
 
 ```mermaid
 graph TD
-    subgraph vCPU_0["vCPU 0 (BSP)"]
-        ENA_Q0["ENA TX Q0 / RX Q0"]
-        DISP_0["Dispatcher Thread (RX Q0)"]
-        TCPIP["lwIP tcpip_thread"]
-        ACCEPT["Main / Accept Thread"]
-        WORKER_0["Worker 0 (epoll 0)"]
+    NIC["AWS ENA Hardware RSS"]
+
+    subgraph Core_0["CPU Core 0"]
+        RX0["ENA RX Queue 0"]
+        TX0["ENA TX Queue 0"]
+        LWIP0["lwIP State (Core 0)"]
+        LISTEN0["Listener (Port 80, SO_REUSEPORT)"]
+        WORKER0["Worker 0 (epoll 0)"]
     end
 
-    subgraph vCPU_1["vCPU 1 (AP)"]
-        ENA_Q1["ENA TX Q1 / RX Q1"]
-        WORKER_1["Worker 1 (epoll 1)"]
+    subgraph Core_1["CPU Core 1"]
+        RX1["ENA RX Queue 1"]
+        TX1["ENA TX Queue 1"]
+        LWIP1["lwIP State (Core 1)"]
+        LISTEN1["Listener (Port 80, SO_REUSEPORT)"]
+        WORKER1["Worker 1 (epoll 1)"]
     end
 
-    RING["Lock-Free SPSC Ring"]
+    NIC -->|Flow Hash Queue 0| RX0
+    NIC -->|Flow Hash Queue 1| RX1
 
-    ENA_Q0 --> DISP_0
-    DISP_0 --> TCPIP
-    TCPIP --> ACCEPT
-    ACCEPT -->|Local Assign| WORKER_0
-    ACCEPT -->|Push fd| RING
-    RING -->|Pop fd| WORKER_1
-    ENA_Q1 -.->|Queue 1| TCPIP
+    RX0 --> WORKER0
+    WORKER0 --> LWIP0
+    LWIP0 --> LISTEN0
+    WORKER0 --> TX0
+
+    RX1 --> WORKER1
+    WORKER1 --> LWIP1
+    LWIP1 --> LISTEN1
+    WORKER1 --> TX1
 ```
 
 ## 3. Directory Layout
 
 | Path | Purpose |
 | :--- | :--- |
-| `main.c` | Multi-worker HTTP echo server with accept-and-distribute loop |
-| `spsc.h` | Lock-free single-producer single-consumer ring buffer |
+| `main.c` | Run-to-completion multi-worker HTTP echo server |
+| `spsc.h` | Standalone lock-free single-producer single-consumer ring buffer |
 | `Config.uk` | Application Kconfig options |
 | `defconfig` | Target configuration for multi-core KVM and multi-queue ENA |
 | `Makefile` | Top-level build entry point with automated patch application |
@@ -67,12 +77,12 @@ graph TD
    ```bash
    git submodule update --init --recursive
    ```
-2. Generate the configuration file from defconfig:
+2. Generate configuration file from defconfig:
    ```bash
    cp defconfig .config
    make olddefconfig
    ```
-3. Build the unikernel image:
+3. Build unikernel image:
    ```bash
    make
    ```
@@ -130,54 +140,23 @@ Key Kconfig options used in `defconfig`:
 | :--- | :--- | :--- |
 | `CONFIG_UKPLAT_CPU_MAXCOUNT` | `2` | Maximum number of CPU cores configured for KVM |
 | `CONFIG_HAVE_SMP` | `y` | Enables Symmetric Multi-Processing support |
-| `CONFIG_LWIP_THREADS` | `y` | Enables threaded lwIP core (`tcpip_thread`) |
+| `CONFIG_LIBUKPCPUVAR` | `y` | Enables per-CPU storage variables |
+| `CONFIG_LWIP_NOTHREADS` | `y` | Runs lwIP in non-threaded NO_SYS mode |
+| `CONFIG_LWIP_PERCORE` | `y` | Isolates lwIP stack state per CPU core |
 | `CONFIG_LIBUKNETDEV_MAXNBQUEUES` | `2` | Configures two hardware network queue pairs |
-| `CONFIG_LIBUKNETDEV_DISPATCHERTHREADS` | `y` | Runs one dispatcher thread per RX queue |
 | `CONFIG_LIBENA` | `y` | Enables native AWS ENA driver |
 | `CONFIG_LIBENA_LLQ` | `y` | Enables ENA Low Latency Queue support |
 | `CONFIG_LIBENA_MAX_QUEUES` | `8` | Maximum queue pairs supported by ENA driver |
+| `CONFIG_LIBENA_RSS` | `y` | Enables ENA hardware Receive Side Scaling |
 | `CONFIG_LIBENA_VERBOSE_STATS` | `y` | Prints periodic datapath counters to console |
 
-## 8. Benchmark Results (AWS EC2 `c6i.large`)
+## 8. Design Decisions
 
-The following measurements show `httpreply-mc` compared with the single-threaded Unikraft sample and Ubuntu 24.04 Linux on AWS EC2 `c6i.large` instances. All instances ran in the same subnet (`us-east-1a`). The client ran `wrk` with four threads for 10 seconds per concurrency step.
+### Run-to-Completion Execution
+Each worker core polls its assigned ENA RX queue. The same core processes stack timers, accepts incoming connections, and writes HTTP responses. This design eliminates inter-core synchronization.
 
-| Concurrency | Target | Requests/sec | Avg Latency (ms) | p99 Latency (ms) | Max Latency (ms) | Socket Errors |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| 1 | Unikraft Single-Threaded | 4,270.75 | 0.24 | -- | 8.29 | 0 |
-| 1 | Unikraft Multi-Core | 3,303.61 | 0.49 | 0.37 | 62.62 | 0 |
-| 1 | Linux (Ubuntu 24.04) | 15,076.10 | 0.07 | 0.10 | 3.59 | 0 |
-| 5 | Unikraft Single-Threaded | 16,894.78 | 0.24 | -- | 0.65 | 0 |
-| 5 | Unikraft Multi-Core | 12,461.14 | 2.11 | 56.42 | 121.82 | 0 |
-| 5 | Linux (Ubuntu 24.04) | 44,893.00 | 0.09 | 0.14 | 0.54 | 0 |
-| 10 | Unikraft Single-Threaded | 37,804.21 | 0.26 | -- | 0.77 | 0 |
-| 10 | Unikraft Multi-Core | 23,352.57 | 2.71 | 55.49 | 66.00 | 0 |
-| 10 | Linux (Ubuntu 24.04) | 78,330.14 | 0.10 | 0.16 | 0.26 | 0 |
-| 25 | Unikraft Single-Threaded | 78,089.40 | 0.30 | -- | 4.42 | 0 |
-| 25 | Unikraft Multi-Core | 51,749.84 | 6.44 | 61.85 | 128.73 | 0 |
-| 25 | Linux (Ubuntu 24.04) | 166,217.23 | 0.14 | 0.24 | 0.85 | 0 |
-| 50 | Unikraft Single-Threaded | 133,790.20 | 0.36 | -- | 1.03 | 0 |
-| 50 | Unikraft Multi-Core | 76,308.20 | 8.40 | 62.21 | 83.14 | 0 |
-| 50 | Linux (Ubuntu 24.04) | 205,061.04 | 0.23 | 0.45 | 2.03 | 0 |
-| 100 | Unikraft Single-Threaded | 153,725.24 | 0.63 | -- | 1.50 | 0 |
-| 100 | Unikraft Multi-Core | 101,924.98 | 10.98 | 63.80 | 128.71 | 0 |
-| 100 | Linux (Ubuntu 24.04) | 208,736.74 | 0.47 | 0.81 | 5.52 | 0 |
-| 200 | Unikraft Single-Threaded | 155,213.30 | 1.27 | -- | 2.20 | 0 |
-| 200 | Unikraft Multi-Core | 100,248.45 | 11.24 | 63.59 | 67.28 | 0 |
-| 200 | Linux (Ubuntu 24.04) | 201,060.17 | 1.00 | 1.48 | 29.76 | 0 |
-| 500 | Unikraft Single-Threaded | -- | -- | -- | -- | -- |
-| 500 | Unikraft Multi-Core | 59,873.66 | 13.93 | 70.69 | 136.28 | 0 |
-| 500 | Linux (Ubuntu 24.04) | 195,779.04 | 3.13 | 13.09 | 170.80 | 0 |
+### Hardware RSS Steering
+The AWS ENA device hashes TCP/IP 4-tuples and distributes incoming connections across hardware RX queues. Each core processes its own traffic partition.
 
-Measurements show zero socket errors across all concurrency levels. Both worker threads processed 2.15 million requests with balanced distribution. Throughput peaked at 101,924.98 requests per second at concurrency 100.
-
-## 9. Design Decisions
-
-### Accept-and-Distribute Model
-The main thread accepts connections on a single listening socket. It distributes connections round-robin across worker threads. This model avoids lock contention on the listener.
-
-### Why Not SO_REUSEPORT
-Unikraft lwIP does not implement `SO_REUSEPORT` socket load balancing. A central accept loop with lock-free SPSC distribution provides the cleanest model without kernel modifications.
-
-### Cooperative Scheduler Constraints
-The Unikraft scheduler uses cooperative thread execution. Each worker explicitly yields through `uk_sched_yield()` during event loops. This ensures fair scheduling between packet dispatchers, stack threads, and HTTP workers.
+### Per-Core Stack State and SO_REUSEPORT
+The lwIP stack runs in `NO_SYS` mode with per-core state encapsulation. Each core owns independent TCP control blocks, timers, and socket tables. Sockets bind with `SO_REUSEPORT` to accept connections on port 80 without global locks.
