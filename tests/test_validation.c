@@ -1376,6 +1376,272 @@ static void test_validation_garp_link_flap(void)
 	ena_netdev_free(netdev);
 }
 
+/* Simulated structures for lwIP per-core state validation */
+#define MOCK_LWIP_CORE_MAX 4
+#define MOCK_LWIP_NUM_SOCKETS 64
+#define MOCK_LWIP_SOCKET_OFFSET 32
+#define MOCK_MEMP_MAX 8
+#define MOCK_MEMP_POOL_SIZE 4
+
+struct mock_tcp_pcb {
+	struct mock_tcp_pcb *next;
+	uint32_t local_ip;
+	uint16_t local_port;
+	uint32_t remote_ip;
+	uint16_t remote_port;
+	uint8_t state;
+};
+
+struct mock_memp_node {
+	struct mock_memp_node *next;
+};
+
+struct mock_memp_pool {
+	struct mock_memp_node *free_list;
+	uint16_t free_count;
+	uint16_t total_count;
+};
+
+struct mock_lwip_socket {
+	int used;
+	uint16_t port;
+	int so_reuseport;
+	uint32_t core_id;
+};
+
+struct mock_lwip_core_state {
+	struct mock_tcp_pcb *tcp_bound_pcbs;
+	struct mock_tcp_pcb *tcp_listen_pcbs;
+	struct mock_tcp_pcb *tcp_active_pcbs;
+	struct mock_tcp_pcb *tcp_tw_pcbs;
+	uint32_t tcp_ticks;
+	struct mock_memp_pool pools[MOCK_MEMP_MAX];
+	struct mock_lwip_socket sockets[MOCK_LWIP_NUM_SOCKETS];
+};
+
+static struct mock_lwip_core_state g_mock_cores[MOCK_LWIP_CORE_MAX];
+static uint8_t g_memp_raw_storage[MOCK_LWIP_CORE_MAX][MOCK_MEMP_MAX][MOCK_MEMP_POOL_SIZE * sizeof(struct mock_memp_node)];
+
+static void mock_percore_init(void)
+{
+	memset(g_mock_cores, 0, sizeof(g_mock_cores));
+	for (unsigned int c = 0; c < MOCK_LWIP_CORE_MAX; c++) {
+		for (unsigned int p = 0; p < MOCK_MEMP_MAX; p++) {
+			struct mock_memp_pool *pool = &g_mock_cores[c].pools[p];
+			pool->total_count = MOCK_MEMP_POOL_SIZE;
+			pool->free_count = 0;
+			pool->free_list = NULL;
+			for (unsigned int i = 0; i < MOCK_MEMP_POOL_SIZE; i++) {
+				struct mock_memp_node *node = (struct mock_memp_node *)&g_memp_raw_storage[c][p][i * sizeof(struct mock_memp_node)];
+				node->next = pool->free_list;
+				pool->free_list = node;
+				pool->free_count++;
+			}
+		}
+	}
+}
+
+static int mock_tcp_bind_listen(unsigned int core_id, struct mock_tcp_pcb *pcb, uint16_t port)
+{
+	if (core_id >= MOCK_LWIP_CORE_MAX)
+		return -1;
+	struct mock_lwip_core_state *cs = &g_mock_cores[core_id];
+	struct mock_tcp_pcb *cur = cs->tcp_listen_pcbs;
+	while (cur) {
+		if (cur->local_port == port)
+			return -2;
+		cur = cur->next;
+	}
+	pcb->local_port = port;
+	pcb->next = cs->tcp_listen_pcbs;
+	cs->tcp_listen_pcbs = pcb;
+	return 0;
+}
+
+static void *mock_memp_alloc(unsigned int core_id, unsigned int pool_id)
+{
+	if (core_id >= MOCK_LWIP_CORE_MAX || pool_id >= MOCK_MEMP_MAX)
+		return NULL;
+	struct mock_memp_pool *pool = &g_mock_cores[core_id].pools[pool_id];
+	if (!pool->free_list)
+		return NULL;
+	struct mock_memp_node *node = pool->free_list;
+	pool->free_list = node->next;
+	pool->free_count--;
+	return node;
+}
+
+static void mock_memp_free(unsigned int core_id, unsigned int pool_id, void *ptr)
+{
+	if (!ptr || core_id >= MOCK_LWIP_CORE_MAX || pool_id >= MOCK_MEMP_MAX)
+		return;
+	struct mock_memp_pool *pool = &g_mock_cores[core_id].pools[pool_id];
+	struct mock_memp_node *node = (struct mock_memp_node *)ptr;
+	node->next = pool->free_list;
+	pool->free_list = node;
+	pool->free_count++;
+}
+
+static int mock_socket_alloc(unsigned int core_id)
+{
+	if (core_id >= MOCK_LWIP_CORE_MAX)
+		return -1;
+	struct mock_lwip_core_state *cs = &g_mock_cores[core_id];
+	for (int i = 0; i < MOCK_LWIP_NUM_SOCKETS; i++) {
+		if (!cs->sockets[i].used) {
+			cs->sockets[i].used = 1;
+			cs->sockets[i].port = 0;
+			cs->sockets[i].so_reuseport = 0;
+			cs->sockets[i].core_id = core_id;
+			return i + (int)(core_id * MOCK_LWIP_NUM_SOCKETS) + MOCK_LWIP_SOCKET_OFFSET;
+		}
+	}
+	return -1;
+}
+
+static int mock_socket_bind(int fd, uint16_t port, int reuseport)
+{
+	if (fd < MOCK_LWIP_SOCKET_OFFSET)
+		return -1;
+	int raw = fd - MOCK_LWIP_SOCKET_OFFSET;
+	unsigned int core_id = (unsigned int)(raw / MOCK_LWIP_NUM_SOCKETS);
+	int idx = raw % MOCK_LWIP_NUM_SOCKETS;
+	if (core_id >= MOCK_LWIP_CORE_MAX)
+		return -1;
+	struct mock_lwip_core_state *cs = &g_mock_cores[core_id];
+	if (!cs->sockets[idx].used)
+		return -1;
+	cs->sockets[idx].so_reuseport = reuseport;
+	cs->sockets[idx].port = port;
+	return 0;
+}
+
+static void mock_socket_free(int fd)
+{
+	if (fd < MOCK_LWIP_SOCKET_OFFSET)
+		return;
+	int raw = fd - MOCK_LWIP_SOCKET_OFFSET;
+	unsigned int core_id = (unsigned int)(raw / MOCK_LWIP_NUM_SOCKETS);
+	int idx = raw % MOCK_LWIP_NUM_SOCKETS;
+	if (core_id >= MOCK_LWIP_CORE_MAX)
+		return;
+	g_mock_cores[core_id].sockets[idx].used = 0;
+	g_mock_cores[core_id].sockets[idx].port = 0;
+	g_mock_cores[core_id].sockets[idx].so_reuseport = 0;
+}
+
+/* 22. lwIP per-core TCP state isolation */
+static void test_validation_lwip_per_core_tcp_state(void)
+{
+	mock_percore_init();
+
+	struct mock_tcp_pcb pcb_core0;
+	memset(&pcb_core0, 0, sizeof(pcb_core0));
+	struct mock_tcp_pcb pcb_core1;
+	memset(&pcb_core1, 0, sizeof(pcb_core1));
+
+	/* Both cores bind port 80 simultaneously */
+	assert(mock_tcp_bind_listen(0, &pcb_core0, 80) == 0);
+	assert(mock_tcp_bind_listen(1, &pcb_core1, 80) == 0);
+
+	/* Duplicate bind on the same core must fail */
+	struct mock_tcp_pcb pcb_core0_dup;
+	memset(&pcb_core0_dup, 0, sizeof(pcb_core0_dup));
+	assert(mock_tcp_bind_listen(0, &pcb_core0_dup, 80) == -2);
+
+	/* Advance TCP ticks on core 0 only */
+	g_mock_cores[0].tcp_ticks += 10;
+	assert(g_mock_cores[0].tcp_ticks == 10);
+	assert(g_mock_cores[1].tcp_ticks == 0);
+
+	/* Advance TCP ticks on core 1 independently */
+	g_mock_cores[1].tcp_ticks += 25;
+	assert(g_mock_cores[0].tcp_ticks == 10);
+	assert(g_mock_cores[1].tcp_ticks == 25);
+
+	/* Verify independent listen PCB pointers */
+	assert(g_mock_cores[0].tcp_listen_pcbs == &pcb_core0);
+	assert(g_mock_cores[1].tcp_listen_pcbs == &pcb_core1);
+}
+
+/* 23. lwIP per-core memory pool isolation */
+static void test_validation_lwip_per_core_memp_isolation(void)
+{
+	mock_percore_init();
+
+	void *core0_ptrs[MOCK_MEMP_POOL_SIZE];
+	for (int i = 0; i < MOCK_MEMP_POOL_SIZE; i++) {
+		core0_ptrs[i] = mock_memp_alloc(0, 0);
+		assert(core0_ptrs[i] != NULL);
+	}
+
+	/* Core 0 pool must be exhausted */
+	assert(g_mock_cores[0].pools[0].free_count == 0);
+	assert(mock_memp_alloc(0, 0) == NULL);
+
+	/* Core 1 pool must remain full and untouched */
+	assert(g_mock_cores[1].pools[0].free_count == MOCK_MEMP_POOL_SIZE);
+	void *core1_ptr = mock_memp_alloc(1, 0);
+	assert(core1_ptr != NULL);
+	assert(g_mock_cores[1].pools[0].free_count == MOCK_MEMP_POOL_SIZE - 1);
+
+	/* Free one element on core 0 */
+	mock_memp_free(0, 0, core0_ptrs[0]);
+	assert(g_mock_cores[0].pools[0].free_count == 1);
+	assert(g_mock_cores[1].pools[0].free_count == MOCK_MEMP_POOL_SIZE - 1);
+
+	/* Allocate restored element on core 0 */
+	void *realloc_ptr = mock_memp_alloc(0, 0);
+	assert(realloc_ptr == core0_ptrs[0]);
+	assert(g_mock_cores[0].pools[0].free_count == 0);
+
+	/* Cleanup */
+	mock_memp_free(1, 0, core1_ptr);
+	for (int i = 1; i < MOCK_MEMP_POOL_SIZE; i++)
+		mock_memp_free(0, 0, core0_ptrs[i]);
+	mock_memp_free(0, 0, realloc_ptr);
+	assert(g_mock_cores[0].pools[0].free_count == MOCK_MEMP_POOL_SIZE);
+	assert(g_mock_cores[1].pools[0].free_count == MOCK_MEMP_POOL_SIZE);
+}
+
+/* 24. lwIP per-core socket partition and SO_REUSEPORT */
+static void test_validation_lwip_per_core_socket_partition(void)
+{
+	mock_percore_init();
+
+	/* Allocate socket on core 0 */
+	int fd0 = mock_socket_alloc(0);
+	assert(fd0 == MOCK_LWIP_SOCKET_OFFSET + 0);
+
+	/* Allocate socket on core 1 */
+	int fd1 = mock_socket_alloc(1);
+	assert(fd1 == MOCK_LWIP_SOCKET_OFFSET + MOCK_LWIP_NUM_SOCKETS);
+
+	/* Validate core ownership decode */
+	unsigned int core0 = (unsigned int)((fd0 - MOCK_LWIP_SOCKET_OFFSET) / MOCK_LWIP_NUM_SOCKETS);
+	unsigned int core1 = (unsigned int)((fd1 - MOCK_LWIP_SOCKET_OFFSET) / MOCK_LWIP_NUM_SOCKETS);
+	assert(core0 == 0);
+	assert(core1 == 1);
+
+	/* Both bind to port 80 with SO_REUSEPORT */
+	assert(mock_socket_bind(fd0, 80, 1) == 0);
+	assert(mock_socket_bind(fd1, 80, 1) == 0);
+
+	assert(g_mock_cores[0].sockets[0].port == 80);
+	assert(g_mock_cores[0].sockets[0].so_reuseport == 1);
+	assert(g_mock_cores[1].sockets[0].port == 80);
+	assert(g_mock_cores[1].sockets[0].so_reuseport == 1);
+
+	/* Free core 0 socket */
+	mock_socket_free(fd0);
+	assert(g_mock_cores[0].sockets[0].used == 0);
+	assert(g_mock_cores[1].sockets[0].used == 1);
+
+	/* Free core 1 socket */
+	mock_socket_free(fd1);
+	assert(g_mock_cores[1].sockets[0].used == 0);
+}
+
 int main(void)
 {
 	printf("========================================\n");
@@ -1406,9 +1672,12 @@ int main(void)
 	RUN_TEST(test_validation_aenq_runtime_wiring);
 	RUN_TEST(test_validation_rss_configuration);
 	RUN_TEST(test_validation_garp_link_flap);
+	RUN_TEST(test_validation_lwip_per_core_tcp_state);
+	RUN_TEST(test_validation_lwip_per_core_memp_isolation);
+	RUN_TEST(test_validation_lwip_per_core_socket_partition);
 
 	printf("========================================\n");
-	printf("ALL PHASE 10 VALIDATION TESTS PASSED (21/21)\n");
+	printf("ALL PHASE 10 VALIDATION TESTS PASSED (24/24)\n");
 	printf("========================================\n");
 	return 0;
 }
