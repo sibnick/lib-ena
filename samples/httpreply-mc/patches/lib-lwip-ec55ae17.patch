@@ -309,6 +309,22 @@ index 710c160..db7cb00 100644
  #endif
  
  /**
+diff --git a/include/netif/uknetdev.h b/include/netif/uknetdev.h
+index 9b452c0..d05f675 100644
+--- a/include/netif/uknetdev.h
++++ b/include/netif/uknetdev.h
+@@ -56,9 +56,11 @@ err_t uknetdev_init(struct netif *nf);
+  * support receive interrupts should be polled for packets.
+  */
+ void uknetdev_poll(struct netif *nf);
++void uknetdev_poll_queue(struct netif *nf, uint16_t queue_id);
+ 
+ #ifdef CONFIG_LWIP_NOTHREADS
+ void uknetdev_poll_all(void);
++void uknetdev_poll_rxqueue(uint16_t queue_id);
+ #endif /* CONFIG_LWIP_NOTHREADS */
+ 
+ struct netif *uknetdev_addif(struct uk_netdev *n
 diff --git a/init.c b/init.c
 index 2e7daac..79448bf 100644
 --- a/init.c
@@ -1100,10 +1116,10 @@ index 258957f..4a75614 100644
  };
  
 diff --git a/uknetdev.c b/uknetdev.c
-index b13c5aa..3ba05a5 100644
+index b13c5aa..19d7b4e 100644
 --- a/uknetdev.c
 +++ b/uknetdev.c
-@@ -53,6 +53,11 @@
+@@ -53,6 +53,15 @@
  #include "netif/ethernet.h"
  #include <uk/atomic.h>
  
@@ -1112,10 +1128,14 @@ index b13c5aa..3ba05a5 100644
 +#include <uk/sched_impl.h>
 +#endif /* CONFIG_LIBUKNETDEV_DISPATCHERTHREADS */
 +
++#if CONFIG_LWIP_NOTHREADS && LWIP_PERCORE
++#include "lwip_percore.h"
++#endif
++
  #include <uk/essentials.h>
  
  /*
-@@ -92,6 +97,11 @@ struct lwip_netdev_data {
+@@ -92,6 +101,11 @@ struct lwip_netdev_data {
  	char *_name; /* Thread name */
  	struct uk_sched *sched; /* Scheduler information */
  #endif /* CONFIG_HAVE_SCHED */
@@ -1127,7 +1147,7 @@ index b13c5aa..3ba05a5 100644
  };
  
  /*
-@@ -106,6 +116,15 @@ UK_CTASSERT((sizeof(struct lwip_netdev_data)) <= CONFIG_UK_NETDEV_SCRATCH_SIZE);
+@@ -106,6 +120,15 @@ UK_CTASSERT((sizeof(struct lwip_netdev_data)) <= CONFIG_UK_NETDEV_SCRATCH_SIZE);
  #define netif_to_uknetdev(nf) \
  	((struct uk_netdev *) (nf)->state)
  
@@ -1138,12 +1158,12 @@ index b13c5aa..3ba05a5 100644
 + */
 +static uint16_t uknetdev_nb_rxq = 1;
 +static uint16_t uknetdev_nb_txq = 1;
-+static uint16_t uknetdev_txq_rr = 0;
++static uint16_t uknetdev_txq_rr __maybe_unused = 0;
 +
  static uint16_t netif_alloc_rxpkts(void *argp, struct uk_netbuf *nb[],
  				   uint16_t count)
  {
-@@ -174,10 +193,19 @@ static err_t uknetdev_output(struct netif *nf, struct pbuf *p)
+@@ -174,10 +197,28 @@ static err_t uknetdev_output(struct netif *nf, struct pbuf *p)
  	}
  	nb->len = p->tot_len;
  
@@ -1152,10 +1172,18 @@ index b13c5aa..3ba05a5 100644
 -		ret = uk_netdev_tx_one(dev, 0, nb);
 -	} while (uk_netdev_status_notready(ret));
 +	/*
-+	 * Transmit the packet on a round-robin choice of TX queue. The
-+	 * link output runs in the lwIP tcpip thread, so this counter needs
-+	 * no synchronization.
++	 * Transmit the packet on a dedicated per-core TX queue in run-to-completion
++	 * NO_SYS mode, or a round-robin choice of TX queue in threaded mode.
 +	 */
++#if CONFIG_LWIP_NOTHREADS && LWIP_PERCORE
++	{
++		uint16_t txq = (uint16_t)(lwip_current_core_id() % uknetdev_nb_txq);
++
++		do {
++			ret = uk_netdev_tx_one(dev, txq, nb);
++		} while (uk_netdev_status_notready(ret));
++	}
++#else
 +	{
 +		uint16_t txq = uknetdev_txq_rr;
 +
@@ -1164,10 +1192,11 @@ index b13c5aa..3ba05a5 100644
 +			ret = uk_netdev_tx_one(dev, txq, nb);
 +		} while (uk_netdev_status_notready(ret));
 +	}
++#endif
  	if (unlikely(ret < 0)) {
  		LWIP_DEBUGF(NETIF_DEBUG,
  			    ("%s: %c%c%u: Failed to send %"PRIu16" bytes\n",
-@@ -198,7 +226,7 @@ static err_t uknetdev_output(struct netif *nf, struct pbuf *p)
+@@ -198,7 +239,7 @@ static err_t uknetdev_output(struct netif *nf, struct pbuf *p)
  }
  
  static void uknetdev_input(struct uk_netdev *dev,
@@ -1176,7 +1205,7 @@ index b13c5aa..3ba05a5 100644
  {
  	struct netif *nf = (struct netif *) argp;
  	struct uk_netbuf *nb, *nbi;
-@@ -213,7 +241,7 @@ static void uknetdev_input(struct uk_netdev *dev,
+@@ -213,7 +254,7 @@ static void uknetdev_input(struct uk_netdev *dev,
  	LWIP_DEBUGF(NETIF_DEBUG, ("%s: %c%c%u: Poll receive queue...\n",
  				  __func__, nf->name[0], nf->name[1], nf->num));
  	do {
@@ -1185,27 +1214,39 @@ index b13c5aa..3ba05a5 100644
  		LWIP_DEBUGF(NETIF_DEBUG,
  			    ("%s: %c%c%u: Input status %d (%c%c%c)\n",
  			     __func__, nf->name[0], nf->name[1], nf->num, ret,
-@@ -301,6 +329,7 @@ static void uknetdev_input(struct uk_netdev *dev,
- void uknetdev_poll(struct netif *nf)
+@@ -298,9 +339,10 @@ static void uknetdev_input(struct uk_netdev *dev,
+  * mainloop. Maybe we should revisit this interface when we add support for
+  * netif removal in order to let API users re-initialize interfaces.
+  */
+-void uknetdev_poll(struct netif *nf)
++void uknetdev_poll_queue(struct netif *nf, uint16_t queue_id)
  {
  	struct uk_netdev *dev;
 +	int link_up;
  
  	UK_ASSERT(nf);
  	/*
-@@ -315,9 +344,60 @@ void uknetdev_poll(struct netif *nf)
+@@ -314,11 +356,67 @@ void uknetdev_poll(struct netif *nf)
+ 	dev = netif_to_uknetdev(nf);
  	UK_ASSERT(dev);
  
- 	uknetdev_input(dev, 0, nf);
+-	uknetdev_input(dev, 0, nf);
++	uknetdev_input(dev, queue_id, nf);
 +
 +	link_up = uk_netdev_link_state_get(dev);
 +	if (link_up && !netif_is_link_up(nf))
 +		netif_set_link_up(nf);
 +	else if (!link_up && netif_is_link_up(nf))
 +		netif_set_link_down(nf);
++}
++
++void uknetdev_poll(struct netif *nf)
++{
++	uknetdev_poll_queue(nf, 0);
  }
  
  #ifdef CONFIG_LWIP_NOTHREADS
+-void uknetdev_poll_all(void)
 +#if LWIP_IPV4 && LWIP_ARP
 +/*
 + * Send a Gratuitous ARP for the current IPv4 address of the netif.
@@ -1251,16 +1292,18 @@ index b13c5aa..3ba05a5 100644
 +}
 +#endif /* LWIP_IPV4 && LWIP_ARP */
 +
- void uknetdev_poll_all(void)
++void uknetdev_poll_rxqueue(uint16_t queue_id)
  {
  	struct netif *nf;
-@@ -330,8 +410,14 @@ void uknetdev_poll_all(void)
+ 
+@@ -330,11 +428,22 @@ void uknetdev_poll_all(void)
  	 */
  	NETIF_FOREACH(nf) {
  		if (nf->name[0] == UKNETDEV_NETIF_NAME0
 -		    && nf->name[1] == UKNETDEV_NETIF_NAME1)
+-			uknetdev_poll(nf);
 +		    && nf->name[1] == UKNETDEV_NETIF_NAME1) {
- 			uknetdev_poll(nf);
++			uknetdev_poll_queue(nf, queue_id);
 +#if LWIP_IPV4 && LWIP_ARP
 +			/* Announce the address when the interface comes up
 +			 * or the address changes. */
@@ -1270,7 +1313,15 @@ index b13c5aa..3ba05a5 100644
  	}
  }
  
-@@ -362,6 +448,42 @@ static void uknetdev_updown(struct netif *nf)
++void uknetdev_poll_all(void)
++{
++	uknetdev_poll_rxqueue(0);
++}
++
+ #else /* CONFIG_LWIP_NOTHREADS */
+ 
+ static __noreturn void _poll_netif(void *arg)
+@@ -362,6 +471,42 @@ static void uknetdev_updown(struct netif *nf)
  
  	if (nf->flags & NETIF_FLAG_UP) {
  		if (uk_netdev_rxintr_supported(lwip_data->dev_info.features)) {
@@ -1313,7 +1364,7 @@ index b13c5aa..3ba05a5 100644
  			ret = uk_netdev_rxq_intr_enable(dev, 0);
  			if (ret < 0) {
  				LWIP_DEBUGF(NETIF_DEBUG,
-@@ -388,6 +510,7 @@ static void uknetdev_updown(struct netif *nf)
+@@ -388,6 +533,7 @@ static void uknetdev_updown(struct netif *nf)
  				 */
  				uknetdev_poll(nf);
  			}
@@ -1321,7 +1372,7 @@ index b13c5aa..3ba05a5 100644
  		} else {
  #ifdef CONFIG_HAVE_SCHED
  			LWIP_DEBUGF(NETIF_DEBUG,
-@@ -409,11 +532,28 @@ static void uknetdev_updown(struct netif *nf)
+@@ -409,11 +555,28 @@ static void uknetdev_updown(struct netif *nf)
  		 * Cleanup the thread on stopping the network interface.
  		 */
  		if (uk_netdev_rxintr_supported(lwip_data->dev_info.features)) {
@@ -1350,7 +1401,7 @@ index b13c5aa..3ba05a5 100644
  		}
  
  	}
-@@ -435,6 +575,27 @@ static void uknetdev_updown(struct netif *nf)
+@@ -435,6 +598,27 @@ static void uknetdev_updown(struct netif *nf)
   */
  UK_CTASSERT(sizeof(struct lwip_netdev_data) <= CONFIG_LWIP_UKNETDEV_SCRATCH);
  
@@ -1378,7 +1429,7 @@ index b13c5aa..3ba05a5 100644
  err_t uknetdev_init(struct netif *nf)
  {
  	struct uk_alloc *a = NULL;
-@@ -485,6 +646,9 @@ err_t uknetdev_init(struct netif *nf)
+@@ -485,6 +669,9 @@ err_t uknetdev_init(struct netif *nf)
  	if (!lwip_data->dev_info.max_rx_queues
  	    || !lwip_data->dev_info.max_tx_queues)
  		return ERR_IF;
@@ -1388,7 +1439,7 @@ index b13c5aa..3ba05a5 100644
  #if CONFIG_LWIP_UKNETDEV_POLLONLY
  	/* Unset receive interrupt support: We force polling mode */
  	lwip_data->dev_info.features &= ~UK_NETDEV_F_RXQ_INTR;
-@@ -500,10 +664,11 @@ err_t uknetdev_init(struct netif *nf)
+@@ -500,10 +687,11 @@ err_t uknetdev_init(struct netif *nf)
  
  	/*
  	 * Device configuration,
@@ -1403,7 +1454,7 @@ index b13c5aa..3ba05a5 100644
  	dev_conf.lro = !!(lwip_data->dev_info.features & UK_NETDEV_F_LRO);
  	ret = uk_netdev_configure(dev, &dev_conf);
  	if (ret < 0) {
-@@ -514,50 +679,72 @@ err_t uknetdev_init(struct netif *nf)
+@@ -514,50 +702,72 @@ err_t uknetdev_init(struct netif *nf)
  		return ERR_IF;
  	}
  
@@ -1506,7 +1557,7 @@ index b13c5aa..3ba05a5 100644
  	}
  
  	/* Start interface */
-@@ -583,8 +770,11 @@ err_t uknetdev_init(struct netif *nf)
+@@ -583,8 +793,11 @@ err_t uknetdev_init(struct netif *nf)
  
  	/* Device capabilities */
  	netif_set_flags(nf, (NETIF_FLAG_BROADCAST

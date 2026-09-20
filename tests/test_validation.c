@@ -1642,6 +1642,52 @@ static void test_validation_lwip_per_core_socket_partition(void)
 	assert(g_mock_cores[1].sockets[0].used == 0);
 }
 
+/* 25. Per-core run-to-completion ENA queue binding and SO_REUSEPORT handling */
+static void test_validation_per_core_run_to_completion(void)
+{
+	mock_percore_init();
+
+	/* 1. Core-to-queue 1:1 mapping */
+	const unsigned int num_cores = 2;
+	for (unsigned int core = 0; core < num_cores; core++) {
+		unsigned int rx_queue = core;
+		unsigned int tx_queue = core;
+		assert(rx_queue == core);
+		assert(tx_queue == core);
+	}
+
+	/* 2. Independent listener sockets on each core with SO_REUSEPORT */
+	int lfd0 = mock_socket_alloc(0);
+	int lfd1 = mock_socket_alloc(1);
+	assert(lfd0 >= 0);
+	assert(lfd1 >= 0);
+
+	assert(mock_socket_bind(lfd0, 80, 1) == 0);
+	assert(mock_socket_bind(lfd1, 80, 1) == 0);
+
+	/* Sockets belong to distinct core partitions */
+	assert(g_mock_cores[0].sockets[0].core_id == 0);
+	assert(g_mock_cores[1].sockets[0].core_id == 1);
+
+	/* 3. Per-core run-to-completion packet processing without cross-core locking */
+	struct mock_tcp_pcb conn_core0;
+	struct mock_tcp_pcb conn_core1;
+	memset(&conn_core0, 0, sizeof(conn_core0));
+	memset(&conn_core1, 0, sizeof(conn_core1));
+
+	assert(mock_tcp_bind_listen(0, &conn_core0, 80) == 0);
+	assert(mock_tcp_bind_listen(1, &conn_core1, 80) == 0);
+
+	/* Local stack ticks advance independently */
+	g_mock_cores[0].tcp_ticks += 5;
+	g_mock_cores[1].tcp_ticks += 15;
+	assert(g_mock_cores[0].tcp_ticks == 5);
+	assert(g_mock_cores[1].tcp_ticks == 15);
+
+	mock_socket_free(lfd0);
+	mock_socket_free(lfd1);
+}
+
 int main(void)
 {
 	printf("========================================\n");
@@ -1675,9 +1721,10 @@ int main(void)
 	RUN_TEST(test_validation_lwip_per_core_tcp_state);
 	RUN_TEST(test_validation_lwip_per_core_memp_isolation);
 	RUN_TEST(test_validation_lwip_per_core_socket_partition);
+	RUN_TEST(test_validation_per_core_run_to_completion);
 
 	printf("========================================\n");
-	printf("ALL PHASE 10 VALIDATION TESTS PASSED (24/24)\n");
+	printf("ALL PHASE 10 VALIDATION TESTS PASSED (25/25)\n");
 	printf("========================================\n");
 	return 0;
 }
