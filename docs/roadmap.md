@@ -37,7 +37,7 @@ gantt
     Scatter-Gather TX Multi-Descriptor Chaining  :p11, 2026-09-01, 14d
     Scatter-Gather RX Reassembly                 :p12, after p11, 14d
     Hardware TCP Segmentation Offload (TSO)      :p13, after p12, 14d
-    Hardware Receive Side Scaling (RSS)          :p14, after p13, 14d
+    Hardware Receive Side Scaling (RSS)          :active, p14, after p13, 14d
 ```
 
 ### Phase 1: PCI Driver Scaffold and Device Discovery
@@ -121,6 +121,7 @@ gantt
 - Offload TCP segmentation from the software stack to the ENA controller.
 
 ### Phase 14: Hardware Receive Side Scaling (RSS)
-- **Status**: Planned
-- Configure RSS hash key and indirection table via Admin Queue feature commands.
+- **Status**: In Progress
+- `ena_rss.c` implements RSS hash key and indirection table configuration via Admin Queue feature commands (`CONFIG_LIBENA_RSS`).
 - Distribute incoming traffic across multiple RX queues based on packet 4-tuple flow hashes.
+- Remaining work: on-hardware validation on a multi-queue EC2 instance and integration test coverage.

@@ -18,7 +18,7 @@ This RFC proposes the addition of `lib-ena`, a native driver for the Amazon Web 
 `lib-ena` interfaces directly with ENA PCI hardware and integrates cleanly with Unikraft's `uknetdev` driver framework.
 
 ### Key Features
-- **PCI Initialization & MMIO Mapping**: Registers device IDs (`0xec20`, `0xec21`) and maps BAR0 configuration and BAR2 Low Latency Queue (LLQ) regions.
+- **PCI Initialization & MMIO Mapping**: Registers PCI Vendor ID `0x1D0F` and five Device IDs (`0x0051` reserved, `0x0EC2` PF, `0x1EC2` LLQ PF, `0xEC20` VF, `0xEC21` LLQ VF). Maps BAR0 configuration and BAR2 Low Latency Queue (LLQ) regions.
 - **Admin Queue Subsystem**: Synchronous Admin Queue (AQ/ACQ) for device feature negotiation, capability discovery, and queue creation.
 - **AENQ Engine**: The driver polls the Asynchronous Event Notification Queue on every RX pass. A fatal error event resets the device. A link change event updates the link state.
 - **Circular DMA Rings**: Zero-copy TX/RX ring buffers with phase-bit synchronization and wrap tracking.
