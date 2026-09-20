@@ -1226,6 +1226,156 @@ static void test_validation_rss_configuration(void)
 	ena_netdev_free(netdev);
 }
 
+/* 21. GARP on link flap: verify that netdev link_state_get accurately tracks
+ * link state from AENQ, and that simulated link transitions down and up
+ * invalidate cached GARP IP and trigger a new GARP transmission with the
+ * unchanged IPv4 address. */
+struct mock_lwip_netif {
+	bool is_up;
+	bool is_link_up;
+	uint32_t ip4_addr;
+	uint32_t last_grat_arp_ip;
+	uint32_t garp_sent_count;
+};
+
+static void mock_lwip_poll(struct mock_lwip_netif *nf, struct uk_netdev *dev)
+{
+	int link_up = dev->ops->link_state_get(dev);
+	if (link_up && !nf->is_link_up)
+		nf->is_link_up = true;
+	else if (!link_up && nf->is_link_up)
+		nf->is_link_up = false;
+}
+
+static void mock_lwip_send_gratuitous_arp(struct mock_lwip_netif *nf)
+{
+	if (!nf->is_link_up) {
+		nf->last_grat_arp_ip = 0;
+		return;
+	}
+
+	if (!nf->is_up)
+		return;
+
+	if (nf->ip4_addr == 0)
+		return;
+
+	if (nf->ip4_addr == nf->last_grat_arp_ip)
+		return;
+
+	nf->last_grat_arp_ip = nf->ip4_addr;
+	nf->garp_sent_count++;
+}
+
+static void test_validation_garp_link_flap(void)
+{
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+	struct uk_netbuf *rx_nb = NULL;
+	unsigned int refilled = 0;
+	struct mock_lwip_netif sim_netif;
+
+	assert(setup_test_adapter(&g_hw, &g_adapter, 1500, 1500) == 0);
+	assert(ena_admin_aenq_register(&g_adapter, ena_aenq_default_handler,
+				       &g_adapter) == 0);
+
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+	assert(netdev->ops->link_state_get != NULL);
+
+	/* 1. Initial link state must be 0 (down) */
+	assert(netdev->ops->link_state_get(netdev) == 0);
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 1;
+	conf.nb_tx_queues = 1;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+	assert(netdev->ops->rxq_configure(netdev, 0, 8, NULL) == 0);
+	assert(netdev->ops->txq_configure(netdev, 0, 8, NULL) == 0);
+	assert(netdev->ops->dev_start(netdev) == 0);
+	assert(ena_rx_refill(g_adapter.rx_rings[0], 8, mock_rx_alloc_cb, NULL,
+			     &refilled) == 8);
+
+	/* Initialize simulated lwIP interface state */
+	memset(&sim_netif, 0, sizeof(sim_netif));
+	sim_netif.is_up = true;
+	sim_netif.is_link_up = (netdev->ops->link_state_get(netdev) == 1);
+	sim_netif.ip4_addr = 0x0A000064; /* 10.0.0.100 */
+	sim_netif.last_grat_arp_ip = 0;
+	sim_netif.garp_sent_count = 0;
+
+	/* 2. Transition link to UP via AENQ LINK_CHANGE event */
+	mock_ena_hw_inject_aenq_payload(&g_hw, ENA_ADMIN_LINK_CHANGE, 0, 1);
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_nb) == 0);
+
+	/* Check link_state_get returns 1 */
+	assert(netdev->ops->link_state_get(netdev) == 1);
+
+	/* Poll interface and send initial GARP */
+	mock_lwip_poll(&sim_netif, netdev);
+	assert(sim_netif.is_link_up == true);
+	mock_lwip_send_gratuitous_arp(&sim_netif);
+	assert(sim_netif.garp_sent_count == 1);
+	assert(sim_netif.last_grat_arp_ip == 0x0A000064);
+
+	/* Subsequent poll with link still UP and IP unchanged must NOT send GARP */
+	mock_lwip_poll(&sim_netif, netdev);
+	mock_lwip_send_gratuitous_arp(&sim_netif);
+	assert(sim_netif.garp_sent_count == 1);
+
+	/* 3. Simulate link down: AENQ LINK_CHANGE to 0 */
+	mock_ena_hw_inject_aenq_payload(&g_hw, ENA_ADMIN_LINK_CHANGE, 1, 0);
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_nb) == 0);
+
+	/* Verify link_state_get returns 0 */
+	assert(netdev->ops->link_state_get(netdev) == 0);
+
+	/* Poll interface on link down */
+	mock_lwip_poll(&sim_netif, netdev);
+	assert(sim_netif.is_link_up == false);
+
+	/* Invalidate last_grat_arp_ip on link down */
+	mock_lwip_send_gratuitous_arp(&sim_netif);
+	assert(sim_netif.last_grat_arp_ip == 0);
+	assert(sim_netif.garp_sent_count == 1);
+
+	/* 4. Simulate link restoration: AENQ LINK_CHANGE to 1 (IP unchanged) */
+	mock_ena_hw_inject_aenq_payload(&g_hw, ENA_ADMIN_LINK_CHANGE, 2, 1);
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_nb) == 0);
+
+	/* Verify link_state_get returns 1 */
+	assert(netdev->ops->link_state_get(netdev) == 1);
+
+	/* Poll interface on link up and send GARP with same unchanged IP */
+	mock_lwip_poll(&sim_netif, netdev);
+	assert(sim_netif.is_link_up == true);
+	mock_lwip_send_gratuitous_arp(&sim_netif);
+	assert(sim_netif.garp_sent_count == 2);
+	assert(sim_netif.last_grat_arp_ip == 0x0A000064);
+
+	/* Subsequent poll with link up does not resend */
+	mock_lwip_poll(&sim_netif, netdev);
+	mock_lwip_send_gratuitous_arp(&sim_netif);
+	assert(sim_netif.garp_sent_count == 2);
+
+	/* Changing IP address triggers another GARP */
+	sim_netif.ip4_addr = 0x0A0000C8; /* 10.0.0.200 */
+	mock_lwip_send_gratuitous_arp(&sim_netif);
+	assert(sim_netif.garp_sent_count == 3);
+	assert(sim_netif.last_grat_arp_ip == 0x0A0000C8);
+
+	/* Teardown */
+	assert(netdev->ops->dev_stop(netdev) == 0);
+	for (int i = 0; i < g_adapter.rx_rings[0]->sq_depth; i++) {
+		if (g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf) {
+			test_free(g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf);
+			g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf = NULL;
+		}
+	}
+	teardown_test_adapter(&g_adapter);
+	ena_netdev_free(netdev);
+}
+
 int main(void)
 {
 	printf("========================================\n");
@@ -1255,9 +1405,10 @@ int main(void)
 	RUN_TEST(test_validation_fault_rx_corrupt_length);
 	RUN_TEST(test_validation_aenq_runtime_wiring);
 	RUN_TEST(test_validation_rss_configuration);
+	RUN_TEST(test_validation_garp_link_flap);
 
 	printf("========================================\n");
-	printf("ALL PHASE 10 VALIDATION TESTS PASSED (20/20)\n");
+	printf("ALL PHASE 10 VALIDATION TESTS PASSED (21/21)\n");
 	printf("========================================\n");
 	return 0;
 }

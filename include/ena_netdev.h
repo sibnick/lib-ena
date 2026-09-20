@@ -114,6 +114,14 @@ int ena_netdev_tx_one(struct uk_netdev *dev, struct uk_netdev_tx_queue *queue, s
 bool ena_netdev_link_get(struct uk_netdev *dev);
 
 /**
+ * Get the link state of the network device.
+ *
+ * @param dev Pointer to the network device.
+ * @return 1 when the link is up, 0 when it is down.
+ */
+int ena_netdev_link_state_get(struct uk_netdev *dev);
+
+/**
  * Tear down all driver-owned resources of the device: hardware queues
  * (SQ and CQ of every ring, LLQ included), bounce buffers, software
  * rings, MSI-X vectors, and admin queues.
@@ -215,6 +223,7 @@ struct uk_netdev_ops {
 	int (*dev_stop)(struct uk_netdev *dev);
 	int (*rxq_recv)(struct uk_netdev *dev, uint16_t queue_id, struct uk_netbuf **pkt);
 	int (*txq_xmit)(struct uk_netdev *dev, uint16_t queue_id, struct uk_netbuf *pkt);
+	int (*link_state_get)(struct uk_netdev *dev);
 };
 
 /* Main Unikraft network device object */
@@ -260,6 +269,14 @@ int ena_netdev_register(struct uk_netdev *netdev);
  * @return true when the link is up, false when it is down.
  */
 bool ena_netdev_link_get(struct uk_netdev *dev);
+
+/**
+ * Get the link state of the network device.
+ *
+ * @param dev Pointer to the network device.
+ * @return 1 when the link is up, 0 when it is down.
+ */
+int ena_netdev_link_state_get(struct uk_netdev *dev);
 
 #endif /* !__Unikraft__ */
 

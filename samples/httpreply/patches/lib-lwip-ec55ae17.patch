@@ -417,7 +417,7 @@ index 258957f..4a75614 100644
  };
  
 diff --git a/uknetdev.c b/uknetdev.c
-index b13c5aa..effc6f2 100644
+index b13c5aa..eafd958 100644
 --- a/uknetdev.c
 +++ b/uknetdev.c
 @@ -92,6 +92,11 @@ struct lwip_netdev_data {
@@ -432,7 +432,24 @@ index b13c5aa..effc6f2 100644
  };
  
  /*
-@@ -318,6 +323,47 @@ void uknetdev_poll(struct netif *nf)
+@@ -301,6 +306,7 @@ static void uknetdev_input(struct uk_netdev *dev,
+ void uknetdev_poll(struct netif *nf)
+ {
+ 	struct uk_netdev *dev;
++	int link_up;
+ 
+ 	UK_ASSERT(nf);
+ 	/*
+@@ -315,9 +321,60 @@ void uknetdev_poll(struct netif *nf)
+ 	UK_ASSERT(dev);
+ 
+ 	uknetdev_input(dev, 0, nf);
++
++	link_up = uk_netdev_link_state_get(dev);
++	if (link_up && !netif_is_link_up(nf))
++		netif_set_link_up(nf);
++	else if (!link_up && netif_is_link_up(nf))
++		netif_set_link_down(nf);
  }
  
  #ifdef CONFIG_LWIP_NOTHREADS
@@ -458,8 +475,12 @@ index b13c5aa..effc6f2 100644
 +	UK_ASSERT(dev);
 +	lwip_data = (struct lwip_netdev_data *)dev->scratch_pad;
 +
-+	if (!(nf->flags & (NETIF_FLAG_UP | NETIF_FLAG_LINK_UP |
-+			   NETIF_FLAG_ETHARP)))
++	if (!netif_is_link_up(nf)) {
++		lwip_data->last_grat_arp_ip.addr = 0;
++		return;
++	}
++
++	if (!netif_is_up(nf) || !(nf->flags & NETIF_FLAG_ETHARP))
 +		return;
 +
 +	ip = *netif_ip4_addr(nf);
@@ -480,23 +501,23 @@ index b13c5aa..effc6f2 100644
  void uknetdev_poll_all(void)
  {
  	struct netif *nf;
-@@ -330,8 +376,14 @@ void uknetdev_poll_all(void)
+@@ -330,8 +387,14 @@ void uknetdev_poll_all(void)
  	 */
  	NETIF_FOREACH(nf) {
  		if (nf->name[0] == UKNETDEV_NETIF_NAME0
 -		    && nf->name[1] == UKNETDEV_NETIF_NAME1)
 +		    && nf->name[1] == UKNETDEV_NETIF_NAME1) {
+ 			uknetdev_poll(nf);
 +#if LWIP_IPV4 && LWIP_ARP
 +			/* Announce the address when the interface comes up
 +			 * or the address changes. */
 +			uknetdev_send_gratuitous_arp(nf);
 +#endif /* LWIP_IPV4 && LWIP_ARP */
- 			uknetdev_poll(nf);
 +		}
  	}
  }
  
-@@ -485,6 +537,9 @@ err_t uknetdev_init(struct netif *nf)
+@@ -485,6 +548,9 @@ err_t uknetdev_init(struct netif *nf)
  	if (!lwip_data->dev_info.max_rx_queues
  	    || !lwip_data->dev_info.max_tx_queues)
  		return ERR_IF;
@@ -506,3 +527,17 @@ index b13c5aa..effc6f2 100644
  #if CONFIG_LWIP_UKNETDEV_POLLONLY
  	/* Unset receive interrupt support: We force polling mode */
  	lwip_data->dev_info.features &= ~UK_NETDEV_F_RXQ_INTR;
+@@ -583,8 +649,11 @@ err_t uknetdev_init(struct netif *nf)
+ 
+ 	/* Device capabilities */
+ 	netif_set_flags(nf, (NETIF_FLAG_BROADCAST
+-			     | NETIF_FLAG_ETHARP
+-			     | NETIF_FLAG_LINK_UP));
++			     | NETIF_FLAG_ETHARP));
++	if (uk_netdev_link_state_get(dev))
++		netif_set_link_up(nf);
++	else
++		netif_set_link_down(nf);
+ 	LWIP_DEBUGF(NETIF_DEBUG,
+ 		    ("%s: %c%c%u: flags: %"PRIx8"\n",
+ 		     __func__, nf->name[0], nf->name[1], nf->num, nf->flags));

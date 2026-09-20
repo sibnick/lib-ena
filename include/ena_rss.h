@@ -119,6 +119,8 @@ struct ena_rss_info {
 	uint64_t hash_ctrl_phys;
 };
 
+#if !defined(__Unikraft__) || defined(CONFIG_LIBENA_RSS)
+
 /**
  * Initialize RSS software structures and allocate DMA control buffers.
  *
@@ -169,5 +171,51 @@ int ena_rss_set_ind_table(struct ena_adapter *adapter, uint16_t num_queues);
  * @return 0 on success, or a negative errno value on error.
  */
 int ena_rss_configure(struct ena_adapter *adapter, uint16_t num_queues);
+
+#else /* defined(__Unikraft__) && !defined(CONFIG_LIBENA_RSS) */
+
+static inline int ena_rss_init(struct ena_adapter *adapter)
+{
+	(void)adapter;
+	return 0;
+}
+
+static inline void ena_rss_fini(struct ena_adapter *adapter)
+{
+	(void)adapter;
+}
+
+static inline int ena_rss_set_hash_key(struct ena_adapter *adapter,
+				       const uint8_t *key, size_t key_len)
+{
+	(void)adapter;
+	(void)key;
+	(void)key_len;
+	return 0;
+}
+
+static inline int ena_rss_set_hash_ctrl(struct ena_adapter *adapter)
+{
+	(void)adapter;
+	return 0;
+}
+
+static inline int ena_rss_set_ind_table(struct ena_adapter *adapter,
+					uint16_t num_queues)
+{
+	(void)adapter;
+	(void)num_queues;
+	return 0;
+}
+
+static inline int ena_rss_configure(struct ena_adapter *adapter,
+				    uint16_t num_queues)
+{
+	(void)adapter;
+	(void)num_queues;
+	return 0;
+}
+
+#endif /* !CONFIG_LIBENA_RSS */
 
 #endif /* LIBENA_ENA_RSS_H */
