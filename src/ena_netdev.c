@@ -214,6 +214,10 @@ static void ena_netdev_cleanup_adapter_rings(struct ena_adapter *adapter)
 		adapter->tx_rings = NULL;
 		adapter->num_tx_rings = 0;
 	}
+
+#if !defined(__Unikraft__) || defined(CONFIG_LIBENA_RSS)
+	ena_rss_fini(adapter);
+#endif
 }
 
 /* Inspect packet payload and classify L3 and L4 protocols */
@@ -489,6 +493,14 @@ bool ena_netdev_link_get(struct uk_netdev *dev)
 	return edev->adapter.link_up;
 }
 
+int ena_netdev_link_state_get(struct uk_netdev *dev)
+{
+	if (!dev)
+		return 0;
+
+	return ena_netdev_link_get(dev) ? 1 : 0;
+}
+
 static int ena_netdev_configure(struct uk_netdev *dev, const struct uk_netdev_conf *conf)
 {
 	struct ena_uk_device *edev = to_enadevice(dev);
@@ -746,6 +758,15 @@ static int ena_netdev_start(struct uk_netdev *dev)
 				      ena_netbuf_alloc_helper, &edev->rx_queues[q], NULL);
 		}
 	}
+
+#if !defined(__Unikraft__) || defined(CONFIG_LIBENA_RSS)
+	if (adapter->num_rx_rings > 1) {
+		ret = ena_rss_configure(adapter, adapter->num_rx_rings);
+		if (ret) {
+			ena_warn("netdev start: RSS configuration failed (%d)", ret);
+		}
+	}
+#endif
 
 	return 0;
 }
@@ -1016,6 +1037,7 @@ const struct uk_netdev_ops ena_ops = {
 	.rxq_configure   = ena_netdev_rxq_configure,
 	.txq_configure   = ena_netdev_txq_configure,
 	.start           = ena_netdev_start,
+	.link_state_get  = ena_netdev_link_state_get,
 };
 
 #else /* !__Unikraft__ (Standalone Test Suite) */
@@ -1232,6 +1254,13 @@ static int ena_netdev_start(struct uk_netdev *dev)
 	ret = ena_netdev_start_rings_hw(dev->adapter, dev->nb_rx_queues, dev->nb_tx_queues);
 	if (ret)
 		return ret;
+
+	if (dev->nb_rx_queues > 1) {
+		ret = ena_rss_configure(dev->adapter, dev->nb_rx_queues);
+		if (ret) {
+			ena_warn("netdev start: RSS configuration failed (%d)", ret);
+		}
+	}
 
 	dev->state = UK_NETDEV_RUNNING;
 	return 0;
@@ -1455,6 +1484,7 @@ static const struct uk_netdev_ops ena_ops = {
 	.dev_stop      = ena_netdev_stop,
 	.rxq_recv      = ena_netdev_rxq_recv,
 	.txq_xmit      = ena_netdev_txq_xmit,
+	.link_state_get = ena_netdev_link_state_get,
 };
 
 struct uk_netdev *ena_netdev_alloc(struct ena_adapter *adapter)
@@ -1520,6 +1550,14 @@ bool ena_netdev_link_get(struct uk_netdev *dev)
 		return false;
 
 	return dev->adapter->link_up;
+}
+
+int ena_netdev_link_state_get(struct uk_netdev *dev)
+{
+	if (!dev)
+		return 0;
+
+	return ena_netdev_link_get(dev) ? 1 : 0;
 }
 
 #endif /* !__Unikraft__ */

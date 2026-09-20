@@ -30,3 +30,6 @@ LIBENA_SRCS-y += $(LIBENA_BASE)/src/ena_intr.c
 
 # Phase 9 sources (Low Latency Queue direct push mode).
 LIBENA_SRCS-$(CONFIG_LIBENA_LLQ) += $(LIBENA_BASE)/src/ena_llq.c
+
+# Phase 14 sources (Hardware Receive Side Scaling).
+LIBENA_SRCS-$(CONFIG_LIBENA_RSS) += $(LIBENA_BASE)/src/ena_rss.c

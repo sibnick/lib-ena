@@ -13,6 +13,7 @@
 #include "ena_init.h"
 #include "ena_datapath.h"
 #include "ena_llq.h"
+#include "ena_rss.h"
 
 /* Forward declarations */
 struct ena_adapter;
@@ -112,6 +113,9 @@ struct ena_adapter {
 
 	/* Phase 9: Low Latency Queue (LLQ) */
 	struct ena_llq_info llq_info;
+
+	/* Phase 14: Hardware Receive Side Scaling (RSS) */
+	struct ena_rss_info rss_info;
 };
 
 /* Function prototypes for Phase 1 */

@@ -18,11 +18,14 @@ struct ena_adapter;
 /* Feature IDs for the get/set feature admin commands
  * (reference/ena_admin_defs.h, enum ena_admin_aq_feature_id). */
 enum ena_admin_aq_feature_id {
-	ENA_ADMIN_DEVICE_ATTRIBUTES	= 1,
-	ENA_ADMIN_MAX_QUEUES_NUM	= 2,
-	ENA_ADMIN_LLQ			= 4,
-	ENA_ADMIN_MTU			= 14,
-	ENA_ADMIN_HOST_ATTR_CONFIG	= 28,
+	ENA_ADMIN_DEVICE_ATTRIBUTES		= 1,
+	ENA_ADMIN_MAX_QUEUES_NUM		= 2,
+	ENA_ADMIN_LLQ				= 4,
+	ENA_ADMIN_RSS_HASH_FUNCTION		= 10,
+	ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG	= 12,
+	ENA_ADMIN_MTU				= 14,
+	ENA_ADMIN_RSS_HASH_INPUT		= 18,
+	ENA_ADMIN_HOST_ATTR_CONFIG		= 28,
 };
 
 /* OS types (reference/ena_admin_defs.h, enum ena_admin_os_type). */
