@@ -324,7 +324,10 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 		       req->u.inline_data_w1;
 		hw->last_feat_flags = feat->flags;
 
-		if (req->aq_common_desc.opcode == ENA_ADMIN_GET_FEATURE) {
+		if (feat->ctrl_len > 0 &&
+		    !(req->aq_common_desc.flags & ENA_ADMIN_AQ_COMMON_DESC_CTRL_DATA_INDIRECT_MASK)) {
+			status = ENA_ADMIN_ILLEGAL_PARAMETER;
+		} else if (req->aq_common_desc.opcode == ENA_ADMIN_GET_FEATURE) {
 			switch (feat->feature_id) {
 			case ENA_ADMIN_DEVICE_ATTRIBUTES: {
 				struct ena_admin_device_attr_feature_desc *attr;
@@ -417,12 +420,16 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 				const struct ena_admin_feature_rss_flow_hash_function *func =
 					(const struct ena_admin_feature_rss_flow_hash_function *)feat->raw;
 
-				hw->rss_hash_func = func->selected_func;
-				if (ctrl && feat->ctrl_len >= sizeof(*ctrl)) {
-					memcpy(hw->rss_hash_key, ctrl->key, sizeof(hw->rss_hash_key));
-					hw->rss_set_key_count++;
+				if (func->selected_func != (1u << ENA_ADMIN_TOEPLITZ)) {
+					status = ENA_ADMIN_ILLEGAL_PARAMETER;
+				} else {
+					hw->rss_hash_func = func->selected_func;
+					if (ctrl && feat->ctrl_len >= sizeof(*ctrl)) {
+						memcpy(hw->rss_hash_key, ctrl->key, sizeof(hw->rss_hash_key));
+						hw->rss_set_key_count++;
+					}
+					filled = 1;
 				}
-				filled = 1;
 			} else if (feat->feature_id == ENA_ADMIN_RSS_HASH_INPUT) {
 				uint64_t ctrl_phys = (uint64_t)feat->ctrl_lo |
 						     ((uint64_t)feat->ctrl_hi << 32);
@@ -444,13 +451,19 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 				const struct ena_admin_rss_ind_table_entry *tbl =
 					(const struct ena_admin_rss_ind_table_entry *)(uintptr_t)ctrl_phys;
 
-				if (tbl && ind_req->size <= 128) {
-					hw->rss_ind_table_size = ind_req->size;
-					for (int k = 0; k < ind_req->size; k++)
-						hw->rss_ind_table[k] = tbl[k].cq_idx;
-					hw->rss_set_ind_count++;
+				if (ind_req->size > 7) {
+					status = ENA_ADMIN_ILLEGAL_PARAMETER;
+				} else {
+					uint32_t count = 1u << ind_req->size;
+
+					if (tbl) {
+						hw->rss_ind_table_size = (uint16_t)count;
+						for (uint32_t k = 0; k < count; k++)
+							hw->rss_ind_table[k] = tbl[k].cq_idx;
+						hw->rss_set_ind_count++;
+					}
+					filled = 1;
 				}
-				filled = 1;
 			} else {
 				status = ENA_ADMIN_ILLEGAL_PARAMETER;
 			}

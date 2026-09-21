@@ -763,7 +763,8 @@ static int ena_netdev_start(struct uk_netdev *dev)
 	if (adapter->num_rx_rings > 1) {
 		ret = ena_rss_configure(adapter, adapter->num_rx_rings);
 		if (ret) {
-			ena_warn("netdev start: RSS configuration failed (%d)", ret);
+			ena_err("netdev start: RSS configuration failed (%d)", ret);
+			return ret;
 		}
 	}
 #endif
@@ -1258,7 +1259,8 @@ static int ena_netdev_start(struct uk_netdev *dev)
 	if (dev->nb_rx_queues > 1) {
 		ret = ena_rss_configure(dev->adapter, dev->nb_rx_queues);
 		if (ret) {
-			ena_warn("netdev start: RSS configuration failed (%d)", ret);
+			ena_err("netdev start: RSS configuration failed (%d)", ret);
+			return ret;
 		}
 	}
 

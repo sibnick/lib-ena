@@ -37,9 +37,19 @@ int ena_rss_init(struct ena_adapter *adapter)
 	size_t ind_tbl_size;
 	size_t key_size;
 	size_t ctrl_size;
+	uint32_t req_features;
 
 	if (!adapter)
 		return -EINVAL;
+
+	req_features = (1u << ENA_ADMIN_RSS_HASH_FUNCTION) |
+		       (1u << ENA_ADMIN_RSS_HASH_INPUT) |
+		       (1u << ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG);
+	if ((adapter->supported_features & req_features) != req_features) {
+		ena_warn("rss: device does not support required RSS features (0x%x vs 0x%x)",
+			 adapter->supported_features, req_features);
+		return -EOPNOTSUPP;
+	}
 
 	rss = &adapter->rss_info;
 	if (rss->host_ind_table && rss->ind_table)
@@ -149,8 +159,7 @@ int ena_rss_set_hash_key(struct ena_adapter *adapter, const uint8_t *key, size_t
 	memset(&req, 0, sizeof(req));
 	req.feat_common.flags = ENA_ADMIN_FEAT_SELECT_CURRENT;
 	req.feat_common.feature_id = ENA_ADMIN_RSS_HASH_FUNCTION;
-	req.flow_hash_func.supported_func = ENA_ADMIN_TOEPLITZ;
-	req.flow_hash_func.selected_func = ENA_ADMIN_TOEPLITZ;
+	req.flow_hash_func.selected_func = (1u << ENA_ADMIN_TOEPLITZ);
 	req.flow_hash_func.init_val = 0;
 
 	req.control_buffer.length = sizeof(struct ena_admin_feature_rss_flow_hash_control);
@@ -202,6 +211,9 @@ int ena_rss_set_hash_ctrl(struct ena_adapter *adapter)
 	memset(&req, 0, sizeof(req));
 	req.feat_common.flags = ENA_ADMIN_FEAT_SELECT_CURRENT;
 	req.feat_common.feature_id = ENA_ADMIN_RSS_HASH_INPUT;
+	req.flow_hash_input.enabled_input_sort =
+		ENA_ADMIN_FEATURE_RSS_FLOW_HASH_INPUT_L3_SORT_MASK |
+		ENA_ADMIN_FEATURE_RSS_FLOW_HASH_INPUT_L4_SORT_MASK;
 
 	req.control_buffer.length = sizeof(struct ena_admin_feature_rss_hash_control);
 	req.control_buffer.address.mem_addr_low = (uint32_t)(rss->hash_ctrl_phys & 0xFFFFFFFFu);
@@ -246,7 +258,7 @@ int ena_rss_set_ind_table(struct ena_adapter *adapter, uint16_t num_queues)
 	memset(&req, 0, sizeof(req));
 	req.feat_common.flags = ENA_ADMIN_FEAT_SELECT_CURRENT;
 	req.feat_common.feature_id = ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG;
-	req.ind_table.size = rss->ind_table_size;
+	req.ind_table.size = (uint16_t)__builtin_ctz(rss->ind_table_size);
 	req.ind_table.inline_index = 0xFFFFFFFFu; /* Set entire table via control buffer */
 
 	req.control_buffer.length = (uint32_t)(rss->ind_table_size *
