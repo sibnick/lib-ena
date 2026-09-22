@@ -426,11 +426,19 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 	}
 
 	if (acq->acq_common_desc.status != 0) {
-		ena_err("exec_cmd: device status %u, ext_status %u for opcode %u command %u",
-			 acq->acq_common_desc.status,
-			 acq->acq_common_desc.extended_status,
-			 opcode,
-			 acq->acq_common_desc.command & ENA_ADMIN_COMMAND_ID_MASK);
+		if (opcode == ENA_ADMIN_GET_FEATURE &&
+		    acq->acq_common_desc.status == ENA_ADMIN_UNSUPPORTED_OPCODE) {
+			ena_debug("exec_cmd: feature not supported (status %u) for opcode %u command %u",
+				acq->acq_common_desc.status,
+				opcode,
+				acq->acq_common_desc.command & ENA_ADMIN_COMMAND_ID_MASK);
+		} else {
+			ena_err("exec_cmd: device status %u, ext_status %u for opcode %u command %u",
+				 acq->acq_common_desc.status,
+				 acq->acq_common_desc.extended_status,
+				 opcode,
+				 acq->acq_common_desc.command & ENA_ADMIN_COMMAND_ID_MASK);
+		}
 		return -(int)acq->acq_common_desc.status;
 	}
 

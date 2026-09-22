@@ -37,17 +37,13 @@ int ena_rss_init(struct ena_adapter *adapter)
 	size_t ind_tbl_size;
 	size_t key_size;
 	size_t ctrl_size;
-	uint32_t req_features;
 
 	if (!adapter)
 		return -EINVAL;
 
-	req_features = (1u << ENA_ADMIN_RSS_HASH_FUNCTION) |
-		       (1u << ENA_ADMIN_RSS_HASH_INPUT) |
-		       (1u << ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG);
-	if ((adapter->supported_features & req_features) != req_features) {
-		ena_warn("rss: device does not support required RSS features (0x%x vs 0x%x)",
-			 adapter->supported_features, req_features);
+	if (!(adapter->supported_features & (1u << ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG))) {
+		ena_warn("rss: device does not support indirection table (features=0x%x)",
+			 adapter->supported_features);
 		return -EOPNOTSUPP;
 	}
 
@@ -71,23 +67,27 @@ int ena_rss_init(struct ena_adapter *adapter)
 	}
 	memset(rss->ind_table, 0, ind_tbl_size);
 
-	key_size = sizeof(struct ena_admin_feature_rss_flow_hash_control);
-	rss->hash_key = (struct ena_admin_feature_rss_flow_hash_control *)
-		ena_dma_alloc(key_size, &rss->hash_key_phys);
-	if (!rss->hash_key) {
-		ena_rss_fini(adapter);
-		return -ENOMEM;
+	if (adapter->supported_features & (1u << ENA_ADMIN_RSS_HASH_FUNCTION)) {
+		key_size = sizeof(struct ena_admin_feature_rss_flow_hash_control);
+		rss->hash_key = (struct ena_admin_feature_rss_flow_hash_control *)
+			ena_dma_alloc(key_size, &rss->hash_key_phys);
+		if (!rss->hash_key) {
+			ena_rss_fini(adapter);
+			return -ENOMEM;
+		}
+		memset(rss->hash_key, 0, key_size);
 	}
-	memset(rss->hash_key, 0, key_size);
 
-	ctrl_size = sizeof(struct ena_admin_feature_rss_hash_control);
-	rss->hash_ctrl = (struct ena_admin_feature_rss_hash_control *)
-		ena_dma_alloc(ctrl_size, &rss->hash_ctrl_phys);
-	if (!rss->hash_ctrl) {
-		ena_rss_fini(adapter);
-		return -ENOMEM;
+	if (adapter->supported_features & (1u << ENA_ADMIN_RSS_HASH_INPUT)) {
+		ctrl_size = sizeof(struct ena_admin_feature_rss_hash_control);
+		rss->hash_ctrl = (struct ena_admin_feature_rss_hash_control *)
+			ena_dma_alloc(ctrl_size, &rss->hash_ctrl_phys);
+		if (!rss->hash_ctrl) {
+			ena_rss_fini(adapter);
+			return -ENOMEM;
+		}
+		memset(rss->hash_ctrl, 0, ctrl_size);
 	}
-	memset(rss->hash_ctrl, 0, ctrl_size);
 
 	rss->supported = true;
 	return 0;
@@ -288,13 +288,17 @@ int ena_rss_configure(struct ena_adapter *adapter, uint16_t num_queues)
 	if (ret)
 		return ret;
 
-	ret = ena_rss_set_hash_key(adapter, NULL, 0);
-	if (ret)
-		return ret;
+	if (adapter->supported_features & (1u << ENA_ADMIN_RSS_HASH_FUNCTION)) {
+		ret = ena_rss_set_hash_key(adapter, NULL, 0);
+		if (ret)
+			return ret;
+	}
 
-	ret = ena_rss_set_hash_ctrl(adapter);
-	if (ret)
-		return ret;
+	if (adapter->supported_features & (1u << ENA_ADMIN_RSS_HASH_INPUT)) {
+		ret = ena_rss_set_hash_ctrl(adapter);
+		if (ret)
+			return ret;
+	}
 
 	ret = ena_rss_set_ind_table(adapter, num_queues);
 	if (ret)
