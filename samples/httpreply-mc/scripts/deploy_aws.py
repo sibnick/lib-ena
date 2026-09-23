@@ -75,6 +75,7 @@ def create_bootable_disk(kernel_path):
     for f in Path("/usr/lib/grub/i386-pc").glob("*.lst"):
         shutil.copy(f, grub_dir)
 
+    cidr = sum(bin(int(x)).count('1') for x in NETMASK.split('.')) if '.' in NETMASK else NETMASK
     # Write grub.cfg
     grub_cfg = f"""set default=0
 set timeout=0
@@ -84,7 +85,7 @@ terminal_input serial console
 terminal_output serial console
 
 menuentry "Unikraft Hello World (AWS ENA)" {{
-    multiboot /boot/unikraft.bin netdev.ipv4_addr={PRIVATE_IP} netdev.ipv4_gw_addr={GATEWAY_IP} netdev.ipv4_mask={NETMASK}
+    multiboot /boot/unikraft.bin unikraft netdev.ip={PRIVATE_IP}/{cidr}:{GATEWAY_IP} --
     boot
 }}
 """

@@ -28,8 +28,26 @@
 #include <uk/sched.h>
 #include <uk/sched_impl.h>
 #include <uk/thread.h>
+#include <uk/schedcoop.h>
+#include <uk/alloc.h>
+#include <uk/lcpu.h>
+#include <uk/lcpu/pm.h>
+#include <uk/pcpuvar.h>
+#if defined(CONFIG_LIBUKBOOT_PERCORE_HEAP) && CONFIG_LIBUKBOOT_PERCORE_HEAP
+#include <uk/allocbbuddy.h>
+
+/*
+ * These live in lib/ukboot. They are declared here directly
+ * to avoid including uk/boot.h in the app target.
+ */
+unsigned int uk_percore_heap_count(void);
+int uk_percore_heap_get(unsigned int i, __uptr *base, __sz *len);
+#endif
 #include <lwip/timeouts.h>
+#include <lwip/netif.h>
+#include <lwip/etharp.h>
 #include "netif/uknetdev.h"
+#include "lwip_percore.h"
 
 #define MC_MAX_WORKERS 2
 #define MC_RECVBUF_SIZE 4096
@@ -74,6 +92,97 @@ struct worker_ctx {
 
 static struct worker_ctx mc_workers[MC_MAX_WORKERS];
 static int mc_nworkers;
+
+#if defined(CONFIG_LIBUKBOOT_PERCORE_HEAP) && CONFIG_LIBUKBOOT_PERCORE_HEAP
+/* Highest core index with a bound per-core allocator (cores 1..N). */
+static int mc_percore_ready;
+#endif
+
+/* One-shot alloc/free stress per core, run at worker start. */
+static int mc_selftest_done[MC_MAX_WORKERS];
+
+/*
+ * Bounded alloc/free stress on this core's own allocator. Proves
+ * that each core only touches its own region while all cores run
+ * at the same time.
+ */
+static void mc_percore_alloc_selftest(unsigned int core_id)
+{
+	unsigned int i;
+	unsigned int n = 4096;
+
+	if (mc_selftest_done[core_id])
+		return;
+	mc_selftest_done[core_id] = 1;
+
+	for (i = 0; i < n; i++) {
+		size_t sz = 4096 + (i * 65536) % 262144;
+		void *p = malloc(sz);
+
+		if (!p) {
+			printf("httpreply-mc: [ERR] core %u alloc self-test "
+			       "failed at iteration %u (size %zu)\n",
+			       (unsigned)core_id, i, sz);
+			return;
+		}
+		memset(p, 0x5A, sz);
+		free(p);
+	}
+
+	printf("httpreply-mc: core %u alloc self-test passed (%u iterations)\n",
+	       (unsigned)core_id, n);
+}
+
+/*
+ * Create a standalone bbuddy allocator on each per-core heap
+ * partition and bind it to that core's per-CPU slot. Core i uses
+ * partition i - 1. Core 0 keeps the default allocator.
+ */
+static void mc_percore_alloc_init(void)
+{
+#if defined(CONFIG_LIBUKBOOT_PERCORE_HEAP) && CONFIG_LIBUKBOOT_PERCORE_HEAP
+	unsigned int n = uk_percore_heap_count();
+	unsigned int i;
+
+	mc_percore_ready = 0;
+
+	for (i = 1; i <= n && i < MC_MAX_WORKERS &&
+	     i < CONFIG_UKPLAT_CPU_MAXCOUNT; i++) {
+		__uptr base;
+		__sz len;
+		struct uk_alloc *a;
+
+		if (uk_percore_heap_get(i - 1, &base, &len) < 0)
+			break;
+
+		a = uk_allocbbuddy_init((void *)base, len);
+		if (!a)
+			break;
+
+		uk_pcpuvar_lval(i, uk_pcpuvar_percore_alloc) = a;
+		mc_percore_ready = i;
+		printf("httpreply-mc: core %u per-core allocator %p+%lu\n",
+		       (unsigned)i, (void *)base, (unsigned long)len);
+	}
+
+	if (mc_percore_ready == 0)
+		printf("httpreply-mc: [WARN] no per-core heap partitions available\n");
+#endif
+}
+
+/*
+ * A core may run only when its per-core allocator slot is bound.
+ * Core 0 always runs on the default allocator.
+ */
+static int mc_core_has_percore_alloc(unsigned int core)
+{
+#if defined(CONFIG_LIBUKBOOT_PERCORE_HEAP) && CONFIG_LIBUKBOOT_PERCORE_HEAP
+	return (core == 0) || (core <= mc_percore_ready);
+#else
+	(void)core;
+	return 1;
+#endif
+}
 
 /*
  * Get the scheduler that owns vCPU idx by walking uk_sched_head,
@@ -125,6 +234,12 @@ static int set_epoll_events(int epfd, int fd, uint32_t events)
  */
 static void drive_core_stack(int core_id)
 {
+	static unsigned long poll_cnt[MC_MAX_WORKERS];
+	if ((++poll_cnt[core_id] % 5000000UL) == 0) {
+		struct tcp_pcb_listen *l = lwip_get_core_state()->tcp_listen_pcbs.listen_pcbs;
+		printf("httpreply-mc: core %d heartbeat (polls=%lu, lwip_core=%u, listen_pcb=%p)\n",
+		       core_id, poll_cnt[core_id], lwip_current_core_id(), (void *)l);
+	}
 	uknetdev_poll_rxqueue((uint16_t)core_id);
 	sys_check_timeouts();
 }
@@ -196,11 +311,16 @@ static void drop_connection(struct worker_ctx *w, int fd)
  * Create an independent listener socket on LISTEN_PORT with SO_REUSEPORT.
  * Each core creates its own listener inside its local lwIP state.
  */
-static int create_core_listener(void)
+static int create_core_listener(int core_id)
 {
 	struct sockaddr_in addr;
 	int opt = 1;
 	int fd;
+	struct tcp_pcb_listen *l;
+
+	printf("httpreply-mc: core %d create_core_listener starting (lwip_core %u, pcpu_idx %lu)\n",
+	       core_id, lwip_current_core_id(),
+	       (unsigned long)uk_pcpuvar_current_get(uk_pcpuvar_cpu_idx));
 
 	fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
 	if (fd < 0) {
@@ -239,6 +359,10 @@ static int create_core_listener(void)
 		return -1;
 	}
 
+	l = lwip_get_core_state()->tcp_listen_pcbs.listen_pcbs;
+	printf("httpreply-mc: core %d listener fd=%d (lwip_core %u, listen_pcb=%p)\n",
+	       core_id, fd, lwip_current_core_id(), (void *)l);
+
 	return fd;
 }
 
@@ -248,13 +372,14 @@ static int create_core_listener(void)
  */
 static __noreturn void run_to_completion_worker(int core_id)
 {
+	mc_percore_alloc_selftest(core_id);
 	struct worker_ctx *w = &mc_workers[core_id];
 	struct epoll_event events[MAX_EVENTS];
 	struct epoll_event ev;
 	int server_fd;
 	int n, i;
 
-	server_fd = create_core_listener();
+	server_fd = create_core_listener(core_id);
 	if (server_fd < 0) {
 		printf("httpreply-mc: [ERR] core %d failed to create listener\n",
 		       core_id);
@@ -305,6 +430,11 @@ static __noreturn void run_to_completion_worker(int core_id)
 						      &client_len, SOCK_NONBLOCK);
 					if (cfd < 0)
 						break;
+
+					printf("httpreply-mc: core %d ACCEPTED fd=%d from %s:%d\n",
+					       core_id, cfd,
+					       ip4addr_ntoa((const ip4_addr_t *)&client_addr.sin_addr),
+					       ntohs(client_addr.sin_port));
 
 					configure_socket_options(cfd);
 
@@ -379,6 +509,104 @@ static __noreturn void worker_thread(void *arg)
 	run_to_completion_worker(w->worker_id);
 }
 
+static __noreturn void mc_secondary_entry(void *arg)
+{
+	struct uk_lcpu *this_lcpu = (struct uk_lcpu *)arg;
+	struct uk_alloc *a = uk_alloc_get_default();
+	struct uk_sched *sec_s;
+	int r;
+
+	r = uk_lcpu_init(this_lcpu);
+	if (unlikely(r))
+		uk_lcpu_halt();
+
+	uk_lcpu_enable_irq();
+
+	sec_s = uk_schedcoop_create(a, a, a, a);
+	if (unlikely(!sec_s))
+		uk_lcpu_halt();
+
+	uk_sched_register(sec_s);
+	uk_sched_start(sec_s);
+
+	while (1) {
+		uk_sched_yield();
+	}
+}
+
+static void mc_boot_secondary_cores(void)
+{
+#if CONFIG_HAVE_SMP && (CONFIG_UKPLAT_CPU_MAXCOUNT > 1)
+	struct uk_alloc *a = uk_alloc_get_default();
+	__u64 ap_idx[MC_MAX_WORKERS];
+	__uptr ap_sp[MC_MAX_WORKERS];
+	__uptr ap_entry[MC_MAX_WORKERS];
+	unsigned int num_aps = 0;
+	unsigned int i;
+	int rc;
+
+	for (i = 1; i < MC_MAX_WORKERS && i < CONFIG_UKPLAT_CPU_MAXCOUNT; i++) {
+		void *stk;
+
+		if (!mc_core_has_percore_alloc(i)) {
+			printf("httpreply-mc: [INFO] core %u not started: "
+			       "no per-core allocator bound\n", (unsigned)i);
+			continue;
+		}
+
+		stk = uk_malloc(a, 16384);
+		if (!stk)
+			continue;
+		ap_idx[num_aps] = i;
+		ap_sp[num_aps] = (__uptr)stk + 16384;
+		ap_entry[num_aps] = (__uptr)mc_secondary_entry;
+		num_aps++;
+	}
+
+	if (num_aps > 0) {
+		unsigned int started = num_aps;
+		int j;
+
+		rc = uk_lcpu_start(ap_idx, &started, ap_sp, ap_entry, 0);
+		if (rc != 0)
+			printf("httpreply-mc: [ERR] uk_lcpu_start failed: %d\n",
+			       rc);
+
+		for (j = 0; j < (int)started; j++) {
+			unsigned long spins;
+			int online = 0;
+
+			/* Bounded wait for the AP to come online */
+			for (spins = 0; spins < 200000000UL; spins++) {
+				if (uk_lcpu_state_is_online(
+					    uk_pcpuvar_lval(ap_idx[j],
+							       uk_lcpus).state)) {
+					online = 1;
+					break;
+				}
+				__asm__ __volatile__("pause");
+			}
+			if (!online) {
+				printf("httpreply-mc: [WARN] lcpu %u did not come online\n",
+				       (unsigned)ap_idx[j]);
+				continue;
+			}
+
+			/* Wait for secondary scheduler to register on uk_sched_head */
+			for (spins = 0; spins < 200000000UL; spins++) {
+				unsigned int count = 0;
+				struct uk_sched *sch;
+				for (sch = uk_sched_head; sch != NULL; sch = sch->next)
+					count++;
+				if (count > (unsigned int)j + 1)
+					break;
+				__asm__ __volatile__("pause");
+			}
+		}
+	}
+#endif
+}
+
 int main(int argc, char **argv)
 {
 	int i;
@@ -395,6 +623,10 @@ int main(int argc, char **argv)
 	printf(" Stack: lwIP per-core state (SO_REUSEPORT)\n");
 	printf("=============================================\n\n");
 
+	mc_percore_alloc_init();
+
+	mc_boot_secondary_cores();
+
 	mc_nworkers = 0;
 	for (s = uk_sched_head; s != NULL && mc_nworkers < MC_MAX_WORKERS; s = s->next)
 		mc_nworkers++;
@@ -403,6 +635,57 @@ int main(int argc, char **argv)
 		mc_nworkers = 1;
 
 	printf("httpreply-mc: detected %d worker cores\n", mc_nworkers);
+	if (netif_default) {
+		printf("httpreply-mc: [INFO] netif %c%c%u IP %s gw %s\n",
+		       netif_default->name[0], netif_default->name[1],
+		       netif_default->num,
+		       ip4addr_ntoa(netif_ip4_addr(netif_default)),
+		       ip4addr_ntoa(netif_ip4_gw(netif_default)));
+
+		if (!ip4_addr_isany_val(*netif_ip4_gw(netif_default))) {
+			const ip4_addr_t *gw = netif_ip4_gw(netif_default);
+			struct eth_addr gw_eth;
+			int resolved = 0;
+			unsigned long spins;
+
+			printf("httpreply-mc: resolving gateway %s ARP...\n", ip4addr_ntoa(gw));
+			etharp_request(netif_default, gw);
+
+			for (spins = 0; spins < 20000000UL; spins++) {
+				drive_core_stack(0);
+				struct lwip_core_state *cs0 = lwip_get_core_state_by_id(0);
+				int k;
+				for (k = 0; k < ARP_TABLE_SIZE; k++) {
+					if (cs0->arp_table[k].state >= 2 &&
+					    ip4_addr_cmp(gw, &cs0->arp_table[k].ipaddr)) {
+						memcpy(&gw_eth, &cs0->arp_table[k].ethaddr, sizeof(gw_eth));
+						resolved = 1;
+						break;
+					}
+				}
+				if (resolved)
+					break;
+				if ((spins % 2000000UL) == 0 && spins > 0)
+					etharp_request(netif_default, gw);
+			}
+
+			if (resolved) {
+				printf("httpreply-mc: gateway ARP resolved to %02x:%02x:%02x:%02x:%02x:%02x\n",
+				       gw_eth.addr[0], gw_eth.addr[1], gw_eth.addr[2],
+				       gw_eth.addr[3], gw_eth.addr[4], gw_eth.addr[5]);
+				for (i = 0; i < mc_nworkers; i++) {
+					struct lwip_core_state *cs = lwip_get_core_state_by_id(i);
+					cs->arp_table[0].state = 5; /* ETHARP_STATE_STATIC */
+					cs->arp_table[0].netif = netif_default;
+					ip4_addr_copy(cs->arp_table[0].ipaddr, *gw);
+					memcpy(&cs->arp_table[0].ethaddr, &gw_eth, sizeof(gw_eth));
+					cs->arp_table[0].ctime = 0;
+				}
+			} else {
+				printf("httpreply-mc: [WARN] gateway ARP resolution timed out\n");
+			}
+		}
+	}
 
 	for (i = 0; i < mc_nworkers; i++) {
 		mc_workers[i].worker_id = i;

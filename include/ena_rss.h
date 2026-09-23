@@ -75,6 +75,9 @@ struct ena_admin_feature_rss_flow_hash_input {
 	uint16_t enabled_input_sort;
 };
 
+#define ENA_ADMIN_FEATURE_RSS_FLOW_HASH_INPUT_L3_SORT_MASK	0x02
+#define ENA_ADMIN_FEATURE_RSS_FLOW_HASH_INPUT_L4_SORT_MASK	0x04
+
 /* Flow hash field entry per protocol. */
 struct ena_admin_proto_input {
 	uint16_t fields;

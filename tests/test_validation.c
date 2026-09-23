@@ -1164,7 +1164,7 @@ static void test_validation_rss_configuration(void)
 
 	/* Verify mock hardware received RSS settings */
 	assert(g_hw.rss_set_key_count == 1);
-	assert(g_hw.rss_hash_func == ENA_ADMIN_TOEPLITZ);
+	assert(g_hw.rss_hash_func == (1u << ENA_ADMIN_TOEPLITZ));
 	assert(g_hw.rss_set_ctrl_count == 1);
 	assert(g_hw.rss_tcp4_fields == (ENA_ADMIN_RSS_L3_SA | ENA_ADMIN_RSS_L3_DA |
 					ENA_ADMIN_RSS_L4_SP | ENA_ADMIN_RSS_L4_DP));

@@ -75,10 +75,12 @@ struct ena_admin_aenq_entry {
 	uint32_t inline_data_w4[12];
 };
 
-/* Phase bit masks (all in the flags byte, bit 0). */
-#define ENA_ADMIN_AQ_PHASE_MASK		0x01
-#define ENA_ADMIN_ACQ_PHASE_MASK	0x01
-#define ENA_ADMIN_AENQ_PHASE_MASK	0x01
+/* Phase and control data bit masks in flags byte. */
+#define ENA_ADMIN_AQ_PHASE_MASK				0x01
+#define ENA_ADMIN_AQ_COMMON_DESC_CTRL_DATA_MASK		0x02
+#define ENA_ADMIN_AQ_COMMON_DESC_CTRL_DATA_INDIRECT_MASK	0x04
+#define ENA_ADMIN_ACQ_PHASE_MASK			0x01
+#define ENA_ADMIN_AENQ_PHASE_MASK			0x01
 
 /* Command id field width (bits 11:0). */
 #define ENA_ADMIN_COMMAND_ID_MASK	0x0FFF

@@ -41,6 +41,12 @@ int ena_rss_init(struct ena_adapter *adapter)
 	if (!adapter)
 		return -EINVAL;
 
+	if (!(adapter->supported_features & (1u << ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG))) {
+		ena_warn("rss: device does not support indirection table (features=0x%x)",
+			 adapter->supported_features);
+		return -EOPNOTSUPP;
+	}
+
 	rss = &adapter->rss_info;
 	if (rss->host_ind_table && rss->ind_table)
 		return 0;
@@ -61,23 +67,27 @@ int ena_rss_init(struct ena_adapter *adapter)
 	}
 	memset(rss->ind_table, 0, ind_tbl_size);
 
-	key_size = sizeof(struct ena_admin_feature_rss_flow_hash_control);
-	rss->hash_key = (struct ena_admin_feature_rss_flow_hash_control *)
-		ena_dma_alloc(key_size, &rss->hash_key_phys);
-	if (!rss->hash_key) {
-		ena_rss_fini(adapter);
-		return -ENOMEM;
+	if (adapter->supported_features & (1u << ENA_ADMIN_RSS_HASH_FUNCTION)) {
+		key_size = sizeof(struct ena_admin_feature_rss_flow_hash_control);
+		rss->hash_key = (struct ena_admin_feature_rss_flow_hash_control *)
+			ena_dma_alloc(key_size, &rss->hash_key_phys);
+		if (!rss->hash_key) {
+			ena_rss_fini(adapter);
+			return -ENOMEM;
+		}
+		memset(rss->hash_key, 0, key_size);
 	}
-	memset(rss->hash_key, 0, key_size);
 
-	ctrl_size = sizeof(struct ena_admin_feature_rss_hash_control);
-	rss->hash_ctrl = (struct ena_admin_feature_rss_hash_control *)
-		ena_dma_alloc(ctrl_size, &rss->hash_ctrl_phys);
-	if (!rss->hash_ctrl) {
-		ena_rss_fini(adapter);
-		return -ENOMEM;
+	if (adapter->supported_features & (1u << ENA_ADMIN_RSS_HASH_INPUT)) {
+		ctrl_size = sizeof(struct ena_admin_feature_rss_hash_control);
+		rss->hash_ctrl = (struct ena_admin_feature_rss_hash_control *)
+			ena_dma_alloc(ctrl_size, &rss->hash_ctrl_phys);
+		if (!rss->hash_ctrl) {
+			ena_rss_fini(adapter);
+			return -ENOMEM;
+		}
+		memset(rss->hash_ctrl, 0, ctrl_size);
 	}
-	memset(rss->hash_ctrl, 0, ctrl_size);
 
 	rss->supported = true;
 	return 0;
@@ -149,8 +159,7 @@ int ena_rss_set_hash_key(struct ena_adapter *adapter, const uint8_t *key, size_t
 	memset(&req, 0, sizeof(req));
 	req.feat_common.flags = ENA_ADMIN_FEAT_SELECT_CURRENT;
 	req.feat_common.feature_id = ENA_ADMIN_RSS_HASH_FUNCTION;
-	req.flow_hash_func.supported_func = ENA_ADMIN_TOEPLITZ;
-	req.flow_hash_func.selected_func = ENA_ADMIN_TOEPLITZ;
+	req.flow_hash_func.selected_func = (1u << ENA_ADMIN_TOEPLITZ);
 	req.flow_hash_func.init_val = 0;
 
 	req.control_buffer.length = sizeof(struct ena_admin_feature_rss_flow_hash_control);
@@ -202,6 +211,9 @@ int ena_rss_set_hash_ctrl(struct ena_adapter *adapter)
 	memset(&req, 0, sizeof(req));
 	req.feat_common.flags = ENA_ADMIN_FEAT_SELECT_CURRENT;
 	req.feat_common.feature_id = ENA_ADMIN_RSS_HASH_INPUT;
+	req.flow_hash_input.enabled_input_sort =
+		ENA_ADMIN_FEATURE_RSS_FLOW_HASH_INPUT_L3_SORT_MASK |
+		ENA_ADMIN_FEATURE_RSS_FLOW_HASH_INPUT_L4_SORT_MASK;
 
 	req.control_buffer.length = sizeof(struct ena_admin_feature_rss_hash_control);
 	req.control_buffer.address.mem_addr_low = (uint32_t)(rss->hash_ctrl_phys & 0xFFFFFFFFu);
@@ -246,7 +258,7 @@ int ena_rss_set_ind_table(struct ena_adapter *adapter, uint16_t num_queues)
 	memset(&req, 0, sizeof(req));
 	req.feat_common.flags = ENA_ADMIN_FEAT_SELECT_CURRENT;
 	req.feat_common.feature_id = ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG;
-	req.ind_table.size = rss->ind_table_size;
+	req.ind_table.size = (uint16_t)__builtin_ctz(rss->ind_table_size);
 	req.ind_table.inline_index = 0xFFFFFFFFu; /* Set entire table via control buffer */
 
 	req.control_buffer.length = (uint32_t)(rss->ind_table_size *
@@ -276,13 +288,17 @@ int ena_rss_configure(struct ena_adapter *adapter, uint16_t num_queues)
 	if (ret)
 		return ret;
 
-	ret = ena_rss_set_hash_key(adapter, NULL, 0);
-	if (ret)
-		return ret;
+	if (adapter->supported_features & (1u << ENA_ADMIN_RSS_HASH_FUNCTION)) {
+		ret = ena_rss_set_hash_key(adapter, NULL, 0);
+		if (ret)
+			return ret;
+	}
 
-	ret = ena_rss_set_hash_ctrl(adapter);
-	if (ret)
-		return ret;
+	if (adapter->supported_features & (1u << ENA_ADMIN_RSS_HASH_INPUT)) {
+		ret = ena_rss_set_hash_ctrl(adapter);
+		if (ret)
+			return ret;
+	}
 
 	ret = ena_rss_set_ind_table(adapter, num_queues);
 	if (ret)

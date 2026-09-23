@@ -703,7 +703,15 @@ static void *ena_netbuf_alloc_helper(void *arg, uint64_t *phys_out, uint32_t *le
 		if (n == 0 || !nb)
 			return NULL;
 	} else {
+#ifdef __Unikraft__
+		/*
+		 * The run-to-completion core allocates from its own
+		 * per-core allocator (the default if none is bound).
+		 */
+		struct uk_alloc *a = uk_alloc_get_current();
+#else
 		struct uk_alloc *a = rxq ? rxq->allocator : uk_alloc_get_default();
+#endif
 		nb = uk_netbuf_alloc_buf(a, ENA_RX_BUF_SIZE, ENA_NETDEV_IOALIGN, 0, 0, NULL);
 		if (!nb)
 			return NULL;
@@ -763,10 +771,12 @@ static int ena_netdev_start(struct uk_netdev *dev)
 	if (adapter->num_rx_rings > 1) {
 		ret = ena_rss_configure(adapter, adapter->num_rx_rings);
 		if (ret) {
-			ena_warn("netdev start: RSS configuration failed (%d)", ret);
+			ena_warn("netdev start: RSS configuration failed (%d), continuing without RSS", ret);
 		}
 	}
 #endif
+
+	adapter->link_up = true;
 
 	return 0;
 }
@@ -776,6 +786,7 @@ static int ena_netdev_stop(struct uk_netdev *dev)
 	struct ena_uk_device *edev = to_enadevice(dev);
 	struct ena_adapter *adapter = &edev->adapter;
 
+	adapter->link_up = false;
 	return ena_netdev_stop_rings_hw(adapter, adapter->num_rx_rings, adapter->num_tx_rings);
 }
 
@@ -1258,10 +1269,12 @@ static int ena_netdev_start(struct uk_netdev *dev)
 	if (dev->nb_rx_queues > 1) {
 		ret = ena_rss_configure(dev->adapter, dev->nb_rx_queues);
 		if (ret) {
-			ena_warn("netdev start: RSS configuration failed (%d)", ret);
+			ena_err("netdev start: RSS configuration failed (%d)", ret);
+			return ret;
 		}
 	}
 
+	dev->adapter->link_up = true;
 	dev->state = UK_NETDEV_RUNNING;
 	return 0;
 }
@@ -1274,12 +1287,13 @@ static int ena_netdev_stop(struct uk_netdev *dev)
 		return -EINVAL;
 
 	if (dev->state != UK_NETDEV_RUNNING)
-		return 0;
+		return -EINVAL;
 
 	ret = ena_netdev_stop_rings_hw(dev->adapter, dev->nb_rx_queues, dev->nb_tx_queues);
 	if (ret)
 		return ret;
 
+	dev->adapter->link_up = false;
 	dev->state = UK_NETDEV_STOPPED;
 	return 0;
 }

@@ -286,6 +286,7 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 	bool found = false;
 	struct ena_admin_aq_entry *entry;
 	struct ena_admin_acq_entry *acq;
+	uint8_t flags = 0;
 
 	if (req && req_len > sizeof(struct ena_admin_aq_entry)) {
 		ena_err("exec_cmd: request too large (%zu)", req_len);
@@ -317,16 +318,20 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 	/* Copy the request payload. If caller passed full 64-byte command struct,
 	 * copy starting from offset 0, otherwise copy into inline data area. */
 	if (req && req_len > 0) {
-		if (req_len >= sizeof(struct ena_admin_aq_entry))
+		if (req_len >= sizeof(struct ena_admin_aq_entry)) {
 			memcpy(entry, req, sizeof(struct ena_admin_aq_entry));
-		else
+			flags = entry->aq_common_desc.flags & (uint8_t)~ENA_ADMIN_AQ_PHASE_MASK;
+		} else {
 			memcpy((uint8_t *)entry + sizeof(struct ena_admin_aq_common_desc),
 			       req, req_len);
+		}
 	}
 
 	entry->aq_common_desc.command_id = command_id;
 	entry->aq_common_desc.opcode = opcode;
-	entry->aq_common_desc.flags = adapter->aq_phase & ENA_ADMIN_AQ_PHASE_MASK;
+	if (entry->u.control_buffer.length > 0)
+		flags |= ENA_ADMIN_AQ_COMMON_DESC_CTRL_DATA_INDIRECT_MASK;
+	entry->aq_common_desc.flags = (uint8_t)(flags | (adapter->aq_phase & ENA_ADMIN_AQ_PHASE_MASK));
 
 	/* Prepare the ACQ entry pointer. */
 	acq = (struct ena_admin_acq_entry *)adapter->acq_base +
@@ -421,11 +426,19 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 	}
 
 	if (acq->acq_common_desc.status != 0) {
-		ena_err("exec_cmd: device status %u, ext_status %u for opcode %u command %u",
-			 acq->acq_common_desc.status,
-			 acq->acq_common_desc.extended_status,
-			 opcode,
-			 acq->acq_common_desc.command & ENA_ADMIN_COMMAND_ID_MASK);
+		if (opcode == ENA_ADMIN_GET_FEATURE &&
+		    acq->acq_common_desc.status == ENA_ADMIN_UNSUPPORTED_OPCODE) {
+			ena_debug("exec_cmd: feature not supported (status %u) for opcode %u command %u",
+				acq->acq_common_desc.status,
+				opcode,
+				acq->acq_common_desc.command & ENA_ADMIN_COMMAND_ID_MASK);
+		} else {
+			ena_err("exec_cmd: device status %u, ext_status %u for opcode %u command %u",
+				 acq->acq_common_desc.status,
+				 acq->acq_common_desc.extended_status,
+				 opcode,
+				 acq->acq_common_desc.command & ENA_ADMIN_COMMAND_ID_MASK);
+		}
 		return -(int)acq->acq_common_desc.status;
 	}
 

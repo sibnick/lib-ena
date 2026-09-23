@@ -1,3 +1,37 @@
+diff --git a/drivers/firmware/ukacpi/arch/x86_64/madt.c b/drivers/firmware/ukacpi/arch/x86_64/madt.c
+index 4883a75..e392e1c 100644
+--- a/drivers/firmware/ukacpi/arch/x86_64/madt.c
++++ b/drivers/firmware/ukacpi/arch/x86_64/madt.c
+@@ -10,6 +10,7 @@
+ 
+ #include <uk/acpi.h>
+ #include <uk/acpi/prio.h>
++#include <uk/arch/x86_64.h>
+ #include <uk/assert.h>
+ #include <uk/pcpuvar.h>
+ #include <uk/print.h>
+@@ -22,7 +23,11 @@
+ 
+ int uk_acpi_madt_fill_cpu_idmap(void)
+ {
+-	__u64 bsp_cpu_id = uk_pcpuvar_lval(0, uk_pcpuvar_cpu_id);
++	__u32 a = 0, b = 0, c = 0, d = 0;
++	uk_arch_x86_64_cpuid(1, 0, &a, &b, &c, &d);
++	__u64 bsp_cpu_id = (b >> 24) & 0xff;
++	uk_pcpuvar_lval(0, uk_pcpuvar_cpu_id) = bsp_cpu_id;
++	uk_pcpuvar_lval(0, uk_pcpuvar_cpu_idx) = 0;
+ 	union {
+ 		struct uk_acpi_madt_x2apic *x2apic;
+ 		struct uk_acpi_madt_lapic *lapic;
+@@ -80,7 +85,7 @@ int uk_acpi_madt_fill_cpu_idmap(void)
+ 
+ 		/* Ignore cores that exceed max configured value */
+ 		if (unlikely(idx == CONFIG_UKPLAT_CPU_MAXCOUNT)) {
+-			uk_pr_warn("Maximum number of cores exceeded.\n");
++			uk_pr_info("Configured maximum number of cores (%u) reached.\n", CONFIG_UKPLAT_CPU_MAXCOUNT);
+ 			break;
+ 		}
+ 	}
 diff --git a/lib/posix-fdio/fdctl.c b/lib/posix-fdio/fdctl.c
 index 04bc0ed..1cbb4b6 100644
 --- a/lib/posix-fdio/fdctl.c
@@ -10,6 +44,386 @@ index 04bc0ed..1cbb4b6 100644
  	}
  
  	iolock = _SHOULD_LOCK(of->mode);
+diff --git a/lib/ukalloc/alloc.c b/lib/ukalloc/alloc.c
+index b7bf88f..121e5e4 100644
+--- a/lib/ukalloc/alloc.c
++++ b/lib/ukalloc/alloc.c
+@@ -41,18 +41,32 @@
+ #include <uk/assert.h>
+ #include <uk/arch/limits.h>
+ #include <uk/lcpu.h>
++#include <uk/alloc.h>
+ #include <uk/paging.h>
+ 
+ #if CONFIG_HAVE_MEMTAG
+ #include <uk/arch/memtag.h>
+ #endif
+ 
++#if defined(CONFIG_LIBUKPCPUVAR) && CONFIG_LIBUKPCPUVAR
++#include <uk/pcpuvar.h>
++#endif /* CONFIG_LIBUKPCPUVAR */
++
+ #define size_to_num_pages(size) \
+ 	(UK_PAGING_PAGE_ALIGN_UP((unsigned long)(size)) / __PAGE_SIZE)
+ #define page_off(x) ((unsigned long)(x) & (__PAGE_SIZE - 1))
+ 
+ struct uk_alloc *_uk_alloc_head;
+ 
++#if defined(CONFIG_LIBUKPCPUVAR) && CONFIG_LIBUKPCPUVAR
++/*
++ * Per-CPU slot holding a pointer to this core's standalone
++ * allocator instance. NULL means "use the default allocator".
++ * Populated at core bring-up when the per-core heap is enabled.
++ */
++struct uk_alloc * __uk_pcpuvar uk_pcpuvar_percore_alloc;
++#endif /* CONFIG_LIBUKPCPUVAR */
++
+ int uk_alloc_register(struct uk_alloc *a)
+ {
+ 	struct uk_alloc *this = _uk_alloc_head;
+@@ -629,3 +643,22 @@ unsigned long uk_alloc_pavailmem_total(void)
+ 	}
+ 	return total;
+ }
++
++/*
++ * Return the allocator bound to the current CPU core.
++ *
++ * Returns the per-core standalone allocator instance when one is
++ * bound to the current core (CONFIG_LIBUKBOOT_PERCORE_HEAP), and
++ * the default allocator otherwise.
++ */
++struct uk_alloc *uk_alloc_get_current(void)
++{
++#if defined(CONFIG_LIBUKPCPUVAR) && CONFIG_LIBUKPCPUVAR
++	struct uk_alloc *a = uk_pcpuvar_current_get(uk_pcpuvar_percore_alloc);
++
++	if (a)
++		return a;
++#endif /* CONFIG_LIBUKPCPUVAR */
++
++	return uk_alloc_get_default();
++}
+diff --git a/lib/ukalloc/exportsyms.uk b/lib/ukalloc/exportsyms.uk
+index 5a8edfc..daa1364 100644
+--- a/lib/ukalloc/exportsyms.uk
++++ b/lib/ukalloc/exportsyms.uk
+@@ -19,6 +19,8 @@ uk_alloc_pmaxalloc_compat
+ uk_alloc_pavailmem_compat
+ uk_alloc_availmem_total
+ uk_alloc_pavailmem_total
++uk_alloc_get_current
++uk_pcpuvar_percore_alloc
+ _uk_alloc_head
+ uk_alloc_stats_get
+ _uk_alloc_stats_global
+diff --git a/lib/ukalloc/include/uk/alloc.h b/lib/ukalloc/include/uk/alloc.h
+index 7ea51f1..c8feb03 100644
+--- a/lib/ukalloc/include/uk/alloc.h
++++ b/lib/ukalloc/include/uk/alloc.h
+@@ -41,6 +41,10 @@
+ #include <uk/essentials.h>
+ #include <errno.h>
+ 
++#if defined(CONFIG_LIBUKPCPUVAR) && CONFIG_LIBUKPCPUVAR
++#include <uk/pcpuvar.h>
++#endif /* CONFIG_LIBUKPCPUVAR */
++
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+@@ -124,6 +128,14 @@ struct uk_alloc {
+ 
+ extern struct uk_alloc *_uk_alloc_head;
+ 
++#if defined(CONFIG_LIBUKPCPUVAR) && CONFIG_LIBUKPCPUVAR
++/*
++ * Per-CPU slot: this core's standalone allocator.
++ * NULL means "use the default allocator".
++ */
++extern struct uk_alloc * __uk_pcpuvar uk_pcpuvar_percore_alloc;
++#endif /* CONFIG_LIBUKPCPUVAR */
++
+ /* Iterate over all registered allocators */
+ #define uk_alloc_foreach(iter)			\
+ 	for (iter = _uk_alloc_head;		\
+@@ -135,10 +147,25 @@ struct uk_alloc *uk_alloc_get_default(void);
+ #else /* !CONFIG_LIBUKALLOC_IFSTATS_PERLIB */
+ static inline struct uk_alloc *uk_alloc_get_default(void)
+ {
++#if defined(CONFIG_LIBUKPCPUVAR) && CONFIG_LIBUKPCPUVAR
++	struct uk_alloc *a = uk_pcpuvar_current_get(uk_pcpuvar_percore_alloc);
++
++	if (a)
++		return a;
++#endif
++
+ 	return _uk_alloc_head;
+ }
++
+ #endif /* !CONFIG_LIBUKALLOC_IFSTATS_PERLIB */
+ 
++/*
++ * Returns the allocator bound to the current CPU core.
++ * Returns the per-core standalone allocator when one is bound
++ * to this core, and the default allocator otherwise.
++ */
++struct uk_alloc *uk_alloc_get_current(void);
++
+ /* wrapper functions */
+ static inline void *uk_do_malloc(struct uk_alloc *a, __sz size)
+ {
+diff --git a/lib/ukalloc/libstats.c b/lib/ukalloc/libstats.c
+index b4f7d55..84e53bb 100644
+--- a/lib/ukalloc/libstats.c
++++ b/lib/ukalloc/libstats.c
+@@ -48,8 +48,19 @@
+ #include <uk/essentials.h>
+ #include <uk/preempt.h>
+ 
++#if defined(CONFIG_LIBUKPCPUVAR) && CONFIG_LIBUKPCPUVAR
++#include <uk/pcpuvar.h>
++#endif
++
+ static inline struct uk_alloc *_uk_alloc_get_actual_default(void)
+ {
++#if defined(CONFIG_LIBUKPCPUVAR) && CONFIG_LIBUKPCPUVAR
++	struct uk_alloc *a = uk_pcpuvar_current_get(uk_pcpuvar_percore_alloc);
++
++	if (a)
++		return a;
++#endif
++
+ 	return _uk_alloc_head;
+ }
+ 
+diff --git a/lib/ukboot/Config.uk b/lib/ukboot/Config.uk
+index cee02cb..e321b56 100644
+--- a/lib/ukboot/Config.uk
++++ b/lib/ukboot/Config.uk
+@@ -144,6 +144,18 @@ config LIBUKBOOT_HEAP_BASE
+ 	depends on LIBUKPAGING
+ 	depends on LIBUKBOOT_INITALLOC
+ 
++config LIBUKBOOT_PERCORE_HEAP
++	bool "Per-core heap partitions"
++	default n
++	depends on LIBUKBOOT_INITALLOC
++	help
++	  Split the largest free memory region at boot into N-1
++	  partitions (N = CPU max count). Each non-boot core can then
++	  run a standalone allocator instance on its own partition. The
++	  boot core keeps the remaining region as the default allocator.
++	  This enables a run-to-completion design where each core
++	  allocates only from its own memory region.
++
+ # Hidden configuration option that specifies that scheduling should be
+ # initialized. The check for !LIBUKBOOT_INITNOSCHED is not sufficient, as
+ # the option is also not available if !LIBUKBOOT_INITALLOC is set. The
+diff --git a/lib/ukboot/boot.c b/lib/ukboot/boot.c
+index abbb394..8188bf9 100644
+--- a/lib/ukboot/boot.c
++++ b/lib/ukboot/boot.c
+@@ -100,6 +100,10 @@
+ #include <uk/intctlr.h>
+ #endif /* CONFIG_LIBUKINTCTLR */
+ 
++#if CONFIG_LIBUKBOOT_PERCORE_HEAP
++#include <uk/pal/page.h>
++#endif /* CONFIG_LIBUKBOOT_PERCORE_HEAP */
++
+ #include "init.h"
+ 
+ extern char **boot_argv;
+@@ -117,6 +121,123 @@ struct uk_semaphore main_sema;
+ static struct uk_vas kernel_vas;
+ #endif /* CONFIG_LIBUKBOOT_HEAP_BASE && CONFIG_LIBUKVMEM */
+ 
++#if CONFIG_LIBUKBOOT_PERCORE_HEAP
++
++/*
++ * Partition of the boot heap reserved for one non-boot core.
++ * Partition i is the region for core i + 1. Core 0 keeps the
++ * remaining (default) region.
++ */
++struct percore_heap_part {
++	__uptr base;
++	__sz len;
++};
++
++static struct percore_heap_part percore_heap_parts
++	[CONFIG_UKPLAT_CPU_MAXCOUNT > 1 ?
++	 CONFIG_UKPLAT_CPU_MAXCOUNT - 1 : 1];
++
++static unsigned int percore_heap_count;
++
++/* A per-core partition smaller than this size is not useful. */
++#define UK_PERCORE_HEAP_MIN_SIZE	(16UL << 20)
++
++/*
++ * Carve one partition from the largest free memory region for each
++ * non-boot core. This function must run before uk_alloc_init() in
++ * heap_init(), since the default allocator takes ownership of the
++ * remaining free regions afterwards.
++ */
++static void percore_heap_init(void)
++{
++	struct ukplat_memregion_desc *md;
++	struct ukplat_memregion_desc *biggest = NULL;
++	unsigned int ncores = CONFIG_UKPLAT_CPU_MAXCOUNT;
++	unsigned int i;
++	__sz part;
++
++	if (ncores < 2)
++		return;
++
++	ukplat_memregion_foreach(&md, UKPLAT_MEMRT_FREE, 0, 0) {
++		if (!biggest || md->len > biggest->len)
++			biggest = md;
++	}
++
++	if (!biggest) {
++		uk_pr_info("ukboot: per-core heap: no free region found\n");
++		return;
++	}
++
++	part = UK_PAL_PAGE_ALIGN_DOWN(biggest->len / ncores);
++	if (part < UK_PERCORE_HEAP_MIN_SIZE) {
++		uk_pr_info("ukboot: per-core heap disabled: "
++			  "partition size %lu too small\n",
++			(unsigned long)part);
++		return;
++	}
++
++	for (i = 1; i < ncores; i++) {
++		void *base;
++
++		base = ukplat_memregion_alloc(part, UKPLAT_MEMRT_RESERVED,
++						UKPLAT_MEMRF_READ |
++						UKPLAT_MEMRF_WRITE);
++		if (!base)
++			break;
++
++		percore_heap_parts[i - 1].base = (__uptr)base;
++		percore_heap_parts[i - 1].len = part;
++		percore_heap_count = i;
++
++		uk_pr_info("ukboot: per-core heap: partition %u "
++			  "%p+%lu for core %u\n",
++			(unsigned int)(i - 1), (void *)base,
++			(unsigned long)part, (unsigned int)i);
++	}
++
++	if (percore_heap_count) {
++		uk_pr_info("ukboot: per-core heap: %u partition(s) "
++			  "of %lu bytes; core 0 keeps the default region\n",
++			(unsigned int)percore_heap_count,
++			(unsigned long)part);
++	} else {
++		uk_pr_info("ukboot: per-core heap: no partition carved\n");
++	}
++}
++
++unsigned int uk_percore_heap_count(void)
++{
++	return percore_heap_count;
++}
++
++int uk_percore_heap_get(unsigned int i, __uptr *base, __sz *len)
++{
++	if (i >= percore_heap_count)
++		return -EINVAL;
++
++	*base = percore_heap_parts[i].base;
++	*len = percore_heap_parts[i].len;
++	return 0;
++}
++
++#else /* CONFIG_LIBUKBOOT_PERCORE_HEAP */
++
++unsigned int uk_percore_heap_count(void)
++{
++	return 0;
++}
++
++int uk_percore_heap_get(unsigned int i, __uptr *base, __sz *len)
++{
++	(void)i;
++	(void)base;
++	(void)len;
++	return -ENOTSUP;
++}
++
++#endif /* CONFIG_LIBUKBOOT_PERCORE_HEAP */
++
+ static struct uk_alloc *heap_init()
+ {
+ 	struct uk_alloc *a = NULL;
+@@ -210,6 +331,13 @@ static struct uk_alloc *heap_init()
+ 	 * again with the next region. As soon we have an allocator, we simply
+ 	 * add every subsequent region to it.
+ 	 */
++#if CONFIG_LIBUKBOOT_PERCORE_HEAP
++	/* Reserve one region per non-boot core before the default
++	 * allocator claims the remaining free regions.
++	 */
++	percore_heap_init();
++#endif /* CONFIG_LIBUKBOOT_PERCORE_HEAP */
++
+ 	ukplat_memregion_foreach(&md, UKPLAT_MEMRT_FREE, 0, 0) {
+ 		UK_ASSERT_VALID_FREE_MRD(md);
+ 
+diff --git a/lib/ukboot/exportsyms.uk b/lib/ukboot/exportsyms.uk
+index de526bf..18d76cd 100644
+--- a/lib/ukboot/exportsyms.uk
++++ b/lib/ukboot/exportsyms.uk
+@@ -3,3 +3,5 @@ uk_version
+ uk_boot_shutdown_req
+ uk_boot_early_init
+ uk_boot_entry
++uk_percore_heap_count
++uk_percore_heap_get
+diff --git a/lib/ukboot/include/uk/boot.h b/lib/ukboot/include/uk/boot.h
+index 8e78944..591ae7b 100644
+--- a/lib/ukboot/include/uk/boot.h
++++ b/lib/ukboot/include/uk/boot.h
+@@ -8,6 +8,7 @@
+ 
+ #include <uk/config.h>
+ #include <errno.h>
++#include <uk/essentials.h>
+ #include <uk/plat/common/bootinfo.h>
+ #include <uk/pm.h>
+ 
+@@ -60,6 +61,28 @@ int uk_boot_shutdown_req(enum uk_pm_shutdown_op target);
+ 	({ -ENOTSUP; })
+ #endif /* !CONFIG_LIBUKBOOT_MAINTHREAD */
+ 
++/**
++ * Number of per-core heap partitions carved at boot.
++ *
++ * Returns 0 when CONFIG_LIBUKBOOT_PERCORE_HEAP is disabled or
++ * when no partition could be carved.
++ */
++unsigned int uk_percore_heap_count(void);
++
++/**
++ * Get a per-core heap partition (base address and length).
++ *
++ * Partition i is the region reserved for core i + 1.
++ *
++ * @param i Partition index (0-based).
++ * @param base Output: partition base address.
++ * @param len Output: partition length in bytes.
++ * @returns
++ *   - (0): Success.
++ *   - (-EINVAL): i is out of range.
++ */
++int uk_percore_heap_get(unsigned int i, __uptr *base, __sz *len);
++
+ #ifdef __cplusplus
+ }
+ #endif
 diff --git a/lib/uknetdev/include/uk/netdev.h b/lib/uknetdev/include/uk/netdev.h
 index 03bfe4a..5b3c46e 100644
 --- a/lib/uknetdev/include/uk/netdev.h
@@ -72,6 +486,446 @@ index 47e6a7d..3b5de2b 100644
  sched_getaffinity
  sched_setaffinity
 +uk_sched_head
+diff --git a/plat/kvm/Config.uk b/plat/kvm/Config.uk
+index 929b13b..34a433a 100644
+--- a/plat/kvm/Config.uk
++++ b/plat/kvm/Config.uk
+@@ -19,7 +19,7 @@ menuconfig PLAT_KVM
+ 	select HAVE_PAGING
+ 	select LIBUKPLAT_NATIVE_PAL
+ 	select LIBUKPLAT_NATIVE_PAGING if LIBUKPAGING
+-	select LIBUKPLAT_NATIVE_LCPU_PM if LIBUKLCPU
++	select LIBUKPLAT_NATIVE_LCPU_PM if (LIBUKLCPU && (!ARCH_X86_64 || !HAVE_SMP))
+ 	select HAVE_INTCTLR
+ 	select HAVE_APIC if ARCH_X86_64
+ 	select LIBUKINTCTLR_XPIC if ARCH_X86_64
+diff --git a/plat/kvm/Makefile.uk b/plat/kvm/Makefile.uk
+index d6af82d..601ad46 100644
+--- a/plat/kvm/Makefile.uk
++++ b/plat/kvm/Makefile.uk
+@@ -52,6 +52,9 @@ LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(LIBKVMPLAT_BASE)/x86/pagetable64.S
+ LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(LIBKVMPLAT_BASE)/x86/cpu_vectors_x86_64.S
+ LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(LIBKVMPLAT_BASE)/x86/setup.c
+ LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(LIBKVMPLAT_BASE)/x86/lcpu_start.S
++ifeq ($(CONFIG_HAVE_SMP),y)
++LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(LIBKVMPLAT_BASE)/x86/lcpu.c|x86
++endif
+ LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(LIBKVMPLAT_BASE)/x86/tscclock.c
+ LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(LIBKVMPLAT_BASE)/x86/time.c
+ 
+diff --git a/plat/kvm/x86/lcpu.c b/plat/kvm/x86/lcpu.c
+new file mode 100644
+index 0000000..e235577
+--- /dev/null
++++ b/plat/kvm/x86/lcpu.c
+@@ -0,0 +1,352 @@
++/* SPDX-License-Identifier: BSD-3-Clause */
++/*
++ * KVM x86_64 platform: secondary CPU (AP) bring-up.
++ *
++ * Secondary cores enter the 16-bit real-mode trampoline in lcpu_start.S.
++ * That code is part of the image, which is linked at 1 MiB, but the
++ * trampoline must sit in the first 1 MiB of physical memory. A copy of it
++ * is placed in a fixed hole below 1 MiB and its internal references are
++ * fixed up before any AP is started.
++ *
++ * APs are started with the standard x86 INIT/SIPI sequence through the
++ * local APIC. The mode (xapic MMIO or x2apic MSR) is detected at boot
++ * from the APIC base MSR.
++ *
++ * Based on the native platform lcpu_pm.c (same start16 relocation logic).
++ */
++
++#include <uk/arch/util.h>
++#include <uk/arch/x86_64.h>
++#include <uk/essentials.h>
++#include <uk/lcpu/pm.h>
++#include <uk/pcpuvar.h>
++#include <uk/prio.h>
++
++#if CONFIG_LIBUKBOOT
++#include <uk/boot/earlytab.h>
++#include <uk/plat/common/bootinfo.h>
++#include <uk/plat/common/memory.h>
++#include <string.h>
++#endif /* CONFIG_LIBUKBOOT */
++
++#include <x86/delay.h>
++
++#if CONFIG_HAVE_SMP
++static inline void x2apic_send_sipi(__vaddr_t addr, int dest)
++{
++	__u32 eax;
++
++	UK_ASSERT((addr &
++		   (UK_ARCH_X86_64_APIC_ICR_VECTOR_MASK << __PAGE_SHIFT)) == addr);
++
++	eax = UK_ARCH_X86_64_APIC_ICR_TRIGGER_LEVEL |
++	      UK_ARCH_X86_64_APIC_ICR_LEVEL_ASSERT |
++	      UK_ARCH_X86_64_APIC_ICR_DESTMODE_PHYSICAL |
++	      UK_ARCH_X86_64_APIC_ICR_DMODE_SUP |
++	      (addr >> __PAGE_SHIFT);
++
++	uk_arch_x86_64_wrmsr(UK_ARCH_X86_64_APIC_MSR_ICR, eax, dest);
++}
++
++static inline void x2apic_send_iipi(int dest)
++{
++	__u32 eax;
++
++	eax = UK_ARCH_X86_64_APIC_ICR_TRIGGER_LEVEL |
++	      UK_ARCH_X86_64_APIC_ICR_LEVEL_ASSERT |
++	      UK_ARCH_X86_64_APIC_ICR_DESTMODE_PHYSICAL |
++	      UK_ARCH_X86_64_APIC_ICR_DMODE_INIT;
++
++	uk_arch_x86_64_wrmsr(UK_ARCH_X86_64_APIC_MSR_ICR, eax, dest);
++}
++
++/* Deassert only supported on Pentium and P6 familiy processors */
++#define x2apic_send_iipi_deassert() {}
++
++/*
++ * The BSP may run with either the xapic (MMIO) or the x2apic (MSR) local
++ * APIC mode enabled, depending on the boot protocol and the hypervisor.
++ * Detect the active mode at boot and dispatch IPIs to it.
++ */
++static int apic_mode; /* 0 = xapic, 1 = x2apic */
++static __u64 apic_mmio_base;
++
++static int apic_mode_detect(void)
++{
++	__u32 lo = 0, hi = 0;
++
++	uk_arch_x86_64_rdmsr(0x01B, &lo, &hi);
++
++	if (unlikely(!(lo & (1u << 11))))
++		return -ENODEV;
++
++	if (lo & (1u << 10)) {
++		apic_mode = 1;
++		return 0;
++	}
++
++	apic_mode = 0;
++	apic_mmio_base = lo & 0xFFFFF000UL;
++	if (unlikely(!apic_mmio_base))
++		return -EIO;
++
++	return 0;
++}
++
++static inline void xapic_write_icr(__u32 lo, __u64 dest)
++{
++	volatile __u32 *icr_hi = (volatile __u32 *)(apic_mmio_base + 0x310);
++	volatile __u32 *icr_lo = (volatile __u32 *)(apic_mmio_base + 0x300);
++
++	while (*icr_lo & (1u << 12))
++		uk_arch_x86_64_spinwait();
++
++	*icr_hi = ((__u32)dest) << 24;
++	*icr_lo = lo;
++
++	while (*icr_lo & (1u << 12))
++		uk_arch_x86_64_spinwait();
++}
++
++static int apic_send_sipi(__u64 addr, __u64 dest)
++{
++	if (apic_mode) {
++		x2apic_send_sipi(addr, (int)dest);
++		return 0;
++	}
++
++	__u32 eax = UK_ARCH_X86_64_APIC_ICR_TRIGGER_EDGE |
++		    UK_ARCH_X86_64_APIC_ICR_LEVEL_ASSERT |
++		    UK_ARCH_X86_64_APIC_ICR_DESTMODE_PHYSICAL |
++		    UK_ARCH_X86_64_APIC_ICR_DMODE_SUP |
++		    ((addr >> __PAGE_SHIFT) & UK_ARCH_X86_64_APIC_ICR_VECTOR_MASK);
++
++	xapic_write_icr(eax, dest);
++	return 0;
++}
++
++static int apic_send_iipi(__u64 dest)
++{
++	if (apic_mode) {
++		x2apic_send_iipi((int)dest);
++		return 0;
++	}
++
++	__u32 eax = UK_ARCH_X86_64_APIC_ICR_TRIGGER_LEVEL |
++		    UK_ARCH_X86_64_APIC_ICR_LEVEL_ASSERT |
++		    UK_ARCH_X86_64_APIC_ICR_DESTMODE_PHYSICAL |
++		    UK_ARCH_X86_64_APIC_ICR_DMODE_INIT;
++
++	xapic_write_icr(eax, dest);
++	return 0;
++}
++
++#define apic_send_iipi_deassert() do {} while (0)
++
++/* Secondary cores start in 16-bit real-mode and we have to provide the
++ * corresponding boot code somewhere in the first 1 MiB. We copy the trampoline
++ * code to the target address during MP initialization.
++ */
++extern void *x86_start16_begin[];
++extern void *x86_start16_end[];
++extern __uptr uk_plat_native_x86_64_start16_addr; /* target address */
++
++#define UK_ARCH_START16_SIZE						\
++	((__uptr)x86_start16_end - (__uptr)x86_start16_begin)
++
++#define START16_MOV_SYM(sym, sz)					\
++	sym##_imm##sz##_start16
++
++#define START16_DATA_SYM(sym, sz)					\
++	sym##_data##sz##_start16
++
++#define IMPORT_START16_SYM(sym, sz, type)				\
++	extern void *sym[];						\
++	extern void *START16_##type##_SYM(sym, sz)[]
++
++#define START16_MOV_OFF(sym, sz)					\
++	((void *)START16_MOV_SYM(sym, sz) -				\
++	(void *)x86_start16_begin)
++
++#define START16_DATA_OFF(sym, sz)					\
++	((void *)START16_DATA_SYM(sym, sz) -				\
++	(void *)x86_start16_begin)
++
++IMPORT_START16_SYM(gdt32_ptr, 2, MOV);
++IMPORT_START16_SYM(gdt32, 4, DATA);
++IMPORT_START16_SYM(lcpu_start16, 2, MOV);
++IMPORT_START16_SYM(jump_to32, 2, MOV);
++IMPORT_START16_SYM(lcpu_start32, 4, MOV);
++
++#define START16_RELOC_ENTRY(sym, sz, type)				\
++	{								\
++		.r_mem_off = START16_##type##_OFF(sym, sz),		\
++		.r_addr = (void *)(sym) - (void *)x86_start16_begin,	\
++		.r_sz = (sz),						\
++	}
++
++static void apply_start16_reloc(__u64 baddr, __u64 r_mem_off,
++				__u64 r_addr, __u32 r_sz)
++{
++	switch (r_sz) {
++	case 2:
++		*(__u16 *)((__u8 *)baddr + r_mem_off) = (__u16)(baddr + r_addr);
++		break;
++	case 4:
++		*(__u32 *)((__u8 *)baddr + r_mem_off) = (__u32)(baddr + r_addr);
++		break;
++	}
++}
++
++static void start16_reloc_mp_init(void)
++{
++	struct {
++		__u64 r_mem_off;
++		__u64 r_addr;
++		__u32 r_sz;
++	} x86_start16_relocs[] = {
++		START16_RELOC_ENTRY(lcpu_start16, 2, MOV),
++		START16_RELOC_ENTRY(gdt32_ptr, 2, MOV),
++		START16_RELOC_ENTRY(gdt32, 4, DATA),
++		START16_RELOC_ENTRY(jump_to32, 2, MOV),
++		START16_RELOC_ENTRY(lcpu_start32, 4, MOV),
++	};
++	__sz i;
++
++	for (i = 0; i < ARRAY_SIZE(x86_start16_relocs); i++)
++		apply_start16_reloc((__u64)uk_plat_native_x86_64_start16_addr,
++				    x86_start16_relocs[i].r_mem_off,
++				    x86_start16_relocs[i].r_addr,
++				    x86_start16_relocs[i].r_sz);
++
++	/* Unlike the other entries, lcpu_start32 must stay the same
++	 * as it is not part of the start16 section.
++	 */
++	apply_start16_reloc((__u64)uk_plat_native_x86_64_start16_addr,
++			    START16_MOV_OFF(lcpu_start32, 4),
++			    (__u64)lcpu_start32 -
++			    (__u64)uk_plat_native_x86_64_start16_addr, 4);
++}
++
++#if CONFIG_LIBUKBOOT
++static int boot_memregion_alloc_sipi_vect(struct ukplat_bootinfo *bi __unused)
++{
++#define X86_VIDEO_MEM_START	0xA0000UL
++	__sz len;
++
++	len = (__sz)((__uptr)x86_start16_end - (__uptr)x86_start16_begin);
++	len = UK_PAGING_PAGE_ALIGN_UP(len);
++	uk_plat_native_x86_64_start16_addr = (__uptr)ukplat_memregion_alloc(len,
++							  UKPLAT_MEMRT_RESERVED,
++							  UKPLAT_MEMRF_READ  |
++							  UKPLAT_MEMRF_WRITE);
++	if (unlikely(!uk_plat_native_x86_64_start16_addr ||
++		     uk_plat_native_x86_64_start16_addr >= X86_VIDEO_MEM_START))
++		return -ENOMEM;
++
++	/* Copy AP startup code to target address in first 1MiB */
++	UK_ASSERT(uk_plat_native_x86_64_start16_addr < 0x100000);
++	memcpy((void *)uk_plat_native_x86_64_start16_addr, &x86_start16_begin,
++	       UK_ARCH_START16_SIZE);
++
++	start16_reloc_mp_init();
++
++	uk_pr_info("Copied AP 16-bit boot code to 0x%"__PRIvaddr" (SIPI vector 0x%02lx)\n",
++		   uk_plat_native_x86_64_start16_addr,
++		   (unsigned long)(uk_plat_native_x86_64_start16_addr >> 12));
++
++	return 0;
++}
++#endif /* CONFIG_LIBUKBOOT */
++
++static int kvm_x86_lcpu_start(__u64 idx)
++{
++	/* Send INIT IPI */
++	apic_send_iipi(uk_pcpuvar_lval(idx, uk_pcpuvar_cpu_id));
++
++	/* Deassert */
++	apic_send_iipi_deassert();
++
++	return 0;
++}
++
++#if CONFIG_HAVE_CPU_MULTI_PHASE_STARTUP
++static int kvm_x86_lcpu_post_start(const __u64 lcpuidx[], unsigned int *num)
++{
++	__u64 id, this_cpu_id = uk_pcpuvar_current_get(uk_pcpuvar_cpu_id);
++	unsigned int i, j;
++
++	/* wait 10 msec (according to Intel manual 8.4.4.1) */
++	mdelay(10);
++
++	for (i = 0; i < *num; i++) {
++		id = uk_pcpuvar_lval(lcpuidx[i], uk_pcpuvar_cpu_id);
++		if (id == this_cpu_id)
++			continue;
++
++		for (j = 0; j < 2; j++) {
++			/* Send STARTUP IPI */
++			apic_send_sipi(uk_plat_native_x86_64_start16_addr, id);
++
++			/* wait 200 usec (according to Intel manual 8.4.4.1) */
++			udelay(200);
++		}
++	}
++
++	return 0;
++}
++#endif /* CONFIG_HAVE_CPU_MULTI_PHASE_STARTUP */
++#endif /* CONFIG_HAVE_SMP */
++
++static void kvm_x86_lcpu_halt(void)
++{
++	uk_arch_x86_64_halt();
++}
++
++static void kvm_x86_lcpu_halt_irq(void)
++{
++	/*
++	 * We have to be careful when enabling interrupts before entering a
++	 * halt state. If we want to wait for an interrupt (e.g., a timer)
++	 * the interrupt may fire in the short window between sti and hlt and
++	 * we are going to halt forever. As sti only enables interrupts after
++	 * the following instruction, we can avoid the race condition by
++	 * ensuring that hlt immediately follows sti. There must be no
++	 * instruction in between.
++	 */
++	asm volatile (
++		"sti\n\t"
++		"hlt\n\t"
++		"cli\n\t"
++		:
++		:
++		: "memory"
++	);
++}
++
++static const struct uk_lcpu_pm_ops kvm_x86_pm_ops = {
++#if CONFIG_HAVE_SMP
++	.start = kvm_x86_lcpu_start,
++#if CONFIG_HAVE_CPU_MULTI_PHASE_STARTUP
++	.post_start = kvm_x86_lcpu_post_start,
++#endif /* CONFIG_HAVE_CPU_MULTI_PHASE_STARTUP */
++#endif /* CONFIG_HAVE_SMP */
++	.halt = kvm_x86_lcpu_halt,
++	.halt_irq = kvm_x86_lcpu_halt_irq,
++};
++
++__isr static
++int kvm_x86_lcpu_pm_ops_register(struct ukplat_bootinfo *bi __unused)
++{
++#if CONFIG_LIBUKBOOT
++	if (boot_memregion_alloc_sipi_vect(bi) < 0)
++		uk_pr_warn("kvm: failed to allocate SIPI vector trampoline\n");
++#endif
++#if CONFIG_HAVE_SMP
++	if (apic_mode_detect())
++		uk_pr_warn("kvm: local APIC not ready; SMP start will fail\n");
++#endif
++	return uk_lcpu_pm_ops_register(&kvm_x86_pm_ops);
++}
++
++UK_BOOT_EARLYTAB_ENTRY(kvm_x86_lcpu_pm_ops_register, UK_PRIO_EARLIEST);
+diff --git a/plat/kvm/x86/lcpu_start.S b/plat/kvm/x86/lcpu_start.S
+index 7506102..d2c9ee9 100644
+--- a/plat/kvm/x86/lcpu_start.S
++++ b/plat/kvm/x86/lcpu_start.S
+@@ -292,8 +292,26 @@ ENTRY(lcpu_start64)
+ 	cpuid
+ 	shrl	$24, %ebx
+ 
+-	/* Use APIC_ID for indexing the cpu var array */
+-	uk_pcpuvar_x86_64_gsval	%rsp, %rbx
++	/*
++	 * RSP is 0 here (the 16-bit entry does not set it up). Find the
++	 * per-CPU slot whose uk_pcpuvar_cpu_id matches the APIC ID in %rbx
++	 * and put that slot's offset in RSP.
++	 */
++	movl	%ebx, %eax
++	xorq	%r9, %r9
++1:
++	cmpl	$CONFIG_UKPLAT_CPU_MAXCOUNT, %r9d
++	jae	fail_noslot
++	uk_pcpuvar_x86_64_gsval	%r10, %r9
++	leaq	uk_pcpuvar_cpu_id(%rip), %r11
++	addq	%r10, %r11
++	cmpq	%rbx, (%r11)
++	je	2f
++	incq	%r9
++	jmp	1b
++2:
++	movq	%r10, %rsp
++	/* %rsp now holds the offset for the matching cpu slot */
+ 
+ 	/* Compute pointer into CPU variables array and store it in RBP
+ 	 * We do not use the frame pointer, yet
+@@ -397,8 +415,21 @@ no_avx512:
+ .pushsection .rodata
+ lcpu_start64_fail_msg:
+ .string "\nCRIT: Failed to boot on unsupported CPU: An extension is missing.\n"
++lcpu_start64_noslot_msg:
++.string "\nCRIT: No pcpuvar slot matches this APIC ID. Halting.\n"
+ .popsection
+ 
++fail_noslot:
++	/* This APIC ID has no matching pcpuvar slot. Park this CPU. */
++	LCPU_EARLY_COM1_INIT
++	LCPU_EARLY_COM1_PRINT lcpu_start64_noslot_msg
++
++fail_noslot_loop:
++	cli
++1:
++	hlt
++	jmp	1b
++
+ fail:
+ 	/* Briefly initialize COM1 and print error message */
+ 	LCPU_EARLY_COM1_INIT
 diff --git a/plat/kvm/x86/link64.lds.S b/plat/kvm/x86/link64.lds.S
 index fc156a0..5ad621f 100644
 --- a/plat/kvm/x86/link64.lds.S
@@ -85,3 +939,137 @@ index fc156a0..5ad621f 100644
  	stack PT_GNU_STACK FLAGS(PHDRS_PF_RW);
  }
  
+diff --git a/plat/native/arch/x86_64/except.c b/plat/native/arch/x86_64/except.c
+index 133b4e1..4e5d76c 100644
+--- a/plat/native/arch/x86_64/except.c
++++ b/plat/native/arch/x86_64/except.c
+@@ -654,61 +654,75 @@ __isr __uptr uk_plat_native_except_get_except_stack_base(void)
+ }
+ 
+ #if CONFIG_HAVE_SMP
+-static inline int x2apic_enable(void)
++static int apic_is_x2apic;
++static __u64 apic_base_addr;
++
++static inline int apic_enable(void)
+ {
+ 	__u32 eax, ebx, ecx, edx;
+ 
+ 	/* Check for x2APIC support */
+ 	uk_arch_x86_64_cpuid(1, 0, &eax, &ebx, &ecx, &edx);
+-	if (!(ecx & UK_ARCH_X86_64_CPUID1_ECX_X2APIC))
+-		return -ENOTSUP;
+-
+-	/* Check if APIC is active */
+-	uk_arch_x86_64_rdmsr(UK_ARCH_X86_64_APIC_MSR_BASE,
+-			     &eax, &edx);
+-	if (!(eax & UK_ARCH_X86_64_APIC_BASE_EN))
+-		return -ENOTSUP;
+-
+-	/* Switch to x2APIC mode */
+-	eax |= UK_ARCH_X86_64_APIC_BASE_EXTD;
+-	uk_arch_x86_64_wrmsr(UK_ARCH_X86_64_APIC_MSR_BASE,
+-			     eax, edx);
+-
+-	/* Set APIC software enable flag if necessary */
+-	uk_arch_x86_64_rdmsr(UK_ARCH_X86_64_APIC_MSR_SVR,
+-					    &eax, &edx);
+-	if ((eax & UK_ARCH_X86_64_APIC_SVR_EN) == 0) {
+-		eax |= UK_ARCH_X86_64_APIC_SVR_EN;
+-		uk_arch_x86_64_wrmsr(UK_ARCH_X86_64_APIC_MSR_SVR,
+-				     eax, edx);
++	if (ecx & UK_ARCH_X86_64_CPUID1_ECX_X2APIC) {
++		/* Check if APIC is active */
++		uk_arch_x86_64_rdmsr(UK_ARCH_X86_64_APIC_MSR_BASE,
++				     &eax, &edx);
++		if (eax & UK_ARCH_X86_64_APIC_BASE_EN) {
++			/* Switch to x2APIC mode */
++			eax |= UK_ARCH_X86_64_APIC_BASE_EXTD;
++			uk_arch_x86_64_wrmsr(UK_ARCH_X86_64_APIC_MSR_BASE,
++					     eax, edx);
++
++			/* Set APIC software enable flag if necessary */
++			uk_arch_x86_64_rdmsr(UK_ARCH_X86_64_APIC_MSR_SVR,
++							    &eax, &edx);
++			if ((eax & UK_ARCH_X86_64_APIC_SVR_EN) == 0) {
++				eax |= UK_ARCH_X86_64_APIC_SVR_EN;
++				uk_arch_x86_64_wrmsr(UK_ARCH_X86_64_APIC_MSR_SVR,
++						     eax, edx);
++			}
++			apic_is_x2apic = 1;
++			return 0;
++		}
+ 	}
+ 
+-	/*
+-	 * TODO: Configure spurious interrupt vector number
+-	 * After power-up or reset this is 0xff, which might not be
+-	 * configured in the trap table
+-	 */
++	/* Fall back to legacy xAPIC */
++	uk_arch_x86_64_rdmsr(UK_ARCH_X86_64_APIC_MSR_BASE, &eax, &edx);
++	if (!(eax & UK_ARCH_X86_64_APIC_BASE_EN)) {
++		eax |= UK_ARCH_X86_64_APIC_BASE_EN;
++		uk_arch_x86_64_wrmsr(UK_ARCH_X86_64_APIC_MSR_BASE, eax, edx);
++	}
++	apic_base_addr = ((__u64)eax & 0xFFFFF000UL);
++	if (!apic_base_addr)
++		apic_base_addr = 0xFEE00000UL;
++
++	/* Software enable via SVR at offset 0xF0 */
++	volatile __u32 *svr = (volatile __u32 *)(apic_base_addr + 0xF0);
++	*svr = (*svr) | 0x100 | 0xFF;
+ 
++	apic_is_x2apic = 0;
+ 	return 0;
+ }
+ 
+-static inline void x2apic_send_ipi(__u32 irqno, __u64 dest)
++static inline void apic_send_ipi(__u32 irqno, __u64 dest)
+ {
+-	__u32 eax;
+-
+-	UK_ASSERT(((32 + irqno) & 0xff) == (32 + irqno));
+-
+-	eax = UK_ARCH_X86_64_APIC_ICR_TRIGGER_LEVEL |
+-	      UK_ARCH_X86_64_APIC_ICR_LEVEL_ASSERT |
+-	      UK_ARCH_X86_64_APIC_ICR_DESTMODE_PHYSICAL |
+-	      UK_ARCH_X86_64_APIC_ICR_DMODE_FIXED | (32 + irqno);
+-
+-	uk_arch_x86_64_wrmsr(UK_ARCH_X86_64_APIC_MSR_ICR, eax, dest);
++	__u32 vector = (32 + irqno) & 0xff;
++
++	if (apic_is_x2apic) {
++		__u32 eax = UK_ARCH_X86_64_APIC_ICR_TRIGGER_LEVEL |
++			    UK_ARCH_X86_64_APIC_ICR_LEVEL_ASSERT |
++			    UK_ARCH_X86_64_APIC_ICR_DESTMODE_PHYSICAL |
++			    UK_ARCH_X86_64_APIC_ICR_DMODE_FIXED | vector;
++
++		uk_arch_x86_64_wrmsr(UK_ARCH_X86_64_APIC_MSR_ICR, eax, (__u32)dest);
++	} else {
++		volatile __u32 *icr_hi = (volatile __u32 *)(apic_base_addr + 0x310);
++		volatile __u32 *icr_lo = (volatile __u32 *)(apic_base_addr + 0x300);
++		*icr_hi = ((__u32)dest) << 24;
++		*icr_lo = 0x00004000U | vector;
++	}
+ }
+ 
+-#define apic_enable		x2apic_enable
+-#define apic_send_ipi		x2apic_send_ipi
+-
+ int uk_plat_native_except_send_ipi(__u64 id, __u32 irq)
+ {
+ 	apic_send_ipi(irq, id);
+diff --git a/plat/native/arch/x86_64/sysctx_auxsp.c b/plat/native/arch/x86_64/sysctx_auxsp.c
+index 6705173..b70ed4b 100644
+--- a/plat/native/arch/x86_64/sysctx_auxsp.c
++++ b/plat/native/arch/x86_64/sysctx_auxsp.c
+@@ -136,6 +136,8 @@ void uk_plat_native_set_auxsp(__uptr auxsp)
+ 	struct ukarch_auxspcb *auxspcb;
+ 
+ 	uk_pcpuvar_current_set(uk_plat_native_auxsp, auxsp);
++	if (!auxsp)
++		return;
+ 	auxspcb = ukarch_auxsp_get_cb(auxsp);
+ 	sc = (struct uk_plat_native_sysctx *)auxspcb->uksysctx;
+ 	sc->gsbase = rdgsbasefn();
