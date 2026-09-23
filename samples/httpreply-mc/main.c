@@ -33,6 +33,16 @@
 #include <uk/lcpu.h>
 #include <uk/lcpu/pm.h>
 #include <uk/pcpuvar.h>
+#if defined(CONFIG_LIBUKBOOT_PERCORE_HEAP) && CONFIG_LIBUKBOOT_PERCORE_HEAP
+#include <uk/allocbbuddy.h>
+
+/*
+ * These live in lib/ukboot. They are declared here directly
+ * to avoid including uk/boot.h in the app target.
+ */
+unsigned int uk_percore_heap_count(void);
+int uk_percore_heap_get(unsigned int i, __uptr *base, __sz *len);
+#endif
 #include <lwip/timeouts.h>
 #include <lwip/netif.h>
 #include <lwip/etharp.h>
@@ -82,6 +92,97 @@ struct worker_ctx {
 
 static struct worker_ctx mc_workers[MC_MAX_WORKERS];
 static int mc_nworkers;
+
+#if defined(CONFIG_LIBUKBOOT_PERCORE_HEAP) && CONFIG_LIBUKBOOT_PERCORE_HEAP
+/* Highest core index with a bound per-core allocator (cores 1..N). */
+static int mc_percore_ready;
+#endif
+
+/* One-shot alloc/free stress per core, run at worker start. */
+static int mc_selftest_done[MC_MAX_WORKERS];
+
+/*
+ * Bounded alloc/free stress on this core's own allocator. Proves
+ * that each core only touches its own region while all cores run
+ * at the same time.
+ */
+static void mc_percore_alloc_selftest(unsigned int core_id)
+{
+	unsigned int i;
+	unsigned int n = 4096;
+
+	if (mc_selftest_done[core_id])
+		return;
+	mc_selftest_done[core_id] = 1;
+
+	for (i = 0; i < n; i++) {
+		size_t sz = 4096 + (i * 65536) % 262144;
+		void *p = malloc(sz);
+
+		if (!p) {
+			printf("httpreply-mc: [ERR] core %u alloc self-test "
+			       "failed at iteration %u (size %zu)\n",
+			       (unsigned)core_id, i, sz);
+			return;
+		}
+		memset(p, 0x5A, sz);
+		free(p);
+	}
+
+	printf("httpreply-mc: core %u alloc self-test passed (%u iterations)\n",
+	       (unsigned)core_id, n);
+}
+
+/*
+ * Create a standalone bbuddy allocator on each per-core heap
+ * partition and bind it to that core's per-CPU slot. Core i uses
+ * partition i - 1. Core 0 keeps the default allocator.
+ */
+static void mc_percore_alloc_init(void)
+{
+#if defined(CONFIG_LIBUKBOOT_PERCORE_HEAP) && CONFIG_LIBUKBOOT_PERCORE_HEAP
+	unsigned int n = uk_percore_heap_count();
+	unsigned int i;
+
+	mc_percore_ready = 0;
+
+	for (i = 1; i <= n && i < MC_MAX_WORKERS &&
+	     i < CONFIG_UKPLAT_CPU_MAXCOUNT; i++) {
+		__uptr base;
+		__sz len;
+		struct uk_alloc *a;
+
+		if (uk_percore_heap_get(i - 1, &base, &len) < 0)
+			break;
+
+		a = uk_allocbbuddy_init((void *)base, len);
+		if (!a)
+			break;
+
+		uk_pcpuvar_lval(i, uk_pcpuvar_percore_alloc) = a;
+		mc_percore_ready = i;
+		printf("httpreply-mc: core %u per-core allocator %p+%lu\n",
+		       (unsigned)i, (void *)base, (unsigned long)len);
+	}
+
+	if (mc_percore_ready == 0)
+		printf("httpreply-mc: [WARN] no per-core heap partitions available\n");
+#endif
+}
+
+/*
+ * A core may run only when its per-core allocator slot is bound.
+ * Core 0 always runs on the default allocator.
+ */
+static int mc_core_has_percore_alloc(unsigned int core)
+{
+#if defined(CONFIG_LIBUKBOOT_PERCORE_HEAP) && CONFIG_LIBUKBOOT_PERCORE_HEAP
+	return (core == 0) || (core <= mc_percore_ready);
+#else
+	(void)core;
+	return 1;
+#endif
+}
 
 /*
  * Get the scheduler that owns vCPU idx by walking uk_sched_head,
@@ -271,6 +372,7 @@ static int create_core_listener(int core_id)
  */
 static __noreturn void run_to_completion_worker(int core_id)
 {
+	mc_percore_alloc_selftest(core_id);
 	struct worker_ctx *w = &mc_workers[core_id];
 	struct epoll_event events[MAX_EVENTS];
 	struct epoll_event ev;
@@ -444,7 +546,15 @@ static void mc_boot_secondary_cores(void)
 	int rc;
 
 	for (i = 1; i < MC_MAX_WORKERS && i < CONFIG_UKPLAT_CPU_MAXCOUNT; i++) {
-		void *stk = uk_malloc(a, 16384);
+		void *stk;
+
+		if (!mc_core_has_percore_alloc(i)) {
+			printf("httpreply-mc: [INFO] core %u not started: "
+			       "no per-core allocator bound\n", (unsigned)i);
+			continue;
+		}
+
+		stk = uk_malloc(a, 16384);
 		if (!stk)
 			continue;
 		ap_idx[num_aps] = i;
@@ -512,6 +622,8 @@ int main(int argc, char **argv)
 	printf(" Driver: AWS ENA multi-queue\n");
 	printf(" Stack: lwIP per-core state (SO_REUSEPORT)\n");
 	printf("=============================================\n\n");
+
+	mc_percore_alloc_init();
 
 	mc_boot_secondary_cores();
 

@@ -703,7 +703,15 @@ static void *ena_netbuf_alloc_helper(void *arg, uint64_t *phys_out, uint32_t *le
 		if (n == 0 || !nb)
 			return NULL;
 	} else {
+#ifdef __Unikraft__
+		/*
+		 * The run-to-completion core allocates from its own
+		 * per-core allocator (the default if none is bound).
+		 */
+		struct uk_alloc *a = uk_alloc_get_current();
+#else
 		struct uk_alloc *a = rxq ? rxq->allocator : uk_alloc_get_default();
+#endif
 		nb = uk_netbuf_alloc_buf(a, ENA_RX_BUF_SIZE, ENA_NETDEV_IOALIGN, 0, 0, NULL);
 		if (!nb)
 			return NULL;

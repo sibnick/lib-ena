@@ -44,6 +44,386 @@ index 04bc0ed..1cbb4b6 100644
  	}
  
  	iolock = _SHOULD_LOCK(of->mode);
+diff --git a/lib/ukalloc/alloc.c b/lib/ukalloc/alloc.c
+index b7bf88f..121e5e4 100644
+--- a/lib/ukalloc/alloc.c
++++ b/lib/ukalloc/alloc.c
+@@ -41,18 +41,32 @@
+ #include <uk/assert.h>
+ #include <uk/arch/limits.h>
+ #include <uk/lcpu.h>
++#include <uk/alloc.h>
+ #include <uk/paging.h>
+ 
+ #if CONFIG_HAVE_MEMTAG
+ #include <uk/arch/memtag.h>
+ #endif
+ 
++#if defined(CONFIG_LIBUKPCPUVAR) && CONFIG_LIBUKPCPUVAR
++#include <uk/pcpuvar.h>
++#endif /* CONFIG_LIBUKPCPUVAR */
++
+ #define size_to_num_pages(size) \
+ 	(UK_PAGING_PAGE_ALIGN_UP((unsigned long)(size)) / __PAGE_SIZE)
+ #define page_off(x) ((unsigned long)(x) & (__PAGE_SIZE - 1))
+ 
+ struct uk_alloc *_uk_alloc_head;
+ 
++#if defined(CONFIG_LIBUKPCPUVAR) && CONFIG_LIBUKPCPUVAR
++/*
++ * Per-CPU slot holding a pointer to this core's standalone
++ * allocator instance. NULL means "use the default allocator".
++ * Populated at core bring-up when the per-core heap is enabled.
++ */
++struct uk_alloc * __uk_pcpuvar uk_pcpuvar_percore_alloc;
++#endif /* CONFIG_LIBUKPCPUVAR */
++
+ int uk_alloc_register(struct uk_alloc *a)
+ {
+ 	struct uk_alloc *this = _uk_alloc_head;
+@@ -629,3 +643,22 @@ unsigned long uk_alloc_pavailmem_total(void)
+ 	}
+ 	return total;
+ }
++
++/*
++ * Return the allocator bound to the current CPU core.
++ *
++ * Returns the per-core standalone allocator instance when one is
++ * bound to the current core (CONFIG_LIBUKBOOT_PERCORE_HEAP), and
++ * the default allocator otherwise.
++ */
++struct uk_alloc *uk_alloc_get_current(void)
++{
++#if defined(CONFIG_LIBUKPCPUVAR) && CONFIG_LIBUKPCPUVAR
++	struct uk_alloc *a = uk_pcpuvar_current_get(uk_pcpuvar_percore_alloc);
++
++	if (a)
++		return a;
++#endif /* CONFIG_LIBUKPCPUVAR */
++
++	return uk_alloc_get_default();
++}
+diff --git a/lib/ukalloc/exportsyms.uk b/lib/ukalloc/exportsyms.uk
+index 5a8edfc..daa1364 100644
+--- a/lib/ukalloc/exportsyms.uk
++++ b/lib/ukalloc/exportsyms.uk
+@@ -19,6 +19,8 @@ uk_alloc_pmaxalloc_compat
+ uk_alloc_pavailmem_compat
+ uk_alloc_availmem_total
+ uk_alloc_pavailmem_total
++uk_alloc_get_current
++uk_pcpuvar_percore_alloc
+ _uk_alloc_head
+ uk_alloc_stats_get
+ _uk_alloc_stats_global
+diff --git a/lib/ukalloc/include/uk/alloc.h b/lib/ukalloc/include/uk/alloc.h
+index 7ea51f1..c8feb03 100644
+--- a/lib/ukalloc/include/uk/alloc.h
++++ b/lib/ukalloc/include/uk/alloc.h
+@@ -41,6 +41,10 @@
+ #include <uk/essentials.h>
+ #include <errno.h>
+ 
++#if defined(CONFIG_LIBUKPCPUVAR) && CONFIG_LIBUKPCPUVAR
++#include <uk/pcpuvar.h>
++#endif /* CONFIG_LIBUKPCPUVAR */
++
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+@@ -124,6 +128,14 @@ struct uk_alloc {
+ 
+ extern struct uk_alloc *_uk_alloc_head;
+ 
++#if defined(CONFIG_LIBUKPCPUVAR) && CONFIG_LIBUKPCPUVAR
++/*
++ * Per-CPU slot: this core's standalone allocator.
++ * NULL means "use the default allocator".
++ */
++extern struct uk_alloc * __uk_pcpuvar uk_pcpuvar_percore_alloc;
++#endif /* CONFIG_LIBUKPCPUVAR */
++
+ /* Iterate over all registered allocators */
+ #define uk_alloc_foreach(iter)			\
+ 	for (iter = _uk_alloc_head;		\
+@@ -135,10 +147,25 @@ struct uk_alloc *uk_alloc_get_default(void);
+ #else /* !CONFIG_LIBUKALLOC_IFSTATS_PERLIB */
+ static inline struct uk_alloc *uk_alloc_get_default(void)
+ {
++#if defined(CONFIG_LIBUKPCPUVAR) && CONFIG_LIBUKPCPUVAR
++	struct uk_alloc *a = uk_pcpuvar_current_get(uk_pcpuvar_percore_alloc);
++
++	if (a)
++		return a;
++#endif
++
+ 	return _uk_alloc_head;
+ }
++
+ #endif /* !CONFIG_LIBUKALLOC_IFSTATS_PERLIB */
+ 
++/*
++ * Returns the allocator bound to the current CPU core.
++ * Returns the per-core standalone allocator when one is bound
++ * to this core, and the default allocator otherwise.
++ */
++struct uk_alloc *uk_alloc_get_current(void);
++
+ /* wrapper functions */
+ static inline void *uk_do_malloc(struct uk_alloc *a, __sz size)
+ {
+diff --git a/lib/ukalloc/libstats.c b/lib/ukalloc/libstats.c
+index b4f7d55..84e53bb 100644
+--- a/lib/ukalloc/libstats.c
++++ b/lib/ukalloc/libstats.c
+@@ -48,8 +48,19 @@
+ #include <uk/essentials.h>
+ #include <uk/preempt.h>
+ 
++#if defined(CONFIG_LIBUKPCPUVAR) && CONFIG_LIBUKPCPUVAR
++#include <uk/pcpuvar.h>
++#endif
++
+ static inline struct uk_alloc *_uk_alloc_get_actual_default(void)
+ {
++#if defined(CONFIG_LIBUKPCPUVAR) && CONFIG_LIBUKPCPUVAR
++	struct uk_alloc *a = uk_pcpuvar_current_get(uk_pcpuvar_percore_alloc);
++
++	if (a)
++		return a;
++#endif
++
+ 	return _uk_alloc_head;
+ }
+ 
+diff --git a/lib/ukboot/Config.uk b/lib/ukboot/Config.uk
+index cee02cb..e321b56 100644
+--- a/lib/ukboot/Config.uk
++++ b/lib/ukboot/Config.uk
+@@ -144,6 +144,18 @@ config LIBUKBOOT_HEAP_BASE
+ 	depends on LIBUKPAGING
+ 	depends on LIBUKBOOT_INITALLOC
+ 
++config LIBUKBOOT_PERCORE_HEAP
++	bool "Per-core heap partitions"
++	default n
++	depends on LIBUKBOOT_INITALLOC
++	help
++	  Split the largest free memory region at boot into N-1
++	  partitions (N = CPU max count). Each non-boot core can then
++	  run a standalone allocator instance on its own partition. The
++	  boot core keeps the remaining region as the default allocator.
++	  This enables a run-to-completion design where each core
++	  allocates only from its own memory region.
++
+ # Hidden configuration option that specifies that scheduling should be
+ # initialized. The check for !LIBUKBOOT_INITNOSCHED is not sufficient, as
+ # the option is also not available if !LIBUKBOOT_INITALLOC is set. The
+diff --git a/lib/ukboot/boot.c b/lib/ukboot/boot.c
+index abbb394..8188bf9 100644
+--- a/lib/ukboot/boot.c
++++ b/lib/ukboot/boot.c
+@@ -100,6 +100,10 @@
+ #include <uk/intctlr.h>
+ #endif /* CONFIG_LIBUKINTCTLR */
+ 
++#if CONFIG_LIBUKBOOT_PERCORE_HEAP
++#include <uk/pal/page.h>
++#endif /* CONFIG_LIBUKBOOT_PERCORE_HEAP */
++
+ #include "init.h"
+ 
+ extern char **boot_argv;
+@@ -117,6 +121,123 @@ struct uk_semaphore main_sema;
+ static struct uk_vas kernel_vas;
+ #endif /* CONFIG_LIBUKBOOT_HEAP_BASE && CONFIG_LIBUKVMEM */
+ 
++#if CONFIG_LIBUKBOOT_PERCORE_HEAP
++
++/*
++ * Partition of the boot heap reserved for one non-boot core.
++ * Partition i is the region for core i + 1. Core 0 keeps the
++ * remaining (default) region.
++ */
++struct percore_heap_part {
++	__uptr base;
++	__sz len;
++};
++
++static struct percore_heap_part percore_heap_parts
++	[CONFIG_UKPLAT_CPU_MAXCOUNT > 1 ?
++	 CONFIG_UKPLAT_CPU_MAXCOUNT - 1 : 1];
++
++static unsigned int percore_heap_count;
++
++/* A per-core partition smaller than this size is not useful. */
++#define UK_PERCORE_HEAP_MIN_SIZE	(16UL << 20)
++
++/*
++ * Carve one partition from the largest free memory region for each
++ * non-boot core. This function must run before uk_alloc_init() in
++ * heap_init(), since the default allocator takes ownership of the
++ * remaining free regions afterwards.
++ */
++static void percore_heap_init(void)
++{
++	struct ukplat_memregion_desc *md;
++	struct ukplat_memregion_desc *biggest = NULL;
++	unsigned int ncores = CONFIG_UKPLAT_CPU_MAXCOUNT;
++	unsigned int i;
++	__sz part;
++
++	if (ncores < 2)
++		return;
++
++	ukplat_memregion_foreach(&md, UKPLAT_MEMRT_FREE, 0, 0) {
++		if (!biggest || md->len > biggest->len)
++			biggest = md;
++	}
++
++	if (!biggest) {
++		uk_pr_info("ukboot: per-core heap: no free region found\n");
++		return;
++	}
++
++	part = UK_PAL_PAGE_ALIGN_DOWN(biggest->len / ncores);
++	if (part < UK_PERCORE_HEAP_MIN_SIZE) {
++		uk_pr_info("ukboot: per-core heap disabled: "
++			  "partition size %lu too small\n",
++			(unsigned long)part);
++		return;
++	}
++
++	for (i = 1; i < ncores; i++) {
++		void *base;
++
++		base = ukplat_memregion_alloc(part, UKPLAT_MEMRT_RESERVED,
++						UKPLAT_MEMRF_READ |
++						UKPLAT_MEMRF_WRITE);
++		if (!base)
++			break;
++
++		percore_heap_parts[i - 1].base = (__uptr)base;
++		percore_heap_parts[i - 1].len = part;
++		percore_heap_count = i;
++
++		uk_pr_info("ukboot: per-core heap: partition %u "
++			  "%p+%lu for core %u\n",
++			(unsigned int)(i - 1), (void *)base,
++			(unsigned long)part, (unsigned int)i);
++	}
++
++	if (percore_heap_count) {
++		uk_pr_info("ukboot: per-core heap: %u partition(s) "
++			  "of %lu bytes; core 0 keeps the default region\n",
++			(unsigned int)percore_heap_count,
++			(unsigned long)part);
++	} else {
++		uk_pr_info("ukboot: per-core heap: no partition carved\n");
++	}
++}
++
++unsigned int uk_percore_heap_count(void)
++{
++	return percore_heap_count;
++}
++
++int uk_percore_heap_get(unsigned int i, __uptr *base, __sz *len)
++{
++	if (i >= percore_heap_count)
++		return -EINVAL;
++
++	*base = percore_heap_parts[i].base;
++	*len = percore_heap_parts[i].len;
++	return 0;
++}
++
++#else /* CONFIG_LIBUKBOOT_PERCORE_HEAP */
++
++unsigned int uk_percore_heap_count(void)
++{
++	return 0;
++}
++
++int uk_percore_heap_get(unsigned int i, __uptr *base, __sz *len)
++{
++	(void)i;
++	(void)base;
++	(void)len;
++	return -ENOTSUP;
++}
++
++#endif /* CONFIG_LIBUKBOOT_PERCORE_HEAP */
++
+ static struct uk_alloc *heap_init()
+ {
+ 	struct uk_alloc *a = NULL;
+@@ -210,6 +331,13 @@ static struct uk_alloc *heap_init()
+ 	 * again with the next region. As soon we have an allocator, we simply
+ 	 * add every subsequent region to it.
+ 	 */
++#if CONFIG_LIBUKBOOT_PERCORE_HEAP
++	/* Reserve one region per non-boot core before the default
++	 * allocator claims the remaining free regions.
++	 */
++	percore_heap_init();
++#endif /* CONFIG_LIBUKBOOT_PERCORE_HEAP */
++
+ 	ukplat_memregion_foreach(&md, UKPLAT_MEMRT_FREE, 0, 0) {
+ 		UK_ASSERT_VALID_FREE_MRD(md);
+ 
+diff --git a/lib/ukboot/exportsyms.uk b/lib/ukboot/exportsyms.uk
+index de526bf..18d76cd 100644
+--- a/lib/ukboot/exportsyms.uk
++++ b/lib/ukboot/exportsyms.uk
+@@ -3,3 +3,5 @@ uk_version
+ uk_boot_shutdown_req
+ uk_boot_early_init
+ uk_boot_entry
++uk_percore_heap_count
++uk_percore_heap_get
+diff --git a/lib/ukboot/include/uk/boot.h b/lib/ukboot/include/uk/boot.h
+index 8e78944..591ae7b 100644
+--- a/lib/ukboot/include/uk/boot.h
++++ b/lib/ukboot/include/uk/boot.h
+@@ -8,6 +8,7 @@
+ 
+ #include <uk/config.h>
+ #include <errno.h>
++#include <uk/essentials.h>
+ #include <uk/plat/common/bootinfo.h>
+ #include <uk/pm.h>
+ 
+@@ -60,6 +61,28 @@ int uk_boot_shutdown_req(enum uk_pm_shutdown_op target);
+ 	({ -ENOTSUP; })
+ #endif /* !CONFIG_LIBUKBOOT_MAINTHREAD */
+ 
++/**
++ * Number of per-core heap partitions carved at boot.
++ *
++ * Returns 0 when CONFIG_LIBUKBOOT_PERCORE_HEAP is disabled or
++ * when no partition could be carved.
++ */
++unsigned int uk_percore_heap_count(void);
++
++/**
++ * Get a per-core heap partition (base address and length).
++ *
++ * Partition i is the region reserved for core i + 1.
++ *
++ * @param i Partition index (0-based).
++ * @param base Output: partition base address.
++ * @param len Output: partition length in bytes.
++ * @returns
++ *   - (0): Success.
++ *   - (-EINVAL): i is out of range.
++ */
++int uk_percore_heap_get(unsigned int i, __uptr *base, __sz *len);
++
+ #ifdef __cplusplus
+ }
+ #endif
 diff --git a/lib/uknetdev/include/uk/netdev.h b/lib/uknetdev/include/uk/netdev.h
 index 03bfe4a..5b3c46e 100644
 --- a/lib/uknetdev/include/uk/netdev.h
