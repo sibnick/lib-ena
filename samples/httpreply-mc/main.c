@@ -46,6 +46,7 @@ int uk_percore_heap_get(unsigned int i, __uptr *base, __sz *len);
 #include <lwip/timeouts.h>
 #include <lwip/netif.h>
 #include <lwip/etharp.h>
+#include <lwip/tcp.h>
 #include "netif/uknetdev.h"
 #include "lwip_percore.h"
 
@@ -177,7 +178,7 @@ static void mc_percore_alloc_init(void)
 static int mc_core_has_percore_alloc(unsigned int core)
 {
 #if defined(CONFIG_LIBUKBOOT_PERCORE_HEAP) && CONFIG_LIBUKBOOT_PERCORE_HEAP
-	return (core == 0) || (core <= mc_percore_ready);
+	return (core == 0) || (core <= (unsigned int)mc_percore_ready);
 #else
 	(void)core;
 	return 1;
@@ -228,6 +229,20 @@ static int set_epoll_events(int epfd, int fd, uint32_t events)
 	return epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &ev);
 }
 
+void ena_netdev_dump_queue(struct uk_netdev *dev, uint16_t qid);
+
+static unsigned int mc_count_memp_free(void *head)
+{
+	unsigned int count = 0;
+	void **cur = (void **)head;
+
+	while (cur && count < 65536) {
+		count++;
+		cur = (void **)*cur;
+	}
+	return count;
+}
+
 /*
  * Drive the local core network stack: receive packets from dedicated
  * RX queue and process local stack timers.
@@ -236,9 +251,29 @@ static void drive_core_stack(int core_id)
 {
 	static unsigned long poll_cnt[MC_MAX_WORKERS];
 	if ((++poll_cnt[core_id] % 5000000UL) == 0) {
-		struct tcp_pcb_listen *l = lwip_get_core_state()->tcp_listen_pcbs.listen_pcbs;
-		printf("httpreply-mc: core %d heartbeat (polls=%lu, lwip_core=%u, listen_pcb=%p)\n",
-		       core_id, poll_cnt[core_id], lwip_current_core_id(), (void *)l);
+		struct lwip_core_state *cs = lwip_get_core_state();
+		struct tcp_pcb_listen *l = cs->tcp_listen_pcbs.listen_pcbs;
+		unsigned int active_pcbs = 0;
+		struct tcp_pcb *p;
+		unsigned int m_pbuf = 0, m_pcb = 0, m_seg = 0;
+
+		for (p = cs->tcp_active_pcbs; p != NULL; p = p->next)
+			active_pcbs++;
+
+		if (cs->memp_tabs[0])
+			m_pbuf = mc_count_memp_free(cs->memp_tabs[0]);
+		if (cs->memp_tabs[1])
+			m_pcb = mc_count_memp_free(cs->memp_tabs[1]);
+		if (cs->memp_tabs[2])
+			m_seg = mc_count_memp_free(cs->memp_tabs[2]);
+
+		printf("httpreply-mc: core %d heartbeat (polls=%lu, lwip_core=%u, listen_pcb=%p, active=%u, memp_free: pbuf=%u pcb=%u seg=%u)\n",
+		       core_id, poll_cnt[core_id], lwip_current_core_id(), (void *)l,
+		       active_pcbs, m_pbuf, m_pcb, m_seg);
+
+		struct uk_netdev *dev = uk_netdev_get(0);
+		if (dev)
+			ena_netdev_dump_queue(dev, (uint16_t)core_id);
 	}
 	uknetdev_poll_rxqueue((uint16_t)core_id);
 	sys_check_timeouts();

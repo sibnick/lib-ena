@@ -238,6 +238,9 @@ struct ena_ring {
 	uint64_t tx_bytes;
 	uint64_t rx_packets;
 	uint64_t rx_bytes;
+	uint64_t rx_dropped;
+	uint64_t tx_dropped;
+	uint64_t rx_refill_err;
 	uint64_t stats_print_acc;
 	/* Phase 9: Low Latency Queue (LLQ) metadata */
 	bool is_llq;
@@ -540,6 +543,13 @@ void ena_rx_doorbell(struct ena_ring *ring);
  */
 int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 		unsigned int max_pkts);
+
+/**
+ * Dump ring diagnostic state to the log.
+ *
+ * @param ring Pointer to the ring structure.
+ */
+void ena_ring_dump_state(const struct ena_ring *ring);
 
 #endif /* LIBENA_ENA_DATAPATH_H */
 

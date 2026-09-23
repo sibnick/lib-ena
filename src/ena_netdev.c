@@ -430,6 +430,84 @@ static int ena_netdev_tx_xmit_one(struct ena_ring *ring,
 
 
 
+static void *ena_netbuf_alloc_helper(void *arg, uint64_t *phys_out, uint32_t *len_out)
+{
+	struct uk_netdev_rx_queue *rxq = (struct uk_netdev_rx_queue *)arg;
+	struct uk_netbuf *nb = NULL;
+	uint64_t phys;
+
+	if (rxq && rxq->alloc_rxpkts) {
+		uint16_t n = rxq->alloc_rxpkts(rxq->alloc_rxpkts_argp, &nb, 1);
+		if (n == 0 || !nb)
+			return NULL;
+	} else {
+#ifdef __Unikraft__
+		/*
+		 * The run-to-completion core allocates from its own
+		 * per-core allocator (the default if none is bound).
+		 */
+		struct uk_alloc *a = uk_alloc_get_current();
+		nb = uk_netbuf_alloc_buf(a, ENA_RX_BUF_SIZE, ENA_NETDEV_IOALIGN, 0, 0, NULL);
+		if (!nb)
+			return NULL;
+#else
+		return NULL;
+#endif
+	}
+
+	phys = (uint64_t)(uintptr_t)nb->data;
+	if (phys < ENA_DMA_LOW_MEM_LIMIT && rxq && rxq->bounce_buf) {
+		if (rxq->bounce_free_count == 0) {
+			/* No free bounce slots available */
+#ifdef __Unikraft__
+			uk_netbuf_free(nb);
+#endif
+			return NULL;
+		}
+
+		uint16_t slot = rxq->bounce_free_ids[rxq->bounce_free_head];
+		rxq->bounce_free_head = (uint16_t)((rxq->bounce_free_head + 1) & (rxq->nb_desc - 1));
+		rxq->bounce_free_count--;
+		rxq->pending_slot = (int16_t)slot;
+
+		if (phys_out)
+			*phys_out = rxq->bounce_phys + ((uint64_t)slot * ENA_RX_BUF_SIZE);
+		if (len_out) {
+			/* Never offer more than the netbuf can hold */
+			*len_out = (nb->buflen < ENA_RX_BUF_SIZE) ? (uint32_t)nb->buflen
+			                                       : (uint32_t)ENA_RX_BUF_SIZE;
+		}
+	} else {
+		if (phys_out)
+			*phys_out = phys;
+		if (len_out)
+			*len_out = (uint32_t)nb->buflen;
+	}
+
+	return nb;
+}
+
+/* Check whether the next completion descriptor is ready. */
+static int ena_netdev_rx_status(struct ena_ring *ring)
+{
+	int status = UK_NETDEV_STATUS_SUCCESS;
+
+	if (ring->cq_virt) {
+		const struct ena_eth_io_rx_cdesc_base *cdesc_ring =
+			(const struct ena_eth_io_rx_cdesc_base *)ring->cq_virt;
+		volatile const uint32_t *status_ptr =
+			(volatile const uint32_t *)&cdesc_ring[ring->cq_head & (ring->cq_depth - 1)].status;
+		uint32_t status_val = ena_le32_to_cpu(*status_ptr);
+		uint8_t phase = (uint8_t)((status_val & ENA_ETH_IO_RX_CDESC_BASE_PHASE_MASK) >>
+					  ENA_ETH_IO_RX_CDESC_BASE_PHASE_SHIFT);
+
+		if (phase == ring->cq_phase)
+			status |= UK_NETDEV_STATUS_MORE;
+	}
+
+	return status;
+}
+
 #ifdef __Unikraft__
 
 
@@ -692,63 +770,6 @@ static struct uk_netdev_tx_queue *ena_netdev_txq_configure(struct uk_netdev *dev
 	return &edev->tx_queues[queue_id];
 }
 
-static void *ena_netbuf_alloc_helper(void *arg, uint64_t *phys_out, uint32_t *len_out)
-{
-	struct uk_netdev_rx_queue *rxq = (struct uk_netdev_rx_queue *)arg;
-	struct uk_netbuf *nb = NULL;
-	uint64_t phys;
-
-	if (rxq && rxq->alloc_rxpkts) {
-		uint16_t n = rxq->alloc_rxpkts(rxq->alloc_rxpkts_argp, &nb, 1);
-		if (n == 0 || !nb)
-			return NULL;
-	} else {
-#ifdef __Unikraft__
-		/*
-		 * The run-to-completion core allocates from its own
-		 * per-core allocator (the default if none is bound).
-		 */
-		struct uk_alloc *a = uk_alloc_get_current();
-#else
-		struct uk_alloc *a = rxq ? rxq->allocator : uk_alloc_get_default();
-#endif
-		nb = uk_netbuf_alloc_buf(a, ENA_RX_BUF_SIZE, ENA_NETDEV_IOALIGN, 0, 0, NULL);
-		if (!nb)
-			return NULL;
-	}
-
-	phys = (uint64_t)(uintptr_t)nb->data;
-	if (phys < ENA_DMA_LOW_MEM_LIMIT && rxq && rxq->bounce_buf) {
-		if (rxq->bounce_free_count == 0) {
-			/* No free bounce slots available */
-#ifdef __Unikraft__
-			uk_netbuf_free(nb);
-#endif
-			return NULL;
-		}
-
-		uint16_t slot = rxq->bounce_free_ids[rxq->bounce_free_head];
-		rxq->bounce_free_head = (uint16_t)((rxq->bounce_free_head + 1) & (rxq->nb_desc - 1));
-		rxq->bounce_free_count--;
-		rxq->pending_slot = (int16_t)slot;
-
-		if (phys_out)
-			*phys_out = rxq->bounce_phys + ((uint64_t)slot * ENA_RX_BUF_SIZE);
-		if (len_out) {
-			/* Never offer more than the netbuf can hold */
-			*len_out = (nb->buflen < ENA_RX_BUF_SIZE) ? (uint32_t)nb->buflen
-			                                       : (uint32_t)ENA_RX_BUF_SIZE;
-		}
-	} else {
-		if (phys_out)
-			*phys_out = phys;
-		if (len_out)
-			*len_out = (uint32_t)nb->buflen;
-	}
-
-	return nb;
-}
-
 static int ena_netdev_start(struct uk_netdev *dev)
 {
 	struct ena_uk_device *edev = to_enadevice(dev);
@@ -799,19 +820,16 @@ static int ena_netdev_stop(struct uk_netdev *dev)
  * request IDs and SQ descriptors of completed packets. Without it the
  * completion queue drains only when the next packet is sent, and the
  * ring exhausts while the peer pauses. */
-static void ena_netdev_poll_tx_completions(struct ena_adapter *adapter)
+/* Reap TX completions from one dedicated TX ring. */
+static void ena_netdev_poll_tx_completions_queue(struct ena_adapter *adapter,
+						 uint16_t queue_id)
 {
-	uint16_t q, count;
-
 	if (!adapter || !adapter->tx_rings)
 		return;
 
-	count = adapter->num_tx_rings;
-	for (q = 0; q < count; q++) {
-		if (adapter->tx_rings[q])
-			ena_tx_poll_completions(adapter->tx_rings[q],
-						ENA_NETDEV_TX_POLL_BUDGET, NULL);
-	}
+	if (queue_id < adapter->num_tx_rings && adapter->tx_rings[queue_id])
+		ena_tx_poll_completions(adapter->tx_rings[queue_id],
+					ENA_NETDEV_TX_POLL_BUDGET, NULL);
 }
 
 int ena_netdev_rx_one(struct uk_netdev *dev,
@@ -826,22 +844,43 @@ int ena_netdev_rx_one(struct uk_netdev *dev,
 	if (!queue || !queue->ring || !pkt)
 		return -EINVAL;
 
-	/* Drain asynchronous events on every poll iteration. */
-	ena_netdev_drain_aenq(&edev->adapter);
+	/* Only queue 0 drains asynchronous events. */
+	if (queue->queue_id == 0)
+		ena_netdev_drain_aenq(&edev->adapter);
 
-	/* Reap TX completions on every poll iteration, including idle
-	 * ones, so descriptors are freed while the peer is quiet. */
-	ena_netdev_poll_tx_completions(&edev->adapter);
+	/* Reap TX completions for this queue only. */
+	ena_netdev_poll_tx_completions_queue(&edev->adapter, queue->queue_id);
 
 	ring = queue->ring;
 
+	/* Replenish depleted descriptors before polling. */
+	if (ring->free_req_count > 0) {
+		unsigned int refilled = 0;
+		int ref_ret = ena_rx_refill(ring, ring->free_req_count,
+					     ena_netbuf_alloc_helper, queue, &refilled);
+		if (ref_ret < 0 || (ring->free_req_count > 0 && refilled == 0))
+			ring->rx_refill_err++;
+	}
+
 	while (1) {
 		ret = ena_rx_poll(ring, &rx_pkt, 1);
-		if (ret <= 0)
+		if (ret <= 0) {
+			if (ring->free_req_count > 0) {
+				unsigned int refilled = 0;
+				int ref_ret = ena_rx_refill(ring, ring->free_req_count,
+							     ena_netbuf_alloc_helper, queue, &refilled);
+				if (ref_ret < 0 || (ring->free_req_count > 0 && refilled == 0))
+					ring->rx_refill_err++;
+			}
 			return 0;
+		}
 
-		if (!rx_pkt.netbuf)
+		if (!rx_pkt.netbuf) {
+			if (ring->free_req_count > 0)
+				ena_rx_refill(ring, ring->free_req_count,
+					      ena_netbuf_alloc_helper, queue, NULL);
 			return 0;
+		}
 
 		struct uk_netbuf *nb = (struct uk_netbuf *)rx_pkt.netbuf;
 		int16_t slot = (queue->bounce_map && rx_pkt.req_id < queue->nb_desc) ?
@@ -851,24 +890,24 @@ int ena_netdev_rx_one(struct uk_netdev *dev,
 		nb->len = rx_pkt.len;
 		nb->next = NULL;
 
-		/* Set DATA_VALID if hardware validated L3 & L4 checksums */
+		/* Set DATA_VALID if hardware validated L3 and L4 checksums. */
 		if (!rx_pkt.l3_csum_err && !rx_pkt.l4_csum_err && rx_pkt.l4_csum_checked)
 			nb->flags |= UK_NETBUF_F_DATA_VALID;
 
-		/* Copy payload if received into a low memory bounce slot */
+		/* Copy payload if received into a low memory bounce slot. */
 		if (slot >= 0) {
 			queue->bounce_map[rx_pkt.req_id] = -1;
 			if (queue->bounce_buf && (uint16_t)slot < queue->nb_desc && nb->data) {
 				void *slot_virt = (char *)queue->bounce_buf + ((size_t)slot * ENA_RX_BUF_SIZE);
 
-				/* Drop the packet if it does not fit the application buffer */
+				/* Drop the packet if it does not fit the application buffer. */
 				if (rx_pkt.len <= nb->buflen)
 					memcpy(nb->data, slot_virt, rx_pkt.len);
 				else
 					dropped = true;
 			}
 
-			/* Return slot to bounce free pool */
+			/* Return slot to bounce free pool. */
 			if (queue->bounce_free_ids && queue->nb_desc > 0) {
 				queue->bounce_free_ids[queue->bounce_free_tail] = (uint16_t)slot;
 				queue->bounce_free_tail = (uint16_t)((queue->bounce_free_tail + 1) & (queue->nb_desc - 1));
@@ -877,33 +916,44 @@ int ena_netdev_rx_one(struct uk_netdev *dev,
 		}
 
 		if (dropped) {
+			ring->rx_dropped++;
 			ena_netdev_rxq_drop_netbuf(queue, nb);
-			ena_rx_refill(ring, 1, ena_netbuf_alloc_helper, queue, NULL);
+			if (ring->free_req_count > 0) {
+				unsigned int refilled = 0;
+				int ref_ret = ena_rx_refill(ring, ring->free_req_count,
+							     ena_netbuf_alloc_helper, queue, &refilled);
+				if (ref_ret < 0 || (ring->free_req_count > 0 && refilled == 0))
+					ring->rx_refill_err++;
+			}
 			return 0;
 		}
 
-		ena_rx_refill(ring, 1, ena_netbuf_alloc_helper, queue, NULL);
+		/* Replenish consumed descriptors. */
+		if (ring->free_req_count > 0) {
+			unsigned int refilled = 0;
+			int ref_ret = ena_rx_refill(ring, ring->free_req_count,
+						     ena_netbuf_alloc_helper, queue, &refilled);
+			if (ref_ret < 0 || (ring->free_req_count > 0 && refilled == 0))
+				ring->rx_refill_err++;
+		}
 
-		/* Packet reassembly: handle both single-descriptor and multi-descriptor (LRO/jumbo) chains */
+		/* Packet reassembly: handle both single-descriptor and multi-descriptor frames. */
 		if (!queue->chain_head) {
 			if (rx_pkt.first && !rx_pkt.last) {
-				/* Start of multi-descriptor frame */
 				queue->chain_head = nb;
 				queue->chain_tail = nb;
 				continue;
 			}
-			/* Complete single-descriptor frame */
 			*pkt = nb;
-			return UK_NETDEV_STATUS_SUCCESS;
+			return ena_netdev_rx_status(ring);
 		} else {
-			/* Continuation of multi-descriptor frame */
 			queue->chain_tail->next = nb;
 			queue->chain_tail = nb;
 			if (rx_pkt.last) {
 				*pkt = queue->chain_head;
 				queue->chain_head = NULL;
 				queue->chain_tail = NULL;
-				return UK_NETDEV_STATUS_SUCCESS;
+				return ena_netdev_rx_status(ring);
 			}
 			continue;
 		}
@@ -942,11 +992,15 @@ int ena_netdev_tx_one(struct uk_netdev *dev __attribute__((unused)),
 
 	phys = (uint64_t)(uintptr_t)pkt->data;
 	if (phys < ENA_DMA_LOW_MEM_LIMIT) {
-		if (queue->bounce_free_count == 0)
+		if (queue->bounce_free_count == 0) {
+			ring->tx_dropped++;
 			return -EBUSY;
+		}
 
-		if (pkt->len > ENA_TX_BOUNCE_SIZE)
+		if (pkt->len > ENA_TX_BOUNCE_SIZE) {
+			ring->tx_dropped++;
 			return -EINVAL;
+		}
 
 		slot = queue->bounce_free_ids[queue->bounce_free_head];
 		queue->bounce_free_head = (uint16_t)((queue->bounce_free_head + 1) & (queue->nb_desc - 1));
@@ -978,6 +1032,7 @@ int ena_netdev_tx_one(struct uk_netdev *dev __attribute__((unused)),
 		}
 		return UK_NETDEV_STATUS_SUCCESS;
 	} else {
+		ring->tx_dropped++;
 		if (used_bounce) {
 			queue->bounce_free_ids[queue->bounce_free_tail] = slot;
 			queue->bounce_free_tail = (uint16_t)((queue->bounce_free_tail + 1) & (queue->nb_desc - 1));
@@ -1313,7 +1368,8 @@ static int ena_netdev_rxq_recv(struct uk_netdev *dev, uint16_t queue_id,
 		return -EAGAIN;
 
 	/* Drain asynchronous events on every poll iteration. */
-	ena_netdev_drain_aenq(dev->adapter);
+	if (queue_id == 0)
+		ena_netdev_drain_aenq(dev->adapter);
 
 	if (queue_id >= dev->nb_rx_queues || queue_id >= ENA_NETDEV_MAX_QUEUES)
 		return -EINVAL;
@@ -1324,13 +1380,34 @@ static int ena_netdev_rxq_recv(struct uk_netdev *dev, uint16_t queue_id,
 	ring = dev->adapter->rx_rings[queue_id];
 	rxq = &dev->rx_queues[queue_id];
 
+	/* Replenish depleted descriptors before polling if allocator is available. */
+	if (ring->free_req_count > 0 && rxq->alloc_rxpkts) {
+		unsigned int refilled = 0;
+		int ref_ret = ena_rx_refill(ring, ring->free_req_count,
+					     ena_netbuf_alloc_helper, rxq, &refilled);
+		if (ref_ret < 0 || (ring->free_req_count > 0 && refilled == 0))
+			ring->rx_refill_err++;
+	}
+
 	while (1) {
 		ret = ena_rx_poll(ring, &rx_pkt, 1);
-		if (ret <= 0)
+		if (ret <= 0) {
+			if (ring->free_req_count > 0 && rxq->alloc_rxpkts) {
+				unsigned int refilled = 0;
+				int ref_ret = ena_rx_refill(ring, ring->free_req_count,
+							     ena_netbuf_alloc_helper, rxq, &refilled);
+				if (ref_ret < 0 || (ring->free_req_count > 0 && refilled == 0))
+					ring->rx_refill_err++;
+			}
 			return ret;
+		}
 
-		if (!rx_pkt.netbuf)
+		if (!rx_pkt.netbuf) {
+			if (ring->free_req_count > 0 && rxq->alloc_rxpkts)
+				ena_rx_refill(ring, ring->free_req_count,
+					      ena_netbuf_alloc_helper, rxq, NULL);
 			return 0;
+		}
 
 		struct uk_netbuf *nb = (struct uk_netbuf *)rx_pkt.netbuf;
 		int16_t slot = (rxq->bounce_map && rx_pkt.req_id < rxq->nb_desc) ?
@@ -1367,8 +1444,24 @@ static int ena_netdev_rxq_recv(struct uk_netdev *dev, uint16_t queue_id,
 		}
 
 		if (dropped) {
+			ring->rx_dropped++;
 			ena_netdev_rxq_drop_netbuf(rxq, nb);
+			if (ring->free_req_count > 0 && rxq->alloc_rxpkts) {
+				unsigned int refilled = 0;
+				int ref_ret = ena_rx_refill(ring, ring->free_req_count,
+							     ena_netbuf_alloc_helper, rxq, &refilled);
+				if (ref_ret < 0 || (ring->free_req_count > 0 && refilled == 0))
+					ring->rx_refill_err++;
+			}
 			return 0;
+		}
+
+		if (ring->free_req_count > 0 && rxq->alloc_rxpkts) {
+			unsigned int refilled = 0;
+			int ref_ret = ena_rx_refill(ring, ring->free_req_count,
+						     ena_netbuf_alloc_helper, rxq, &refilled);
+			if (ref_ret < 0 || (ring->free_req_count > 0 && refilled == 0))
+				ring->rx_refill_err++;
 		}
 
 		/* Packet reassembly: handle both single-descriptor and multi-descriptor (LRO/jumbo) chains */
@@ -1381,7 +1474,7 @@ static int ena_netdev_rxq_recv(struct uk_netdev *dev, uint16_t queue_id,
 			}
 			/* Complete single-descriptor frame */
 			*pkt = nb;
-			return 1;
+			return ena_netdev_rx_status(ring);
 		} else {
 			/* Continuation of multi-descriptor frame */
 			rxq->chain_tail->next = nb;
@@ -1390,7 +1483,7 @@ static int ena_netdev_rxq_recv(struct uk_netdev *dev, uint16_t queue_id,
 				*pkt = rxq->chain_head;
 				rxq->chain_head = NULL;
 				rxq->chain_tail = NULL;
-				return 1;
+				return ena_netdev_rx_status(ring);
 			}
 			continue;
 		}
@@ -1442,11 +1535,15 @@ static int ena_netdev_txq_xmit(struct uk_netdev *dev, uint16_t queue_id,
 
 	phys = pkt->phys_addr ? pkt->phys_addr : (uint64_t)(uintptr_t)pkt->data;
 	if (phys < ENA_DMA_LOW_MEM_LIMIT) {
-		if (txq->bounce_free_count == 0)
+		if (txq->bounce_free_count == 0) {
+			ring->tx_dropped++;
 			return -EBUSY;
+		}
 
-		if (pkt->len > ENA_TX_BOUNCE_SIZE)
+		if (pkt->len > ENA_TX_BOUNCE_SIZE) {
+			ring->tx_dropped++;
 			return -EINVAL;
+		}
 
 		slot = txq->bounce_free_ids[txq->bounce_free_head];
 		txq->bounce_free_head = (uint16_t)((txq->bounce_free_head + 1) & (txq->nb_desc - 1));
@@ -1478,6 +1575,7 @@ static int ena_netdev_txq_xmit(struct uk_netdev *dev, uint16_t queue_id,
 			txq->bounce_in_use = (txq->bounce_free_count < txq->nb_desc);
 		}
 	} else {
+		ring->tx_dropped++;
 		if (used_bounce) {
 			txq->bounce_free_ids[txq->bounce_free_tail] = slot;
 			txq->bounce_free_tail = (uint16_t)((txq->bounce_free_tail + 1) & (txq->nb_desc - 1));
@@ -1575,3 +1673,52 @@ int ena_netdev_link_state_get(struct uk_netdev *dev)
 }
 
 #endif /* !__Unikraft__ */
+
+void ena_netdev_dump_queue(struct uk_netdev *dev, uint16_t qid)
+{
+	struct ena_adapter *adapter;
+	struct uk_netdev_rx_queue *rxq = NULL;
+	struct uk_netdev_tx_queue *txq = NULL;
+
+	if (!dev)
+		return;
+
+#ifdef __Unikraft__
+	struct ena_uk_device *edev = to_enadevice(dev);
+
+	adapter = &edev->adapter;
+	if (qid < ENA_NETDEV_MAX_QUEUES) {
+		rxq = &edev->rx_queues[qid];
+		txq = &edev->tx_queues[qid];
+	}
+#else
+	adapter = dev->adapter;
+	if (qid < ENA_NETDEV_MAX_QUEUES) {
+		rxq = &dev->rx_queues[qid];
+		txq = &dev->tx_queues[qid];
+	}
+#endif
+
+	if (!adapter)
+		return;
+
+	if (adapter->rx_rings && qid < adapter->num_rx_rings && adapter->rx_rings[qid]) {
+		ena_ring_dump_state(adapter->rx_rings[qid]);
+		if (rxq && rxq->bounce_buf) {
+			ena_info("netdev rxq%u bounce: free=%u/%u",
+				 (unsigned int)qid, (unsigned int)rxq->bounce_free_count,
+				 (unsigned int)rxq->nb_desc);
+		}
+	}
+
+	if (adapter->tx_rings && qid < adapter->num_tx_rings && adapter->tx_rings[qid]) {
+		ena_ring_dump_state(adapter->tx_rings[qid]);
+		if (txq && txq->bounce_buf) {
+			ena_info("netdev txq%u bounce: free=%u/%u in_use=%d wait_polls=%u",
+				 (unsigned int)qid, (unsigned int)txq->bounce_free_count,
+				 (unsigned int)txq->nb_desc, (int)txq->bounce_in_use,
+				 (unsigned int)txq->bounce_wait_polls);
+		}
+	}
+}
+
