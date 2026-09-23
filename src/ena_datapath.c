@@ -606,4 +606,28 @@ int ena_ring_destroy_hw(struct ena_ring *ring)
 	return ret;
 }
 
+void ena_ring_dump_state(const struct ena_ring *ring)
+{
+	if (!ring)
+		return;
+
+	ena_info("ring q%u %s: SQ depth=%u tail=%u head=%u phase=%u free_req=%u db_off=0x%x CQ depth=%u head=%u phase=%u db_off=0x%x pkts=%lu bytes=%lu drops=%lu refill_errs=%lu",
+		 (unsigned int)ring->qid,
+		 ring->ring_type == ENA_RING_TYPE_RX ? "RX" : "TX",
+		 (unsigned int)ring->sq_depth,
+		 (unsigned int)ring->sq_tail,
+		 (unsigned int)ring->sq_head,
+		 (unsigned int)ring->sq_phase,
+		 (unsigned int)ring->free_req_count,
+		 (unsigned int)ring->sq_db_offset,
+		 (unsigned int)ring->cq_depth,
+		 (unsigned int)ring->cq_head,
+		 (unsigned int)ring->cq_phase,
+		 (unsigned int)ring->cq_db_offset,
+		 (unsigned long)(ring->ring_type == ENA_RING_TYPE_RX ? ring->rx_packets : ring->tx_packets),
+		 (unsigned long)(ring->ring_type == ENA_RING_TYPE_RX ? ring->rx_bytes : ring->tx_bytes),
+		 (unsigned long)(ring->ring_type == ENA_RING_TYPE_RX ? ring->rx_dropped : ring->tx_dropped),
+		 (unsigned long)ring->rx_refill_err);
+}
+
 

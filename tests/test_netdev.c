@@ -1080,6 +1080,180 @@ static void test_netdev_tx_csum_offload(void)
 	ena_netdev_free(netdev);
 }
 
+static bool g_burst_alloc_fail = false;
+
+static uint16_t mock_rx_burst_alloc_pkts(void *argp, struct uk_netbuf *pkts[], uint16_t count)
+{
+	(void)argp;
+	if (g_burst_alloc_fail)
+		return 0;
+
+	for (uint16_t i = 0; i < count; i++) {
+		struct uk_netbuf *nb = test_calloc(1, sizeof(*nb));
+		nb->buflen = 2048;
+		nb->data = test_calloc(1, 2048);
+		nb->phys_addr = (uint64_t)(uintptr_t)nb->data;
+		pkts[i] = nb;
+		track_netbuf(nb);
+	}
+	return count;
+}
+
+static void test_netdev_rx_burst_refill_and_state_dump(void)
+{
+	printf("[TEST] Running test_netdev_rx_burst_refill_and_state_dump...\n");
+
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+	struct uk_netdev_rxqueue_conf rx_conf;
+	struct uk_netdev_txqueue_conf tx_conf;
+	struct ena_ring *rx_ring;
+	struct uk_netbuf *rx_buf = NULL;
+	unsigned int refilled;
+	int ret;
+
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 1;
+	conf.nb_tx_queues = 1;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+
+	memset(&rx_conf, 0, sizeof(rx_conf));
+	memset(&tx_conf, 0, sizeof(tx_conf));
+	rx_conf.alloc_rxpkts = mock_rx_burst_alloc_pkts;
+	assert(netdev->ops->rxq_configure(netdev, 0, 8, &rx_conf) == 0);
+	assert(netdev->ops->txq_configure(netdev, 0, 8, &tx_conf) == 0);
+	assert(netdev->ops->dev_start(netdev) == 0);
+
+	rx_ring = g_adapter.rx_rings[0];
+
+	/* Initially populate 4 descriptors */
+	g_burst_alloc_fail = false;
+	assert(ena_rx_refill(rx_ring, 4, mock_rx_alloc_cb, NULL, &refilled) == 4);
+	assert(rx_ring->free_req_count == 4);
+
+	/* Simulate memory exhaustion during burst */
+	g_burst_alloc_fail = true;
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 4, 128, 0, 0);
+
+	/* Consume all 4 packets. Because allocator fails, refill cannot succeed */
+	for (int i = 0; i < 4; i++) {
+		rx_buf = NULL;
+		ret = netdev->ops->rxq_recv(netdev, 0, &rx_buf);
+		assert((ret & UK_NETDEV_STATUS_SUCCESS) != 0);
+		assert(rx_buf != NULL);
+		untrack_and_free_netbuf(rx_buf);
+	}
+
+	/* Ring is now depleted: all 8 slots are free, SQ has 0 descriptors in hardware */
+	assert(rx_ring->free_req_count == 8);
+	assert(rx_ring->rx_refill_err > 0);
+
+	/* Diagnostic dump runs cleanly during stall state */
+	ena_ring_dump_state(rx_ring);
+	ena_netdev_dump_queue(netdev, 0);
+
+	/* Idle poll while allocator still fails: returns 0, remains depleted */
+	rx_buf = NULL;
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 0);
+	assert(rx_ring->free_req_count == 8);
+
+	/* Memory frees up: allocator succeeds again */
+	g_burst_alloc_fail = false;
+
+	/* Idle poll replenishes all depleted descriptors */
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 0);
+	assert(rx_ring->free_req_count == 0);
+
+	/* Hardware can now receive new incoming packets */
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 128, 0, 0);
+	rx_buf = NULL;
+	ret = netdev->ops->rxq_recv(netdev, 0, &rx_buf);
+	assert((ret & UK_NETDEV_STATUS_SUCCESS) != 0);
+	assert(rx_buf != NULL);
+	untrack_and_free_netbuf(rx_buf);
+
+	assert(netdev->ops->dev_stop(netdev) == 0);
+	teardown_test_adapter(&g_adapter);
+	free_remaining_tracked_netbufs();
+	ena_netdev_free(netdev);
+
+	printf("[PASS] test_netdev_rx_burst_refill_and_state_dump passed\n");
+}
+
+static void test_netdev_rx_more_flag(void)
+{
+	printf("[TEST] Running test_netdev_rx_more_flag...\n");
+
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+	struct uk_netdev_rxqueue_conf rx_conf;
+	struct uk_netdev_txqueue_conf tx_conf;
+	struct ena_ring *rx_ring;
+	struct uk_netbuf *rx_buf = NULL;
+	unsigned int refilled;
+	int ret;
+
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 1;
+	conf.nb_tx_queues = 1;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+
+	memset(&rx_conf, 0, sizeof(rx_conf));
+	memset(&tx_conf, 0, sizeof(tx_conf));
+	assert(netdev->ops->rxq_configure(netdev, 0, 8, &rx_conf) == 0);
+	assert(netdev->ops->txq_configure(netdev, 0, 8, &tx_conf) == 0);
+	assert(netdev->ops->dev_start(netdev) == 0);
+
+	rx_ring = g_adapter.rx_rings[0];
+
+	/* Populate 4 buffers */
+	assert(ena_rx_refill(rx_ring, 4, mock_rx_alloc_cb, NULL, &refilled) == 4);
+
+	/* Emulate arrival of 2 packets in hardware completion queue */
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 2, 256, 0, 0);
+
+	/* First packet: more flag must be set */
+	rx_buf = NULL;
+	ret = netdev->ops->rxq_recv(netdev, 0, &rx_buf);
+	assert((ret & UK_NETDEV_STATUS_SUCCESS) != 0);
+	assert((ret & UK_NETDEV_STATUS_MORE) != 0);
+	assert(rx_buf != NULL);
+	test_free(rx_buf);
+
+	/* Second packet: queue now empty so more flag must be cleared */
+	rx_buf = NULL;
+	ret = netdev->ops->rxq_recv(netdev, 0, &rx_buf);
+	assert((ret & UK_NETDEV_STATUS_SUCCESS) != 0);
+	assert((ret & UK_NETDEV_STATUS_MORE) == 0);
+	assert(rx_buf != NULL);
+	test_free(rx_buf);
+
+	/* Third poll: queue is empty, returns 0 */
+	rx_buf = NULL;
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 0);
+
+	assert(netdev->ops->dev_stop(netdev) == 0);
+	for (uint16_t i = 0; i < rx_ring->sq_depth; i++) {
+		if (rx_ring->buffers.rx_bufs[i].netbuf) {
+			test_free(rx_ring->buffers.rx_bufs[i].netbuf);
+			rx_ring->buffers.rx_bufs[i].netbuf = NULL;
+		}
+	}
+	teardown_test_adapter(&g_adapter);
+	free_remaining_tracked_netbufs();
+	ena_netdev_free(netdev);
+
+	printf("[PASS] test_netdev_rx_more_flag passed\n");
+}
+
 int main(void)
 {
 	printf("========================================\n");
@@ -1104,9 +1278,11 @@ int main(void)
 	RUN_TEST(test_netdev_start_rollback);
 	RUN_TEST(test_netdev_free_running_teardown);
 	RUN_TEST(test_netdev_free_not_running);
+	RUN_TEST(test_netdev_rx_burst_refill_and_state_dump);
+	RUN_TEST(test_netdev_rx_more_flag);
 
 	printf("========================================\n");
-	printf("ALL PHASE 7 NETDEV TESTS PASSED (15/15) \n");
+	printf("ALL PHASE 7 NETDEV TESTS PASSED (17/17) \n");
 	printf("========================================\n");
 	return 0;
 }

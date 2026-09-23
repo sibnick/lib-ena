@@ -216,6 +216,7 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 		if (pkt_len > rx_buf->data_len) {
 			ena_err("rx poll: packet length %u exceeds buffer capacity %u",
 				pkt_len, rx_buf->data_len);
+			ring->rx_dropped++;
 			struct uk_netdev_rx_queue *rxq = (struct uk_netdev_rx_queue *)ring->drop_netbuf_arg;
 			if (rxq && rxq->bounce_map && req_id < rxq->nb_desc && rxq->bounce_map[req_id] >= 0) {
 				uint16_t slot = (uint16_t)rxq->bounce_map[req_id];

@@ -162,6 +162,16 @@ enum uk_netdev_state {
 #define UK_NETBUF_F_PARTIAL_CSUM   (1 << 1)
 #define UK_NETBUF_F_GSO_TCPV4      (1 << 2)
 
+#ifndef UK_NETDEV_STATUS_SUCCESS
+#define UK_NETDEV_STATUS_SUCCESS  (0x1)
+#endif
+#ifndef UK_NETDEV_STATUS_MORE
+#define UK_NETDEV_STATUS_MORE     (0x2)
+#endif
+#ifndef UK_NETDEV_STATUS_UNDERRUN
+#define UK_NETDEV_STATUS_UNDERRUN (0x4)
+#endif
+
 /* Hardware and driver capabilities */
 struct uk_netdev_info {
 	uint16_t max_rx_queues;
@@ -279,6 +289,14 @@ bool ena_netdev_link_get(struct uk_netdev *dev);
 int ena_netdev_link_state_get(struct uk_netdev *dev);
 
 #endif /* !__Unikraft__ */
+
+/**
+ * Dump diagnostic queue and ring state for a network device queue.
+ *
+ * @param dev Pointer to the network device.
+ * @param qid Queue index to dump.
+ */
+void ena_netdev_dump_queue(struct uk_netdev *dev, uint16_t qid);
 
 #endif /* LIBENA_ENA_NETDEV_H */
 
