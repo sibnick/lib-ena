@@ -1175,9 +1175,9 @@ static void test_validation_rss_configuration(void)
 	assert(g_hw.rss_set_ind_count == 1);
 	assert(g_hw.rss_ind_table_size == 128);
 
-	/* Verify indirection table routes across all 4 queues */
+	/* Verify indirection table routes across all 4 RX hardware queues */
 	for (int i = 0; i < 128; i++) {
-		assert(g_hw.rss_ind_table[i] == (i % 4));
+		assert(g_hw.rss_ind_table[i] == g_adapter.rx_rings[i % 4]->cq_idx);
 	}
 
 	/* Stop netdev and verify clean teardown */
@@ -1220,6 +1220,63 @@ static void test_validation_rss_configuration(void)
 		if (g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf) {
 			test_free(g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf);
 			g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf = NULL;
+		}
+	}
+	teardown_test_adapter(&g_adapter);
+	ena_netdev_free(netdev);
+
+	/* Verify 2-queue pair mode (c6i topology):
+	 * TX queues receive CQ 0 and 1.
+	 * RX queues receive CQ 2 and 3.
+	 * Indirection table must contain CQ 2 and 3, never TX CQ 0 or 1.
+	 */
+	assert(setup_test_adapter(&g_hw, &g_adapter, 1500, 1500) == 0);
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 2;
+	conf.nb_tx_queues = 2;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+
+	for (uint16_t q = 0; q < 2; q++) {
+		assert(netdev->ops->rxq_configure(netdev, q, 32, NULL) == 0);
+		assert(netdev->ops->txq_configure(netdev, q, 32, NULL) == 0);
+	}
+
+	g_hw.rss_set_ind_count = 0;
+	assert(netdev->ops->dev_start(netdev) == 0);
+
+	assert(g_hw.rss_set_ind_count == 1);
+	assert(g_adapter.rss_info.enabled == true);
+	assert(g_adapter.tx_rings[0]->cq_idx == 0);
+	assert(g_adapter.tx_rings[1]->cq_idx == 1);
+	assert(g_adapter.rx_rings[0]->cq_idx == 2);
+	assert(g_adapter.rx_rings[1]->cq_idx == 3);
+
+	int q0_count = 0;
+	int q1_count = 0;
+	for (int i = 0; i < 128; i++) {
+		/* Must match hardware RX CQ index */
+		assert(g_hw.rss_ind_table[i] == g_adapter.rx_rings[i % 2]->cq_idx);
+		/* Must not map to TX queues */
+		assert(g_hw.rss_ind_table[i] != g_adapter.tx_rings[0]->cq_idx);
+		assert(g_hw.rss_ind_table[i] != g_adapter.tx_rings[1]->cq_idx);
+		if (g_hw.rss_ind_table[i] == g_adapter.rx_rings[0]->cq_idx)
+			q0_count++;
+		if (g_hw.rss_ind_table[i] == g_adapter.rx_rings[1]->cq_idx)
+			q1_count++;
+	}
+	assert(q0_count == 64);
+	assert(q1_count == 64);
+
+	assert(netdev->ops->dev_stop(netdev) == 0);
+	for (uint16_t q = 0; q < 2; q++) {
+		for (int i = 0; i < g_adapter.rx_rings[q]->sq_depth; i++) {
+			if (g_adapter.rx_rings[q]->buffers.rx_bufs[i].netbuf) {
+				test_free(g_adapter.rx_rings[q]->buffers.rx_bufs[i].netbuf);
+				g_adapter.rx_rings[q]->buffers.rx_bufs[i].netbuf = NULL;
+			}
 		}
 	}
 	teardown_test_adapter(&g_adapter);

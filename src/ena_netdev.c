@@ -58,15 +58,15 @@ static int ena_netdev_alloc_ring_arrays(struct ena_adapter *adapter,
 		adapter->rx_rings = calloc(nb_rx_queues, sizeof(struct ena_ring *));
 		if (!adapter->rx_rings)
 			return -ENOMEM;
-		adapter->num_rx_rings = nb_rx_queues;
 	}
+	adapter->num_rx_rings = nb_rx_queues;
 
 	if (!adapter->tx_rings) {
 		adapter->tx_rings = calloc(nb_tx_queues, sizeof(struct ena_ring *));
 		if (!adapter->tx_rings)
 			return -ENOMEM;
-		adapter->num_tx_rings = nb_tx_queues;
 	}
+	adapter->num_tx_rings = nb_tx_queues;
 
 	return 0;
 }
