@@ -33,6 +33,7 @@
 #include <uk/lcpu.h>
 #include <uk/lcpu/pm.h>
 #include <uk/pcpuvar.h>
+#include <uk/arch.h>
 #if defined(CONFIG_LIBUKBOOT_PERCORE_HEAP) && CONFIG_LIBUKBOOT_PERCORE_HEAP
 #include <uk/allocbbuddy.h>
 
@@ -186,6 +187,121 @@ static int mc_core_has_percore_alloc(unsigned int core)
 }
 
 /*
+ * Cross-core gateway ARP synchronization.
+ *
+ * The ENA RSS hardware hashes IP traffic across RX queues, but it
+ * delivers non-IP frames (including ARP replies) only to RX queue 0.
+ * Only core 0 receives the gateway ARP reply, so only the per-core
+ * lwIP ARP table of core 0 resolves the gateway MAC. A secondary
+ * core never receives the reply. Its gateway entry stays pending,
+ * and the core cannot address packets to off-subnet destinations,
+ * such as the SYN-ACK of an accepted remote connection.
+ *
+ * Core 0 publishes the resolved gateway MAC in mc_gw_pub. Each
+ * secondary core checks the version counter in its stack drive
+ * loop. When the version advances, the core copies the MAC into its
+ * own per-core ARP table as a static entry. A static entry never
+ * expires and the table recycling never evicts it, so the mapping
+ * stays valid for the life of the core.
+ */
+struct mc_gw_pub {
+	struct eth_addr mac;
+	volatile uint32_t version;
+} __align(64);
+
+static struct mc_gw_pub mc_gw_pub;
+static uint32_t mc_gw_seen[LWIP_CORE_MAX < MC_MAX_WORKERS ?
+			      MC_MAX_WORKERS : LWIP_CORE_MAX];
+
+/*
+ * Numeric mirror of enum etharp_state from lwIP etharp.c. The
+ * enumerator is internal to lwIP and the public headers do not
+ * expose it.
+ */
+#define MC_ARP_STATE_EMPTY       0
+#define MC_ARP_STATE_PENDING      1
+#define MC_ARP_STATE_STABLE      2
+#define MC_ARP_STATE_RREQ_1      3
+#define MC_ARP_STATE_RREQ_2      4
+#define MC_ARP_STATE_STATIC      5
+
+/*
+ * Publish the gateway MAC when the local ARP table of core 0 holds
+ * a valid entry for the gateway IP. Only core 0 calls this, from
+ * its stack drive loop. The version advances only when the MAC
+ * changes, so the steady state costs one table scan per loop.
+ */
+static void mc_gw_publish(void)
+{
+	const ip4_addr_t *gw;
+	struct lwip_core_state *cs;
+	unsigned int i;
+
+	if (!netif_default)
+		return;
+
+	gw = netif_ip4_gw(netif_default);
+	if (ip4_addr_isany_val(*gw))
+		return;
+
+	cs = lwip_get_core_state();
+
+	for (i = 0; i < ARP_TABLE_SIZE; i++) {
+		struct etharp_entry *e = &cs->arp_table[i];
+
+		if (e->state < MC_ARP_STATE_STABLE ||
+		    e->ipaddr.addr != gw->addr)
+			continue;
+
+		if (memcmp(&mc_gw_pub.mac, &e->ethaddr,
+			 sizeof(mc_gw_pub.mac)) != 0) {
+			mc_gw_pub.mac = e->ethaddr;
+			uk_arch_wmb();
+			mc_gw_pub.version++;
+		}
+		return;
+	}
+}
+
+/*
+ * Adopt a newly published gateway MAC into the local per-core ARP
+ * table of this secondary core. The static entry also flushes the
+ * packets this core queued on a pending gateway entry, which frees
+ * the stuck SYN-ACKs of the connections this core accepted.
+ */
+static void mc_gw_adopt(unsigned int core_id)
+{
+	const ip4_addr_t *gw;
+	struct eth_addr mac;
+
+	if (mc_gw_pub.version == mc_gw_seen[core_id])
+		return;
+	mc_gw_seen[core_id] = mc_gw_pub.version;
+
+	if (!netif_default)
+		return;
+
+	gw = netif_ip4_gw(netif_default);
+	if (ip4_addr_isany_val(*gw))
+		return;
+
+	uk_arch_rmb();
+	mac = mc_gw_pub.mac;
+
+	if (etharp_add_static_entry(gw, &mac) != ERR_OK) {
+		printf("httpreply-mc: [WARN] core %u failed to adopt gateway %s\n",
+		       (unsigned)core_id, ip4addr_ntoa(gw));
+		return;
+	}
+
+	printf("httpreply-mc: core %u adopted gateway %s MAC "
+	       "%02x:%02x:%02x:%02x:%02x:%02x\n",
+	       (unsigned)core_id, ip4addr_ntoa(gw),
+	       mac.addr[0], mac.addr[1], mac.addr[2],
+	       mac.addr[3], mac.addr[4], mac.addr[5]);
+}
+
+/*
  * Get the scheduler that owns vCPU idx by walking uk_sched_head,
  * the linked list of all per-LCPU schedulers. Index 0 is the BSP
  * (vCPU 0) and index 1 is vCPU 1.
@@ -277,6 +393,16 @@ static void drive_core_stack(int core_id)
 	}
 	uknetdev_poll_rxqueue((uint16_t)core_id);
 	sys_check_timeouts();
+
+	/*
+	 * Synchronize the gateway ARP entry. Core 0 receives the ARP
+	 * reply from the network and publishes the resolved MAC.
+	 * The other cores adopt the MAC in their own ARP tables.
+	 */
+	if (core_id == 0)
+		mc_gw_publish();
+	else
+		mc_gw_adopt((unsigned int)core_id);
 }
 
 /*
@@ -679,21 +805,28 @@ int main(int argc, char **argv)
 
 		if (!ip4_addr_isany_val(*netif_ip4_gw(netif_default))) {
 			const ip4_addr_t *gw = netif_ip4_gw(netif_default);
-			struct eth_addr gw_eth;
+			struct lwip_core_state *cs0;
 			int resolved = 0;
 			unsigned long spins;
 
-			printf("httpreply-mc: resolving gateway %s ARP...\n", ip4addr_ntoa(gw));
+			/*
+			 * Best-effort early resolution. With DHCP the gateway
+			 * is unknown at this point and resolution is deferred
+			 * to runtime: core 0 resolves the gateway on its first
+			 * off-subnet transmit and the sync in
+			 * drive_core_stack() carries the MAC to the other
+			 * cores.
+			 */
+			printf("httpreply-mc: resolving gateway %s ARP...\n",
+			       ip4addr_ntoa(gw));
 			etharp_request(netif_default, gw);
 
 			for (spins = 0; spins < 20000000UL; spins++) {
 				drive_core_stack(0);
-				struct lwip_core_state *cs0 = lwip_get_core_state_by_id(0);
-				int k;
-				for (k = 0; k < ARP_TABLE_SIZE; k++) {
-					if (cs0->arp_table[k].state >= 2 &&
-					    ip4_addr_cmp(gw, &cs0->arp_table[k].ipaddr)) {
-						memcpy(&gw_eth, &cs0->arp_table[k].ethaddr, sizeof(gw_eth));
+				cs0 = lwip_get_core_state_by_id(0);
+				for (i = 0; i < ARP_TABLE_SIZE; i++) {
+					if (cs0->arp_table[i].state >= MC_ARP_STATE_STABLE &&
+					    cs0->arp_table[i].ipaddr.addr == gw->addr) {
 						resolved = 1;
 						break;
 					}
@@ -706,16 +839,23 @@ int main(int argc, char **argv)
 
 			if (resolved) {
 				printf("httpreply-mc: gateway ARP resolved to %02x:%02x:%02x:%02x:%02x:%02x\n",
-				       gw_eth.addr[0], gw_eth.addr[1], gw_eth.addr[2],
-				       gw_eth.addr[3], gw_eth.addr[4], gw_eth.addr[5]);
-				for (i = 0; i < mc_nworkers; i++) {
-					struct lwip_core_state *cs = lwip_get_core_state_by_id(i);
-					cs->arp_table[0].state = 5; /* ETHARP_STATE_STATIC */
-					cs->arp_table[0].netif = netif_default;
-					ip4_addr_copy(cs->arp_table[0].ipaddr, *gw);
-					memcpy(&cs->arp_table[0].ethaddr, &gw_eth, sizeof(gw_eth));
-					cs->arp_table[0].ctime = 0;
-				}
+				       cs0->arp_table[i].ethaddr.addr[0],
+				       cs0->arp_table[i].ethaddr.addr[1],
+				       cs0->arp_table[i].ethaddr.addr[2],
+				       cs0->arp_table[i].ethaddr.addr[3],
+				       cs0->arp_table[i].ethaddr.addr[4],
+				       cs0->arp_table[i].ethaddr.addr[5]);
+				/*
+				 * Mark the core 0 entry static so the table
+				 * recycling never evicts it, and publish the
+				 * MAC. Each worker adopts the MAC in its own
+				 * ARP table during its first stack drive.
+				 */
+				if (etharp_add_static_entry(gw,
+						&cs0->arp_table[i].ethaddr) != ERR_OK)
+					printf("httpreply-mc: [WARN] failed to "
+					       "make gateway entry static\n");
+				mc_gw_publish();
 			} else {
 				printf("httpreply-mc: [WARN] gateway ARP resolution timed out\n");
 			}
