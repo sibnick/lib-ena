@@ -247,11 +247,21 @@ int ena_rss_set_ind_table(struct ena_adapter *adapter, uint16_t num_queues)
 	if (!rss->ind_table || !rss->host_ind_table)
 		return -EINVAL;
 
-	/* Populate indirection table entries round-robin across active queues */
+	/* Populate indirection table entries round-robin across active queues.
+	 * Hardware entries require the Completion Queue index of the target RX queue.
+	 * TX queues use lower Completion Queue indices.
+	 * Using the logical queue index routes traffic to TX queues or fallback paths.
+	 */
 	for (i = 0; i < rss->ind_table_size; i++) {
 		uint16_t target_q = (uint16_t)(i % num_queues);
+		uint16_t cq_idx = target_q;
+
+		if (adapter->rx_rings && adapter->rx_rings[target_q]) {
+			cq_idx = adapter->rx_rings[target_q]->cq_idx;
+		}
+
 		rss->host_ind_table[i] = target_q;
-		rss->ind_table[i].cq_idx = target_q;
+		rss->ind_table[i].cq_idx = cq_idx;
 		rss->ind_table[i].reserved = 0;
 	}
 
