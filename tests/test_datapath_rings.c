@@ -212,7 +212,8 @@ static void test_ring_create_destroy_hw(void)
 	assert(hw.cq_created_count == 2);
 	assert(hw.sq_created_count == 2);
 	assert(hw.last_sq_direction == ENA_ADMIN_SQ_DIRECTION_RX);
-	assert(rx_ring->sq_idx == 1);
+	/* SQ ids come from one counter per direction. Both rings are 0 */
+	assert(rx_ring->sq_idx == 0);
 	assert(rx_ring->cq_idx == 1);
 	assert(rx_ring->sq_db != NULL);
 	assert(rx_ring->cq_db != NULL);

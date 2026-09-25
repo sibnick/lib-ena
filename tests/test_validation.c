@@ -1175,9 +1175,15 @@ static void test_validation_rss_configuration(void)
 	assert(g_hw.rss_set_ind_count == 1);
 	assert(g_hw.rss_ind_table_size == 128);
 
-	/* Verify indirection table routes across all 4 RX hardware queues */
+	/* Verify indirection table routes across all 4 RX hardware queues.
+	 * Each entry holds the 0-based SQ index of the target RX ring.
+	 * It never holds the CQ index of that ring. */
 	for (int i = 0; i < 128; i++) {
-		assert(g_hw.rss_ind_table[i] == g_adapter.rx_rings[i % 4]->cq_idx);
+		uint16_t q = (uint16_t)(i % 4);
+
+		assert(g_hw.rss_ind_table[i] == g_adapter.rx_rings[q]->sq_idx);
+		if (g_adapter.rx_rings[q]->cq_idx != g_adapter.rx_rings[q]->sq_idx)
+			assert(g_hw.rss_ind_table[i] != g_adapter.rx_rings[q]->cq_idx);
 	}
 
 	/* Stop netdev and verify clean teardown */
@@ -1226,10 +1232,10 @@ static void test_validation_rss_configuration(void)
 	ena_netdev_free(netdev);
 
 	/* Verify 2-queue pair mode (c6i topology):
-	 * TX queues receive CQ 0 and 1.
-	 * RX queues receive CQ 2 and 3.
-	 * Indirection table must contain CQ 2 and 3, never TX CQ 0 or 1.
-	 */
+	 * TX queues receive CQ 0 and 1, SQ 0 and 1.
+	 * RX queues receive CQ 2 and 3, SQ 0 and 1.
+	 * The indirection table holds the RX SQ indices 0 and 1.
+	 * It never holds the RX CQ indices 2 and 3. */
 	assert(setup_test_adapter(&g_hw, &g_adapter, 1500, 1500) == 0);
 	netdev = ena_netdev_alloc(&g_adapter);
 	assert(netdev != NULL);
@@ -1253,18 +1259,30 @@ static void test_validation_rss_configuration(void)
 	assert(g_adapter.tx_rings[1]->cq_idx == 1);
 	assert(g_adapter.rx_rings[0]->cq_idx == 2);
 	assert(g_adapter.rx_rings[1]->cq_idx == 3);
+	/* The device assigns SQ ids from one counter per direction */
+	assert(g_adapter.tx_rings[0]->sq_idx == 0);
+	assert(g_adapter.tx_rings[1]->sq_idx == 1);
+	assert(g_adapter.rx_rings[0]->sq_idx == 0);
+	assert(g_adapter.rx_rings[1]->sq_idx == 1);
 
 	int q0_count = 0;
 	int q1_count = 0;
 	for (int i = 0; i < 128; i++) {
-		/* Must match hardware RX CQ index */
-		assert(g_hw.rss_ind_table[i] == g_adapter.rx_rings[i % 2]->cq_idx);
-		/* Must not map to TX queues */
-		assert(g_hw.rss_ind_table[i] != g_adapter.tx_rings[0]->cq_idx);
-		assert(g_hw.rss_ind_table[i] != g_adapter.tx_rings[1]->cq_idx);
-		if (g_hw.rss_ind_table[i] == g_adapter.rx_rings[0]->cq_idx)
+		uint16_t q = (uint16_t)(i % 2);
+
+		/* Entry must hold the 0-based SQ index of the target RX ring */
+		assert(g_hw.rss_ind_table[i] == g_adapter.rx_rings[q]->sq_idx);
+		/* Regression check: the entry must not hold the RX ring CQ
+		 * index. The pre-fix code wrote the values 2 and 3. */
+		if (g_adapter.rx_rings[q]->cq_idx != g_adapter.rx_rings[q]->sq_idx)
+			assert(g_hw.rss_ind_table[i] != g_adapter.rx_rings[q]->cq_idx);
+		/* A valid entry stays inside the RX SQ space. The firmware
+		 * resolves this field per direction, so the value can
+		 * never reach a TX queue. */
+		assert(g_hw.rss_ind_table[i] < 2);
+		if (g_hw.rss_ind_table[i] == g_adapter.rx_rings[0]->sq_idx)
 			q0_count++;
-		if (g_hw.rss_ind_table[i] == g_adapter.rx_rings[1]->cq_idx)
+		if (g_hw.rss_ind_table[i] == g_adapter.rx_rings[1]->sq_idx)
 			q1_count++;
 	}
 	assert(q0_count == 64);

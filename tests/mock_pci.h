@@ -100,8 +100,10 @@ struct mock_ena_hw {
 	/* Phase 3: test controls */
 	uint8_t require_attrs_first;
 
-	/* Phase 4: IO queue emulation */
-	uint16_t next_sq_id;
+	/* Phase 4: IO queue emulation. The device assigns SQ ids from one
+	 * counter per direction and CQ ids from one global counter. */
+	uint16_t next_sq_id_tx;
+	uint16_t next_sq_id_rx;
 	uint16_t next_cq_id;
 	uint32_t last_sq_phys;
 	uint32_t last_cq_phys;

@@ -99,7 +99,8 @@ void mock_ena_hw_init(struct mock_ena_hw *hw)
 	hw->require_attrs_first = 0;
 
 	/* Phase 4: IO queue emulation */
-	hw->next_sq_id = 0;
+	hw->next_sq_id_tx = 0;
+	hw->next_sq_id_rx = 0;
 	hw->next_cq_id = 0;
 	hw->last_sq_phys = 0;
 	hw->last_cq_phys = 0;
@@ -267,14 +268,18 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 				status = ENA_ADMIN_ILLEGAL_PARAMETER;
 			} else {
 				uint8_t placement = (uint8_t)(cmd->sq_caps_2 & 0x0Fu);
+				uint8_t direction = (cmd->sq_identity >> 5) & 0x7;
 
 				hw->sq_created_count++;
 				hw->last_sq_depth = cmd->sq_depth;
 				hw->last_sq_phys = cmd->sq_ba.mem_addr_low;
-				hw->last_sq_direction = (cmd->sq_identity >> 5) & 0x7;
+				hw->last_sq_direction = direction;
 				hw->last_sq_cq_idx = cmd->cq_idx;
 				hw->last_sq_placement = placement;
-				resp->sq_idx = hw->next_sq_id++;
+				if (direction == ENA_ADMIN_SQ_DIRECTION_RX)
+					resp->sq_idx = hw->next_sq_id_rx++;
+				else
+					resp->sq_idx = hw->next_sq_id_tx++;
 				resp->sq_doorbell_offset =
 					hw->inject_bad_db_offset ?
 					hw->bad_db_offset : 0x2C;
@@ -450,19 +455,37 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 					(const struct ena_admin_feature_rss_ind_table *)feat->raw;
 				const struct ena_admin_rss_ind_table_entry *tbl =
 					(const struct ena_admin_rss_ind_table_entry *)(uintptr_t)ctrl_phys;
+				uint32_t k;
 
 				if (ind_req->size > 7) {
 					status = ENA_ADMIN_ILLEGAL_PARAMETER;
 				} else {
 					uint32_t count = 1u << ind_req->size;
+					uint8_t out_of_range = 0;
 
+					/* The firmware resolves each entry in the RX
+					 * space. An index at or above the number of
+					 * created RX queues is invalid. */
 					if (tbl) {
-						hw->rss_ind_table_size = (uint16_t)count;
-						for (uint32_t k = 0; k < count; k++)
-							hw->rss_ind_table[k] = tbl[k].cq_idx;
-						hw->rss_set_ind_count++;
+						for (k = 0; k < count; k++) {
+							if (tbl[k].sq_idx >= hw->next_sq_id_rx) {
+								out_of_range = 1;
+								break;
+							}
+						}
 					}
-					filled = 1;
+
+					if (out_of_range) {
+						status = ENA_ADMIN_ILLEGAL_PARAMETER;
+					} else {
+						if (tbl) {
+							hw->rss_ind_table_size = (uint16_t)count;
+							for (k = 0; k < count; k++)
+								hw->rss_ind_table[k] = tbl[k].sq_idx;
+							hw->rss_set_ind_count++;
+						}
+						filled = 1;
+					}
 				}
 			} else {
 				status = ENA_ADMIN_ILLEGAL_PARAMETER;
