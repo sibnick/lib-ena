@@ -92,9 +92,10 @@ struct ena_admin_feature_rss_hash_control {
 	struct ena_admin_proto_input reserved3[ENA_ADMIN_RSS_PROTO_NUM];
 };
 
-/* Single entry in the hardware indirection table. */
+/* Single entry in the hardware indirection table. Per the firmware
+ * spec, sq_idx holds the 0-based RX SQ index returned by CREATE_SQ. */
 struct ena_admin_rss_ind_table_entry {
-	uint16_t cq_idx;
+	uint16_t sq_idx;
 	uint16_t reserved;
 };
 
