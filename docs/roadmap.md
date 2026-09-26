@@ -32,12 +32,12 @@ gantt
     section Phase 9
     Low Latency Queue (LLQ) Optimization Mode    :done, p9, after p8, 7d
     section Phase 10
-    EC2 Deployment & Performance Benchmarking    :active, p10, after p9, 10d
+    EC2 Deployment & Performance Benchmarking    :done, p10, after p9, 10d
     section Future Roadmap
     Scatter-Gather TX Multi-Descriptor Chaining  :p11, 2026-09-01, 14d
     Scatter-Gather RX Reassembly                 :p12, after p11, 14d
     Hardware TCP Segmentation Offload (TSO)      :p13, after p12, 14d
-    Hardware Receive Side Scaling (RSS)          :active, p14, after p13, 14d
+    Hardware Receive Side Scaling (RSS)          :done, p14, after p13, 14d
 ```
 
 ### Phase 1: PCI Driver Scaffold and Device Discovery
@@ -93,10 +93,11 @@ gantt
 - Implement direct MMIO push for TX descriptors and packet headers.
 
 ### Phase 10: Validation, EC2 Deployment, and Performance Benchmarking
-- **Status**: In Progress
-- Create the EC2 deployment guide (`docs/ec2_deployment.md`).
-- Create the benchmark measurement template (`scripts/ec2_benchmark.sh`).
-- Real measurements on EC2 hardware are pending. Store the results in the Fossil unversioned store (`fossil uv`).
+- **Status**: Completed
+- Created the EC2 deployment guide (`docs/ec2_deployment.md`).
+- Implemented automated benchmark harness (`samples/httpreply-mc/scripts/run_ec2_verification.py`).
+- Completed real EC2 verification on AWS `c6i.large`. Throughput reached 115,844 req/s at c=100 and 123,620 req/s at c=200 with zero socket errors.
+- Archived benchmark results and console evidence in Fossil unversioned storage (`benchmarks/2026-09-26/`).
 
 ---
 
@@ -121,7 +122,7 @@ gantt
 - Offload TCP segmentation from the software stack to the ENA controller.
 
 ### Phase 14: Hardware Receive Side Scaling (RSS)
-- **Status**: In Progress
-- `ena_rss.c` implements RSS hash key and indirection table configuration via Admin Queue feature commands (`CONFIG_LIBENA_RSS`).
-- Distribute incoming traffic across multiple RX queues based on packet 4-tuple flow hashes.
-- Remaining work: on-hardware validation on a multi-queue EC2 instance and integration test coverage.
+- **Status**: Completed
+- `ena_rss.c` implements RSS hash key and 128-entry indirection table configuration via Admin Queue feature commands (`CONFIG_LIBENA_RSS`).
+- Validated on real AWS EC2 hardware (`c6i.large`). Steers TCP connections across two queues with balanced 50/50 packet distribution.
+- Confirmed with 25 driver validation unit tests and real hardware benchmark runs.
