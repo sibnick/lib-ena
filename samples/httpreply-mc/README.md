@@ -134,23 +134,23 @@ wrk -t4 -c200 -d10s --latency http://<instance-ip>/
 
 ## 7. Verified AWS EC2 Performance Results
 
-Benchmark executed on AWS EC2 `c6i.large` (2 vCPUs) against an Ubuntu 24.04 `wrk` client across private VPC:
+Benchmark executed on 2026-09-27 on AWS EC2 `c6i.large` (2 vCPUs) in subnet 172.31.16.0/20 (us-east-1a). The Ubuntu 24.04 `wrk` client sits in the same subnet. Each level runs two 10 s sweeps per target.
 
 | Concurrency (`-c`) | Target Throughput | Achieved Req/s | Avg Latency (ms) | P50 (µs) | P99 (ms) | Socket Errors |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **c=10** | Baseline | **30,826.86** | 10.52 | 269 | 181.20 | **0** |
-| **c=25** | Baseline | **58,819.78** | 15.66 | 304 | 310.30 | **0** |
-| **c=50** | Baseline | **88,447.06** | 21.09 | 372 | 344.48 | **0** |
-| **c=100** | **>= 80,000 req/s** | **115,843.93** | 25.65 | 458 | 281.31 | **0** |
-| **c=200** | Stress | **123,620.16** | 36.32 | 811 | 681.18 | **0** |
+| **c=10** | Baseline | **22,195.43** | 15.93 | 288.00 | 346.87 | **0** |
+| **c=25** | Baseline | **52,635.81** | 23.08 | 335.50 | 453.18 | **0** |
+| **c=50** | Baseline | **77,830.53** | 28.58 | 394.50 | 529.90 | **0** |
+| **c=100** | **>= 80,000 req/s** | **102,812.24** | 39.01 | 519.50 | 638.70 | **0** |
+| **c=200** | Stress | **109,122.67** | 53.67 | 879.00 | 949.98 | **0** |
 
 ### Comparison vs Linux Nginx Baseline
 
-On the same `c6i.large` instance type:
-- Linux Nginx plateaus at **~72k req/s** for concurrency 50 and above.
-- Unikraft multi-core scales to **115,844 req/s** at c=100 (+59.8% vs Nginx).
-- Unikraft peaks at **123,620 req/s** at c=200 (+72.1% vs Nginx).
-- Zero socket errors across 12.5M requests.
+On the same `c6i.large` instance type (same day, same subnet):
+- Linux Nginx plateaus at **~73k req/s** for concurrency 50 and above.
+- Unikraft multi-core scales to **102,812 req/s** at c=100 (+41.0% vs Nginx).
+- Unikraft peaks at **109,123 req/s** at c=200 (+49.3% vs Nginx).
+- Zero socket errors across 13,826,258 requests.
 
 ## 8. Configuration Reference
 
