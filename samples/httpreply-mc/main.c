@@ -48,6 +48,7 @@ int uk_percore_heap_get(unsigned int i, __uptr *base, __sz *len);
 #include <lwip/netif.h>
 #include <lwip/etharp.h>
 #include <lwip/tcp.h>
+#include <lwip/memp.h>
 #include "netif/uknetdev.h"
 #include "lwip_percore.h"
 
@@ -377,12 +378,12 @@ static void drive_core_stack(int core_id)
 		for (p = cs->tcp_active_pcbs; p != NULL; p = p->next)
 			active_pcbs++;
 
-		if (cs->memp_tabs[0])
-			m_pbuf = mc_count_memp_free(cs->memp_tabs[0]);
-		if (cs->memp_tabs[1])
-			m_pcb = mc_count_memp_free(cs->memp_tabs[1]);
-		if (cs->memp_tabs[2])
-			m_seg = mc_count_memp_free(cs->memp_tabs[2]);
+		if (cs->memp_tabs[MEMP_PBUF_POOL])
+			m_pbuf = mc_count_memp_free(cs->memp_tabs[MEMP_PBUF_POOL]);
+		if (cs->memp_tabs[MEMP_TCP_PCB])
+			m_pcb = mc_count_memp_free(cs->memp_tabs[MEMP_TCP_PCB]);
+		if (cs->memp_tabs[MEMP_TCP_SEG])
+			m_seg = mc_count_memp_free(cs->memp_tabs[MEMP_TCP_SEG]);
 
 		printf("httpreply-mc: core %d heartbeat (polls=%lu, lwip_core=%u, listen_pcb=%p, active=%u, memp_free: pbuf=%u pcb=%u seg=%u)\n",
 		       core_id, poll_cnt[core_id], lwip_current_core_id(), (void *)l,
