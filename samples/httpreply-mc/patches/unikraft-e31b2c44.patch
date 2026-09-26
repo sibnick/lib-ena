@@ -454,23 +454,27 @@ index 03bfe4a..5b3c46e 100644
   * Probes an unprobed Unikraft network device and turns it
   * into unconfigured state. After successful probing, the
 diff --git a/lib/uknetdev/include/uk/netdev_core.h b/lib/uknetdev/include/uk/netdev_core.h
-index 3309d11..3d2c915 100644
+index 3309d11..2979aa6 100644
 --- a/lib/uknetdev/include/uk/netdev_core.h
 +++ b/lib/uknetdev/include/uk/netdev_core.h
-@@ -394,6 +394,9 @@ typedef int (*uk_netdev_tx_one_t)(struct uk_netdev *dev,
+@@ -394,6 +394,12 @@ typedef int (*uk_netdev_tx_one_t)(struct uk_netdev *dev,
  				  struct uk_netdev_tx_queue *queue,
  				  struct uk_netbuf *pkt);
  
 +/** Driver callback type to query link state (1 = up, 0 = down). */
 +typedef int (*uk_netdev_link_state_get_t)(struct uk_netdev *dev);
 +
++/** Driver callback type to stop the device and release its queues. */
++typedef int (*uk_netdev_stop_t)(struct uk_netdev *dev);
++
  /**
   * A structure containing the functions exported by a driver.
   */
-@@ -426,6 +429,9 @@ struct uk_netdev_ops {
+@@ -426,6 +432,10 @@ struct uk_netdev_ops {
  	uk_netdev_txq_configure_t       txq_configure;
  	uk_netdev_rxq_configure_t       rxq_configure;
  	uk_netdev_start_t               start;
++	uk_netdev_stop_t                stop;           /* optional */
 +
 +	/** Link state query. */
 +	uk_netdev_link_state_get_t      link_state_get;   /* optional */

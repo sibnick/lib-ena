@@ -15,6 +15,8 @@ The ENA driver provides high-performance networking for Unikraft unikernels runn
 | **AENQ Engine** | Supported | The driver polls the AENQ ring on every RX pass. A fatal error resets the device. A link change updates the link state. |
 | **TX / RX Rings** | Supported | Multi-queue circular descriptor rings with hardware checksum offload. |
 | **Low Latency Queue (LLQ)** | Supported | Direct push of packet headers and descriptors to BAR2 MMIO. |
+| **RSS (Receive Side Scaling)** | Supported | Hardware Toeplitz hash on the TCP/IPv4 4-tuple steers incoming flows across per-core RX queues. The driver clamps the indirection table size to the range the device reports. |
+| **LRO / TSO** | Advertised | The netdev info advertises the `UK_NETDEV_F_LRO` and `UK_NETDEV_F_TSO4` offloads to the stack. The RX path reassembles multi-descriptor (LRO/jumbo) frames. |
 | **Interrupts / MSI-X** | Partial | The default mode is software polling. The driver allocates MSI-X vectors at probe time when the platform provides them. |
 | **Jumbo Frames** | Partial | TX supports MTU up to 9000 bytes. RX offers one 2048-byte buffer per descriptor. The driver drops received frames longer than 2048 bytes. |
 
@@ -38,6 +40,7 @@ The driver exposes the following Kconfig options in `Config.uk`:
 - `CONFIG_LIBENA`: Enable the AWS ENA native network driver.
 - `CONFIG_LIBENA_LLQ`: Enable Low Latency Queue (LLQ) direct MMIO push mode (default: `y`).
 - `CONFIG_LIBENA_MAX_QUEUES`: Maximum number of IO queue pairs per device (default: `8`).
+- `CONFIG_LIBENA_RSS`: Enable hardware RSS steering of incoming flows across RX queues (default: `y`).
 
 ## Build Instructions
 
@@ -63,6 +66,7 @@ make test
 This repository includes working samples and test applications:
 
 - **[samples/httpreply](samples/httpreply/)**: High-performance Unikraft HTTP reply benchmark server (`app-httpreply`). Uses single-threaded lwIP sockets (`NO_SYS` mode, `epoll`) and native ENA networking on AWS EC2. Includes automated `wrk` benchmark scripts and AWS deployment tools.
+- **[samples/httpreply-mc](samples/httpreply-mc/)**: Multi-core HTTP reply benchmark server. Pins one run-to-completion worker per CPU core. Each core owns a dedicated ENA queue pair, hardware RSS (Toeplitz 4-tuple hash) steers flows between the queues, and sockets bind with `SO_REUSEPORT`. On a 2-vCPU `c6i.large` it sustains 123,620 requests per second at 200 concurrent connections with zero socket errors.
 - **[samples/low-latency-hft](samples/low-latency-hft/)**: Low-latency UDP echo server and latency benchmarking client in C. Demonstrates zero-copy datagram echo loops, socket buffer tuning, and CPU core pinning. Runs on Linux and as a Unikraft unikernel with the native ENA driver.
 - **[examples/ci-app](examples/ci-app/)**: A minimal Unikraft application stub for CI build verification.
 

@@ -22,11 +22,23 @@ Unikraft-ENA/
 │   ├── ena_regs.h        # MMIO register definitions and accessors
 │   ├── ena_admin.h       # Admin Queue structures and commands
 │   ├── ena_datapath.h    # TX/RX ring structures and descriptor types
+│   ├── ena_init.h        # Device initialization sequence declarations
+│   ├── ena_intr.h        # MSI-X vector allocation declarations
+│   ├── ena_llq.h         # Low Latency Queue (BAR2) declarations
+│   ├── ena_netdev.h      # libuknetdev adapter and operations table
+│   ├── ena_rss.h         # RSS configuration declarations
 │   └── ena_plat.h        # Platform abstraction layer (Unikraft vs Mock)
 ├── src/                  # Implementation source files
-│   ├── ena_pci.c         # PCI driver probe, BAR mapping, and cleanup
-│   ├── ena_com.c         # Admin Queue and AENQ engine
+│   ├── ena_admin.c       # Admin Queue command submission and responses
+│   ├── ena_com.c         # MMIO register layout and common hardware access
+│   ├── ena_datapath.c    # Ring descriptor and packet buffer handling
+│   ├── ena_init.c        # Device initialization and reset sequence
+│   ├── ena_intr.c        # MSI-X vector allocation and mapping
+│   ├── ena_llq.c         # Low Latency Queue direct MMIO push path
 │   ├── ena_netdev.c      # libuknetdev adapter operations
+│   ├── ena_pci.c         # PCI driver probe, BAR mapping, and cleanup
+│   ├── ena_plat.c        # Platform abstraction (Unikraft vs Mock)
+│   ├── ena_rss.c         # RSS indirection table and hash configuration
 │   ├── ena_tx.c          # Transmit ring processing and doorbell push
 │   └── ena_rx.c          # Receive ring replenishment and packet intake
 └── tests/                # Standalone unit test suite
