@@ -19,7 +19,8 @@ struct ena_adapter;
 /* Number of 32-bit words in the Toeplitz hash key (40 bytes total). */
 #define ENA_ADMIN_RSS_KEY_PARTS 10
 
-/* Default and maximum indirection table size (power of 2). */
+/* Default (fallback) indirection table size (power of 2). Used when the
+ * device does not report a supported size range via GET_FEATURE. */
 #define ENA_ADMIN_RSS_IND_TABLE_NUM_ENTRIES 128
 
 /* RSS hash functions (reference/ena_admin_defs.h). */

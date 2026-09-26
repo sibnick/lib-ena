@@ -31,6 +31,84 @@ static int ena_rss_exec(struct ena_adapter *adapter, uint8_t opcode,
 				  NULL, ENA_RSS_MAX_POLLS);
 }
 
+/*
+ * Query the device for the supported size range of the RSS indirection
+ * table and size the table to fit the range.
+ *
+ * The response reports min_size and max_size as the log2 of the entry
+ * count (reference/ena_admin_defs.h, struct ena_admin_feature_rss_ind_table),
+ * the same semantics the Linux ENA driver uses in
+ * ena_com_indirect_table_allocate(). The requested log2 size is the
+ * smallest power of two that covers all RX queues. The driver clamps the
+ * request into the device range and logs a warning when the clamp changes
+ * the value. If the command fails or the device reports an invalid range,
+ * the fixed fallback size is kept.
+ */
+static void ena_rss_query_ind_table_limits(struct ena_adapter *adapter)
+{
+	struct {
+		struct ena_admin_ctrl_buff_info control_buffer;
+		struct ena_admin_get_set_feature_common_desc feat_common;
+		struct ena_admin_feature_rss_ind_table ind_table;
+	} req;
+	struct ena_admin_feature_rss_ind_table resp;
+	uint32_t num_queues;
+	uint32_t requested;
+	uint32_t clamped;
+	int ret;
+
+	num_queues = adapter->num_rx_rings;
+	if (num_queues < 2)
+		return;
+
+	requested = 1;
+	while ((1u << requested) < num_queues)
+		requested++;
+
+	memset(&req, 0, sizeof(req));
+	req.feat_common.flags = ENA_ADMIN_FEAT_SELECT_CURRENT;
+	req.feat_common.feature_id = ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG;
+
+	memset(&resp, 0, sizeof(resp));
+	ret = ena_rss_exec(adapter, ENA_ADMIN_GET_FEATURE, &req, sizeof(req),
+			   &resp, sizeof(resp));
+	if (ret) {
+		ena_warn("rss: GET_FEATURE(RSS indirection table limits) failed (%d), "
+			 "using fixed table size %u",
+			 ret, (unsigned)ENA_ADMIN_RSS_IND_TABLE_NUM_ENTRIES);
+		return;
+	}
+
+	ena_info("rss: device indirection table limits: min_size=%u max_size=%u "
+		 "(log2 of entry count)",
+		 (unsigned)resp.min_size, (unsigned)resp.max_size);
+
+	if (resp.min_size == 0 || resp.min_size > resp.max_size) {
+		ena_warn("rss: device reports invalid table size range (min=%u max=%u), "
+			 "using fixed table size %u",
+			 (unsigned)resp.min_size, (unsigned)resp.max_size,
+			 (unsigned)ENA_ADMIN_RSS_IND_TABLE_NUM_ENTRIES);
+		return;
+	}
+
+	clamped = requested;
+	if (clamped < resp.min_size)
+		clamped = resp.min_size;
+	else if (clamped > resp.max_size)
+		clamped = resp.max_size;
+	/* Keep 1 << clamped inside the 16-bit table size field. */
+	if (clamped > 14)
+		clamped = 14;
+
+	if (clamped != requested)
+		ena_warn("rss: requested table size 2^%u clamped to 2^%u "
+			 "(device range %u..%u)",
+			 (unsigned)requested, (unsigned)clamped,
+			 (unsigned)resp.min_size, (unsigned)resp.max_size);
+
+	adapter->rss_info.ind_table_size = (uint16_t)(1u << clamped);
+}
+
 int ena_rss_init(struct ena_adapter *adapter)
 {
 	struct ena_rss_info *rss;
@@ -52,6 +130,11 @@ int ena_rss_init(struct ena_adapter *adapter)
 		return 0;
 
 	rss->ind_table_size = ENA_ADMIN_RSS_IND_TABLE_NUM_ENTRIES;
+
+	/* Ask the device for the supported indirection table size range and
+	 * resize the table to fit it. On command failure the fixed fallback
+	 * size is kept. */
+	ena_rss_query_ind_table_limits(adapter);
 
 	rss->host_ind_table = calloc(rss->ind_table_size, sizeof(uint16_t));
 	if (!rss->host_ind_table)
