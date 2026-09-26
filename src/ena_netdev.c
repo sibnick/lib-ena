@@ -14,6 +14,26 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef __Unikraft__
+/*
+ * Upstream Unikraft declares no link_state_get member in
+ * struct uk_netdev_ops and no uk_alloc_get_current() in ukalloc.
+ * The multi-core patch of this repository adds both to the same
+ * tree. Check the member once so the driver builds against both
+ * trees. When the member is absent, the RX netbuf allocator falls
+ * back to uk_alloc_get_default() below.
+ */
+#if defined(__has_member)
+#  if __has_member(struct uk_netdev_ops, link_state_get)
+#    define ENA_UK_HAS_LINK_STATE_GET 1
+#  else
+#    define ENA_UK_HAS_LINK_STATE_GET 0
+#  endif
+#else
+#  define ENA_UK_HAS_LINK_STATE_GET 0
+#endif
+#endif /* __Unikraft__ */
+
 /* -------------------------------------------------------------------------
  * Shared Datapath and Netdev Helper Functions
  * ------------------------------------------------------------------------- */
@@ -445,8 +465,15 @@ static void *ena_netbuf_alloc_helper(void *arg, uint64_t *phys_out, uint32_t *le
 		/*
 		 * The run-to-completion core allocates from its own
 		 * per-core allocator (the default if none is bound).
+		 * Upstream ukalloc declares no uk_alloc_get_current().
+		 * Use the default allocator when the multi-core patch
+		 * is absent.
 		 */
+#if ENA_UK_HAS_LINK_STATE_GET
 		struct uk_alloc *a = uk_alloc_get_current();
+#else
+		struct uk_alloc *a = uk_alloc_get_default();
+#endif
 		nb = uk_netbuf_alloc_buf(a, ENA_RX_BUF_SIZE, ENA_NETDEV_IOALIGN, 0, 0, NULL);
 		if (!nb)
 			return NULL;
@@ -1094,7 +1121,9 @@ const struct uk_netdev_ops ena_ops = {
 	.rxq_configure   = ena_netdev_rxq_configure,
 	.txq_configure   = ena_netdev_txq_configure,
 	.start           = ena_netdev_start,
+#if ENA_UK_HAS_LINK_STATE_GET
 	.link_state_get  = ena_netdev_link_state_get,
+#endif
 };
 
 #else /* !__Unikraft__ (Standalone Test Suite) */
