@@ -774,18 +774,21 @@ static int ena_netdev_start(struct uk_netdev *dev)
 {
 	struct ena_uk_device *edev = to_enadevice(dev);
 	struct ena_adapter *adapter = &edev->adapter;
-	uint16_t q;
 	int ret;
 
 	ret = ena_netdev_start_rings_hw(adapter, adapter->num_rx_rings, adapter->num_tx_rings);
 	if (ret)
 		return ret;
 
-	for (q = 0; q < adapter->num_rx_rings; q++) {
-		if (adapter->rx_rings && adapter->rx_rings[q]) {
-			ena_rx_refill(adapter->rx_rings[q], adapter->rx_rings[q]->sq_depth - 1,
-				      ena_netbuf_alloc_helper, &edev->rx_queues[q], NULL);
-		}
+	/*
+	 * Refill only queue 0 at device start. Queues for secondary cores
+	 * are refilled on-demand by their owning run-to-completion core during
+	 * its first poll iteration. This ensures netbufs are allocated from
+	 * each core's dedicated per-core allocator.
+	 */
+	if (adapter->rx_rings && adapter->rx_rings[0]) {
+		ena_rx_refill(adapter->rx_rings[0], adapter->rx_rings[0]->sq_depth - 1,
+			      ena_netbuf_alloc_helper, &edev->rx_queues[0], NULL);
 	}
 
 #if !defined(__Unikraft__) || defined(CONFIG_LIBENA_RSS)
@@ -832,6 +835,20 @@ static void ena_netdev_poll_tx_completions_queue(struct ena_adapter *adapter,
 					ENA_NETDEV_TX_POLL_BUDGET, NULL);
 }
 
+static inline void ena_netdev_rx_refill_helper(struct ena_ring *ring,
+					       struct uk_netdev_rx_queue *queue)
+{
+	if (ring->free_req_count > 0) {
+		unsigned int to_refill = (ring->free_req_count >= ring->sq_depth) ?
+					 (ring->sq_depth - 1) : ring->free_req_count;
+		unsigned int refilled = 0;
+		int ref_ret = ena_rx_refill(ring, to_refill,
+					     ena_netbuf_alloc_helper, queue, &refilled);
+		if (ref_ret < 0 || (ring->free_req_count > 1 && refilled == 0))
+			ring->rx_refill_err++;
+	}
+}
+
 int ena_netdev_rx_one(struct uk_netdev *dev,
 		      struct uk_netdev_rx_queue *queue,
 		      struct uk_netbuf **pkt)
@@ -854,31 +871,17 @@ int ena_netdev_rx_one(struct uk_netdev *dev,
 	ring = queue->ring;
 
 	/* Replenish depleted descriptors before polling. */
-	if (ring->free_req_count > 0) {
-		unsigned int refilled = 0;
-		int ref_ret = ena_rx_refill(ring, ring->free_req_count,
-					     ena_netbuf_alloc_helper, queue, &refilled);
-		if (ref_ret < 0 || (ring->free_req_count > 0 && refilled == 0))
-			ring->rx_refill_err++;
-	}
+	ena_netdev_rx_refill_helper(ring, queue);
 
 	while (1) {
 		ret = ena_rx_poll(ring, &rx_pkt, 1);
 		if (ret <= 0) {
-			if (ring->free_req_count > 0) {
-				unsigned int refilled = 0;
-				int ref_ret = ena_rx_refill(ring, ring->free_req_count,
-							     ena_netbuf_alloc_helper, queue, &refilled);
-				if (ref_ret < 0 || (ring->free_req_count > 0 && refilled == 0))
-					ring->rx_refill_err++;
-			}
+			ena_netdev_rx_refill_helper(ring, queue);
 			return 0;
 		}
 
 		if (!rx_pkt.netbuf) {
-			if (ring->free_req_count > 0)
-				ena_rx_refill(ring, ring->free_req_count,
-					      ena_netbuf_alloc_helper, queue, NULL);
+			ena_netdev_rx_refill_helper(ring, queue);
 			return 0;
 		}
 
@@ -918,24 +921,12 @@ int ena_netdev_rx_one(struct uk_netdev *dev,
 		if (dropped) {
 			ring->rx_dropped++;
 			ena_netdev_rxq_drop_netbuf(queue, nb);
-			if (ring->free_req_count > 0) {
-				unsigned int refilled = 0;
-				int ref_ret = ena_rx_refill(ring, ring->free_req_count,
-							     ena_netbuf_alloc_helper, queue, &refilled);
-				if (ref_ret < 0 || (ring->free_req_count > 0 && refilled == 0))
-					ring->rx_refill_err++;
-			}
+			ena_netdev_rx_refill_helper(ring, queue);
 			return 0;
 		}
 
 		/* Replenish consumed descriptors. */
-		if (ring->free_req_count > 0) {
-			unsigned int refilled = 0;
-			int ref_ret = ena_rx_refill(ring, ring->free_req_count,
-						     ena_netbuf_alloc_helper, queue, &refilled);
-			if (ref_ret < 0 || (ring->free_req_count > 0 && refilled == 0))
-				ring->rx_refill_err++;
-		}
+		ena_netdev_rx_refill_helper(ring, queue);
 
 		/* Packet reassembly: handle both single-descriptor and multi-descriptor frames. */
 		if (!queue->chain_head) {
@@ -1722,3 +1713,49 @@ void ena_netdev_dump_queue(struct uk_netdev *dev, uint16_t qid)
 	}
 }
 
+/*
+ * Return the cumulative receive packet count for queue qid.
+ * Used by the httpreply-mc ACCEPTED log line to show whether accepted
+ * connections follow the RSS queue distribution. [Ticket ba82aec88b]
+ */
+unsigned long ena_netdev_rxq_pkts(struct uk_netdev *dev, uint16_t qid)
+{
+	struct ena_adapter *adapter;
+
+	if (!dev)
+		return 0;
+
+#ifdef __Unikraft__
+	adapter = &to_enadevice(dev)->adapter;
+#else
+	adapter = dev->adapter;
+#endif
+
+	if (!adapter || !adapter->rx_rings)
+		return 0;
+	if (qid >= adapter->num_rx_rings || !adapter->rx_rings[qid])
+		return 0;
+
+	return (unsigned long)adapter->rx_rings[qid]->rx_packets;
+}
+
+unsigned long ena_netdev_txq_pkts(struct uk_netdev *dev, uint16_t qid)
+{
+	struct ena_adapter *adapter;
+
+	if (!dev)
+		return 0;
+
+#ifdef __Unikraft__
+	adapter = &to_enadevice(dev)->adapter;
+#else
+	adapter = dev->adapter;
+#endif
+
+	if (!adapter || !adapter->tx_rings)
+		return 0;
+	if (qid >= adapter->num_tx_rings || !adapter->tx_rings[qid])
+		return 0;
+
+	return (unsigned long)adapter->tx_rings[qid]->tx_packets;
+}

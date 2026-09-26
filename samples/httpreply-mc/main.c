@@ -48,6 +48,7 @@ int uk_percore_heap_get(unsigned int i, __uptr *base, __sz *len);
 #include <lwip/netif.h>
 #include <lwip/etharp.h>
 #include <lwip/tcp.h>
+#include <lwip/memp.h>
 #include "netif/uknetdev.h"
 #include "lwip_percore.h"
 
@@ -187,31 +188,53 @@ static int mc_core_has_percore_alloc(unsigned int core)
 }
 
 /*
- * Cross-core gateway ARP synchronization.
+ * Cross-core ARP synchronization.
  *
  * The ENA RSS hardware hashes IP traffic across RX queues, but it
- * delivers non-IP frames (including ARP replies) only to RX queue 0.
- * Only core 0 receives the gateway ARP reply, so only the per-core
- * lwIP ARP table of core 0 resolves the gateway MAC. A secondary
- * core never receives the reply. Its gateway entry stays pending,
- * and the core cannot address packets to off-subnet destinations,
- * such as the SYN-ACK of an accepted remote connection.
+ * delivers non-IP frames (including ARP requests and replies) only
+ * to RX queue 0.
  *
- * Core 0 publishes the resolved gateway MAC in mc_gw_pub. Each
- * secondary core checks the version counter in its stack drive
- * loop. When the version advances, the core copies the MAC into its
- * own per-core ARP table as a static entry. A static entry never
- * expires and the table recycling never evicts it, so the mapping
- * stays valid for the life of the core.
+ * Core 0 processes RX queue 0, so only core 0 resolves ARP for
+ * both off-subnet gateways and in-subnet benchmark clients. A
+ * secondary core never receives ARP replies. If a connection is
+ * steered to a secondary core by RSS, the core creates a TCP PCB
+ * and attempts to send a SYN-ACK, but its ARP entry for the client
+ * stays PENDING forever.
+ *
+ * Core 0 publishes all resolved ARP entries (both gateway and local
+ * subnet clients) in mc_arp_pub. Each secondary core checks the
+ * version counter in its stack drive loop. When the version advances,
+ * the core copies the resolved IP/MAC pairs into its own per-core ARP
+ * table as static entries. This immediately flushes any queued SYN-ACKs,
+ * allowing connections across all cores to establish.
+ *
+ * Additionally, if a secondary core has an unresolved PENDING ARP
+ * entry, it posts the IP to mc_arp_req so core 0 can solicit an ARP
+ * reply on RX queue 0.
  */
-struct mc_gw_pub {
+#define MC_ARP_SYNC_MAX ARP_TABLE_SIZE
+
+struct mc_arp_pub_entry {
+	ip4_addr_t ipaddr;
 	struct eth_addr mac;
+};
+
+struct mc_arp_pub {
+	struct mc_arp_pub_entry entries[MC_ARP_SYNC_MAX];
+	volatile uint32_t count;
 	volatile uint32_t version;
 } __align(64);
 
-static struct mc_gw_pub mc_gw_pub;
-static uint32_t mc_gw_seen[LWIP_CORE_MAX < MC_MAX_WORKERS ?
+struct mc_arp_req {
+	ip4_addr_t ipaddr;
+	volatile uint32_t version;
+} __align(64);
+
+static struct mc_arp_pub mc_arp_pub;
+static struct mc_arp_req mc_arp_req;
+static uint32_t mc_arp_seen[LWIP_CORE_MAX < MC_MAX_WORKERS ?
 			      MC_MAX_WORKERS : LWIP_CORE_MAX];
+static uint32_t mc_arp_req_served;
 
 /*
  * Numeric mirror of enum etharp_state from lwIP etharp.c. The
@@ -225,24 +248,22 @@ static uint32_t mc_gw_seen[LWIP_CORE_MAX < MC_MAX_WORKERS ?
 #define MC_ARP_STATE_RREQ_2      4
 #define MC_ARP_STATE_STATIC      5
 
-/*
- * Publish the gateway MAC when the local ARP table of core 0 holds
- * a valid entry for the gateway IP. Only core 0 calls this, from
- * its stack drive loop. The version advances only when the MAC
- * changes, so the steady state costs one table scan per loop.
- */
-static void mc_gw_publish(void)
+static void mc_arp_publish(void)
 {
-	const ip4_addr_t *gw;
 	struct lwip_core_state *cs;
-	unsigned int i;
+	unsigned int i, j;
+	bool changed = false;
 
 	if (!netif_default)
 		return;
 
-	gw = netif_ip4_gw(netif_default);
-	if (ip4_addr_isany_val(*gw))
-		return;
+	/* Service any ARP resolution requests from secondary cores */
+	if (mc_arp_req.version != mc_arp_req_served) {
+		mc_arp_req_served = mc_arp_req.version;
+		uk_arch_rmb();
+		if (!ip4_addr_isany_val(mc_arp_req.ipaddr))
+			etharp_request(netif_default, &mc_arp_req.ipaddr);
+	}
 
 	cs = lwip_get_core_state();
 
@@ -250,55 +271,94 @@ static void mc_gw_publish(void)
 		struct etharp_entry *e = &cs->arp_table[i];
 
 		if (e->state < MC_ARP_STATE_STABLE ||
-		    e->ipaddr.addr != gw->addr)
+		    ip4_addr_isany_val(e->ipaddr))
 			continue;
 
-		if (memcmp(&mc_gw_pub.mac, &e->ethaddr,
-			 sizeof(mc_gw_pub.mac)) != 0) {
-			mc_gw_pub.mac = e->ethaddr;
-			uk_arch_wmb();
-			mc_gw_pub.version++;
+		bool found = false;
+		for (j = 0; j < mc_arp_pub.count; j++) {
+			if (ip4_addr_cmp(&mc_arp_pub.entries[j].ipaddr, &e->ipaddr)) {
+				found = true;
+				if (memcmp(&mc_arp_pub.entries[j].mac, &e->ethaddr,
+					   sizeof(struct eth_addr)) != 0) {
+					mc_arp_pub.entries[j].mac = e->ethaddr;
+					changed = true;
+				}
+				break;
+			}
 		}
-		return;
+
+		if (!found && mc_arp_pub.count < MC_ARP_SYNC_MAX) {
+			mc_arp_pub.entries[mc_arp_pub.count].ipaddr = e->ipaddr;
+			mc_arp_pub.entries[mc_arp_pub.count].mac = e->ethaddr;
+			mc_arp_pub.count++;
+			changed = true;
+		}
+	}
+
+	if (changed) {
+		uk_arch_wmb();
+		mc_arp_pub.version++;
 	}
 }
 
-/*
- * Adopt a newly published gateway MAC into the local per-core ARP
- * table of this secondary core. The static entry also flushes the
- * packets this core queued on a pending gateway entry, which frees
- * the stuck SYN-ACKs of the connections this core accepted.
- */
-static void mc_gw_adopt(unsigned int core_id)
+static void mc_arp_adopt(unsigned int core_id)
 {
-	const ip4_addr_t *gw;
-	struct eth_addr mac;
-
-	if (mc_gw_pub.version == mc_gw_seen[core_id])
-		return;
-	mc_gw_seen[core_id] = mc_gw_pub.version;
+	struct lwip_core_state *cs;
+	uint32_t count, i;
+	struct mc_arp_pub_entry entries[MC_ARP_SYNC_MAX];
 
 	if (!netif_default)
 		return;
 
-	gw = netif_ip4_gw(netif_default);
-	if (ip4_addr_isany_val(*gw))
-		return;
+	/* Check if any entry in our local ARP table is PENDING */
+	static __nsec last_arp_req;
+	__nsec now = ukplat_monotonic_clock();
 
-	uk_arch_rmb();
-	mac = mc_gw_pub.mac;
+	cs = lwip_get_core_state();
+	for (i = 0; i < ARP_TABLE_SIZE; i++) {
+		struct etharp_entry *e = &cs->arp_table[i];
 
-	if (etharp_add_static_entry(gw, &mac) != ERR_OK) {
-		printf("httpreply-mc: [WARN] core %u failed to adopt gateway %s\n",
-		       (unsigned)core_id, ip4addr_ntoa(gw));
-		return;
+		if (e->state == MC_ARP_STATE_PENDING &&
+		    !ip4_addr_isany_val(e->ipaddr)) {
+			if (!ip4_addr_cmp(&mc_arp_req.ipaddr, &e->ipaddr) ||
+			    (now - last_arp_req >= ukarch_time_msec_to_nsec(500))) {
+				last_arp_req = now;
+				mc_arp_req.ipaddr = e->ipaddr;
+				uk_arch_wmb();
+				mc_arp_req.version++;
+			}
+			break;
+		}
 	}
 
-	printf("httpreply-mc: core %u adopted gateway %s MAC "
-	       "%02x:%02x:%02x:%02x:%02x:%02x\n",
-	       (unsigned)core_id, ip4addr_ntoa(gw),
-	       mac.addr[0], mac.addr[1], mac.addr[2],
-	       mac.addr[3], mac.addr[4], mac.addr[5]);
+	if (mc_arp_pub.version == mc_arp_seen[core_id])
+		return;
+	mc_arp_seen[core_id] = mc_arp_pub.version;
+
+	uk_arch_rmb();
+	count = mc_arp_pub.count;
+	if (count > MC_ARP_SYNC_MAX)
+		count = MC_ARP_SYNC_MAX;
+
+	for (i = 0; i < count; i++)
+		entries[i] = mc_arp_pub.entries[i];
+
+	for (i = 0; i < count; i++) {
+		if (ip4_addr_isany_val(entries[i].ipaddr))
+			continue;
+
+		if (etharp_add_static_entry(&entries[i].ipaddr, &entries[i].mac) != ERR_OK) {
+			printf("httpreply-mc: [WARN] core %u failed to adopt ARP for %s\n",
+			       core_id, ip4addr_ntoa(&entries[i].ipaddr));
+			continue;
+		}
+
+		printf("httpreply-mc: core %u adopted ARP %s MAC "
+		       "%02x:%02x:%02x:%02x:%02x:%02x\n",
+		       core_id, ip4addr_ntoa(&entries[i].ipaddr),
+		       entries[i].mac.addr[0], entries[i].mac.addr[1], entries[i].mac.addr[2],
+		       entries[i].mac.addr[3], entries[i].mac.addr[4], entries[i].mac.addr[5]);
+	}
 }
 
 /*
@@ -346,6 +406,8 @@ static int set_epoll_events(int epfd, int fd, uint32_t events)
 }
 
 void ena_netdev_dump_queue(struct uk_netdev *dev, uint16_t qid);
+unsigned long ena_netdev_rxq_pkts(struct uk_netdev *dev, uint16_t qid);
+unsigned long ena_netdev_txq_pkts(struct uk_netdev *dev, uint16_t qid);
 
 static unsigned int mc_count_memp_free(void *head)
 {
@@ -365,44 +427,63 @@ static unsigned int mc_count_memp_free(void *head)
  */
 static void drive_core_stack(int core_id)
 {
+	static __nsec last_hb[MC_MAX_WORKERS];
 	static unsigned long poll_cnt[MC_MAX_WORKERS];
-	if ((++poll_cnt[core_id] % 5000000UL) == 0) {
+	__nsec now = ukplat_monotonic_clock();
+
+	poll_cnt[core_id]++;
+	if (now - last_hb[core_id] >= ukarch_time_sec_to_nsec(2)) {
+		last_hb[core_id] = now;
+
 		struct lwip_core_state *cs = lwip_get_core_state();
-		struct tcp_pcb_listen *l = cs->tcp_listen_pcbs.listen_pcbs;
 		unsigned int active_pcbs = 0;
 		struct tcp_pcb *p;
 		unsigned int m_pbuf = 0, m_pcb = 0, m_seg = 0;
+		struct uk_netdev *dev = uk_netdev_get(0);
+		unsigned long rxpkts = 0, txpkts = 0;
 
 		for (p = cs->tcp_active_pcbs; p != NULL; p = p->next)
 			active_pcbs++;
 
-		if (cs->memp_tabs[0])
-			m_pbuf = mc_count_memp_free(cs->memp_tabs[0]);
-		if (cs->memp_tabs[1])
-			m_pcb = mc_count_memp_free(cs->memp_tabs[1]);
-		if (cs->memp_tabs[2])
-			m_seg = mc_count_memp_free(cs->memp_tabs[2]);
+		if (cs->memp_tabs[MEMP_PBUF_POOL])
+			m_pbuf = mc_count_memp_free(cs->memp_tabs[MEMP_PBUF_POOL]);
+		if (cs->memp_tabs[MEMP_TCP_PCB])
+			m_pcb = mc_count_memp_free(cs->memp_tabs[MEMP_TCP_PCB]);
+		if (cs->memp_tabs[MEMP_TCP_SEG])
+			m_seg = mc_count_memp_free(cs->memp_tabs[MEMP_TCP_SEG]);
 
-		printf("httpreply-mc: core %d heartbeat (polls=%lu, lwip_core=%u, listen_pcb=%p, active=%u, memp_free: pbuf=%u pcb=%u seg=%u)\n",
-		       core_id, poll_cnt[core_id], lwip_current_core_id(), (void *)l,
+		if (dev) {
+			rxpkts = ena_netdev_rxq_pkts(dev, (uint16_t)core_id);
+			txpkts = ena_netdev_txq_pkts(dev, (uint16_t)core_id);
+		}
+
+		printf("httpreply-mc: core %d heartbeat (polls=%lu, rx=%lu, tx=%lu, active=%u, free: pbuf=%u pcb=%u seg=%u)\n",
+		       core_id, poll_cnt[core_id], rxpkts, txpkts,
 		       active_pcbs, m_pbuf, m_pcb, m_seg);
 
-		struct uk_netdev *dev = uk_netdev_get(0);
-		if (dev)
-			ena_netdev_dump_queue(dev, (uint16_t)core_id);
+		/*
+		 * pbuf pool exhaustion warning. When the free pbuf count falls
+		 * below 4 the stack cannot allocate receive buffers. send()
+		 * returns ENOBUFS and connections stall.
+		 * [Ticket ba82aec88b]
+		 */
+		if (m_pbuf < 4)
+			printf("httpreply-mc: [WARN] core %d pbuf pool near-empty "
+			       "(free=%u) — send() will fail with ENOBUFS\n",
+			       core_id, m_pbuf);
 	}
 	uknetdev_poll_rxqueue((uint16_t)core_id);
 	sys_check_timeouts();
 
 	/*
-	 * Synchronize the gateway ARP entry. Core 0 receives the ARP
-	 * reply from the network and publishes the resolved MAC.
-	 * The other cores adopt the MAC in their own ARP tables.
+	 * Synchronize ARP entries across cores. Core 0 receives ARP replies
+	 * from the network and publishes resolved MACs. The other cores
+	 * adopt the MACs in their own ARP tables.
 	 */
 	if (core_id == 0)
-		mc_gw_publish();
+		mc_arp_publish();
 	else
-		mc_gw_adopt((unsigned int)core_id);
+		mc_arp_adopt((unsigned int)core_id);
 }
 
 /*
@@ -592,10 +673,26 @@ static __noreturn void run_to_completion_worker(int core_id)
 					if (cfd < 0)
 						break;
 
-					printf("httpreply-mc: core %d ACCEPTED fd=%d from %s:%d\n",
-					       core_id, cfd,
-					       ip4addr_ntoa((const ip4_addr_t *)&client_addr.sin_addr),
-					       ntohs(client_addr.sin_port));
+					/*
+					 * Log the cumulative RX queue packet counter alongside
+					 * the accept. This shows whether accepted connections
+					 * follow the RSS queue distribution. [Ticket ba82aec88b]
+					 * Rate-limited to prevent serial port blocking under load.
+					 */
+					if (cfd <= 10 || (cfd % 50) == 0) {
+						struct uk_netdev *_dev = uk_netdev_get(0);
+						unsigned long _rxpkts = 0;
+
+						if (_dev)
+							_rxpkts = ena_netdev_rxq_pkts(_dev,
+										      (uint16_t)core_id);
+						printf("httpreply-mc: core %d ACCEPTED fd=%d from %s:%d"
+						       " (rxq%d_pkts=%lu)\n",
+						       core_id, cfd,
+						       ip4addr_ntoa((const ip4_addr_t *)&client_addr.sin_addr),
+						       ntohs(client_addr.sin_port),
+						       core_id, _rxpkts);
+					}
 
 					configure_socket_options(cfd);
 
@@ -855,7 +952,7 @@ int main(int argc, char **argv)
 						&cs0->arp_table[i].ethaddr) != ERR_OK)
 					printf("httpreply-mc: [WARN] failed to "
 					       "make gateway entry static\n");
-				mc_gw_publish();
+				mc_arp_publish();
 			} else {
 				printf("httpreply-mc: [WARN] gateway ARP resolution timed out\n");
 			}

@@ -285,6 +285,75 @@ int ena_rss_set_ind_table(struct ena_adapter *adapter, uint16_t num_queues)
 	return 0;
 }
 
+/*
+ * Issue a GET_FEATURE for ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG and log the
+ * firmware-reported table size limits together with spot-check entries from
+ * the DMA buffer populated by the device. This confirms what the firmware
+ * stored versus what ena_rss_set_ind_table() wrote.
+ *
+ * The GET_FEATURE response for this feature ID returns the same
+ * ena_admin_feature_rss_ind_table descriptor used in the SET_FEATURE request.
+ * The firmware fills min_size and max_size with the hardware limits and writes
+ * the actual indirection table back into the caller-supplied DMA buffer (via
+ * the control_buffer pointer). We reuse the existing rss->ind_table DMA
+ * allocation for the readback.
+ */
+static void ena_rss_readback_ind_table(struct ena_adapter *adapter)
+{
+	struct ena_rss_info *rss;
+	struct {
+		struct ena_admin_ctrl_buff_info control_buffer;
+		struct ena_admin_get_set_feature_common_desc feat_common;
+		struct ena_admin_feature_rss_ind_table ind_table;
+	} req;
+	struct ena_admin_feature_rss_ind_table resp;
+	uint16_t last;
+	int ret;
+
+	if (!adapter)
+		return;
+
+	rss = &adapter->rss_info;
+	if (!rss->ind_table || rss->ind_table_size == 0)
+		return;
+
+	memset(&req, 0, sizeof(req));
+	req.feat_common.flags = ENA_ADMIN_FEAT_SELECT_CURRENT;
+	req.feat_common.feature_id = ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG;
+	req.ind_table.size = (uint16_t)__builtin_ctz(rss->ind_table_size);
+	req.ind_table.inline_index = 0xFFFFFFFFu;
+
+	/* Point the device at our existing DMA buffer so it can populate it. */
+	req.control_buffer.length = (uint32_t)(rss->ind_table_size *
+					       sizeof(struct ena_admin_rss_ind_table_entry));
+	req.control_buffer.address.mem_addr_low =
+		(uint32_t)(rss->ind_table_phys & 0xFFFFFFFFu);
+	req.control_buffer.address.mem_addr_high =
+		(uint16_t)((rss->ind_table_phys >> 32) & 0xFFFFu);
+
+	memset(&resp, 0, sizeof(resp));
+	ret = ena_rss_exec(adapter, ENA_ADMIN_GET_FEATURE, &req, sizeof(req),
+			   &resp, sizeof(resp));
+	if (ret) {
+		ena_warn("rss: GET_FEATURE indirection table readback failed (%d)", ret);
+		return;
+	}
+
+	last = rss->ind_table_size > 0 ? rss->ind_table_size - 1 : 0;
+
+	ena_info("rss: readback: size=%u min_size=%u max_size=%u",
+		 (unsigned)resp.size, (unsigned)resp.min_size,
+		 (unsigned)resp.max_size);
+	ena_info("rss: readback: entry[0]=sq%u entry[1]=sq%u entry[%u]=sq%u entry[%u]=sq%u",
+		 (unsigned)rss->ind_table[0].sq_idx,
+		 rss->ind_table_size > 1 ? (unsigned)rss->ind_table[1].sq_idx : 0u,
+		 (unsigned)(last > 0 ? last - 1 : 0),
+		 rss->ind_table_size > 1 ?
+			(unsigned)rss->ind_table[last > 0 ? last - 1 : 0].sq_idx : 0u,
+		 (unsigned)last,
+		 (unsigned)rss->ind_table[last].sq_idx);
+}
+
 int ena_rss_configure(struct ena_adapter *adapter, uint16_t num_queues)
 {
 	int ret;
@@ -311,6 +380,10 @@ int ena_rss_configure(struct ena_adapter *adapter, uint16_t num_queues)
 	ret = ena_rss_set_ind_table(adapter, num_queues);
 	if (ret)
 		return ret;
+
+	/* Read back the table from firmware and log spot-check entries.
+	 * Best-effort: a readback failure is logged but does not abort start. */
+	ena_rss_readback_ind_table(adapter);
 
 	adapter->rss_info.enabled = true;
 	return 0;
