@@ -130,6 +130,9 @@ void mock_ena_hw_init(struct mock_ena_hw *hw)
 	hw->rss_set_key_count = 0;
 	hw->rss_set_ctrl_count = 0;
 	hw->rss_set_ind_count = 0;
+	hw->rss_get_ind_count = 0;
+	hw->rss_get_ind_min_size = 0;
+	hw->rss_get_ind_max_size = 0;
 
 	for (i = 0; i < MOCK_MAX_IO_QUEUES; i++) {
 		hw->io_tx_cq_state[i].cq_tail = 0;
@@ -383,6 +386,30 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 				llq->header_location_ctrl_supported = 1;
 				llq->entry_size_ctrl_supported = 1;
 				hw->attrs_read = 1;
+				filled = 1;
+				break;
+			}
+			case ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG: {
+				struct ena_admin_feature_rss_ind_table *ind;
+				uint32_t log_size = 0;
+
+				ind = (struct ena_admin_feature_rss_ind_table *)
+				      comp->response_specific_data;
+				memset(ind, 0, sizeof(*ind));
+				/* The emulated device supports 16 to 256 entries
+				 * (2^4..2^8), matching the Linux driver limits. */
+				ind->min_size = 4;
+				ind->max_size = 8;
+				if (hw->rss_ind_table_size) {
+					uint32_t n = hw->rss_ind_table_size;
+
+					while ((1u << log_size) < n)
+						log_size++;
+				}
+				ind->size = (uint16_t)log_size;
+				hw->rss_get_ind_count++;
+				hw->rss_get_ind_min_size = ind->min_size;
+				hw->rss_get_ind_max_size = ind->max_size;
 				filled = 1;
 				break;
 			}

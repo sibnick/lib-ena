@@ -1157,10 +1157,18 @@ static void test_validation_rss_configuration(void)
 	ret = netdev->ops->dev_start(netdev);
 	assert(ret == 0);
 
-	/* Verify RSS state on adapter */
+	/* Verify RSS state on adapter. The device reports a supported
+	 * range of 2^4..2^8 entries. The 4-queue request (2^2) is clamped
+	 * up to the 2^4 floor. */
 	assert(g_adapter.rss_info.enabled == true);
 	assert(g_adapter.rss_info.supported == true);
-	assert(g_adapter.rss_info.ind_table_size == 128);
+	assert(g_adapter.rss_info.ind_table_size == 16);
+
+	/* The driver queried the table size limits at init. The second GET
+	 * is the post-set readback in ena_rss_configure(). */
+	assert(g_hw.rss_get_ind_count == 2);
+	assert(g_hw.rss_get_ind_min_size == 4);
+	assert(g_hw.rss_get_ind_max_size == 8);
 
 	/* Verify mock hardware received RSS settings */
 	assert(g_hw.rss_set_key_count == 1);
@@ -1173,12 +1181,12 @@ static void test_validation_rss_configuration(void)
 	assert(g_hw.rss_ip4_fields == (ENA_ADMIN_RSS_L3_SA | ENA_ADMIN_RSS_L3_DA));
 
 	assert(g_hw.rss_set_ind_count == 1);
-	assert(g_hw.rss_ind_table_size == 128);
+	assert(g_hw.rss_ind_table_size == 16);
 
 	/* Verify indirection table routes across all 4 RX hardware queues.
 	 * Each entry holds the 0-based SQ index of the target RX ring.
 	 * It never holds the CQ index of that ring. */
-	for (int i = 0; i < 128; i++) {
+	for (int i = 0; i < 16; i++) {
 		uint16_t q = (uint16_t)(i % 4);
 
 		assert(g_hw.rss_ind_table[i] == g_adapter.rx_rings[q]->sq_idx);
@@ -1251,8 +1259,12 @@ static void test_validation_rss_configuration(void)
 	}
 
 	g_hw.rss_set_ind_count = 0;
+	g_hw.rss_get_ind_count = 0;
 	assert(netdev->ops->dev_start(netdev) == 0);
 
+	/* The 2-queue request (2^1) is clamped up to the 2^4 floor,
+	 * so the driver queried the device twice (init + readback). */
+	assert(g_hw.rss_get_ind_count == 2);
 	assert(g_hw.rss_set_ind_count == 1);
 	assert(g_adapter.rss_info.enabled == true);
 	assert(g_adapter.tx_rings[0]->cq_idx == 0);
@@ -1267,7 +1279,7 @@ static void test_validation_rss_configuration(void)
 
 	int q0_count = 0;
 	int q1_count = 0;
-	for (int i = 0; i < 128; i++) {
+	for (int i = 0; i < 16; i++) {
 		uint16_t q = (uint16_t)(i % 2);
 
 		/* Entry must hold the 0-based SQ index of the target RX ring */
@@ -1285,8 +1297,8 @@ static void test_validation_rss_configuration(void)
 		if (g_hw.rss_ind_table[i] == g_adapter.rx_rings[1]->sq_idx)
 			q1_count++;
 	}
-	assert(q0_count == 64);
-	assert(q1_count == 64);
+	assert(q0_count == 8);
+	assert(q1_count == 8);
 
 	assert(netdev->ops->dev_stop(netdev) == 0);
 	for (uint16_t q = 0; q < 2; q++) {

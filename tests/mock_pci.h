@@ -139,6 +139,9 @@ struct mock_ena_hw {
 	uint32_t rss_set_key_count;
 	uint32_t rss_set_ctrl_count;
 	uint32_t rss_set_ind_count;
+	uint32_t rss_get_ind_count;
+	uint16_t rss_get_ind_min_size;
+	uint16_t rss_get_ind_max_size;
 };
 
 void mock_ena_hw_init(struct mock_ena_hw *hw);
