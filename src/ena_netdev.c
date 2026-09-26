@@ -1722,3 +1722,28 @@ void ena_netdev_dump_queue(struct uk_netdev *dev, uint16_t qid)
 	}
 }
 
+/*
+ * Return the cumulative receive packet count for queue qid.
+ * Used by the httpreply-mc ACCEPTED log line to show whether accepted
+ * connections follow the RSS queue distribution. [Ticket ba82aec88b]
+ */
+unsigned long ena_netdev_rxq_pkts(struct uk_netdev *dev, uint16_t qid)
+{
+	struct ena_adapter *adapter;
+
+	if (!dev)
+		return 0;
+
+#ifdef __Unikraft__
+	adapter = &to_enadevice(dev)->adapter;
+#else
+	adapter = dev->adapter;
+#endif
+
+	if (!adapter || !adapter->rx_rings)
+		return 0;
+	if (qid >= adapter->num_rx_rings || !adapter->rx_rings[qid])
+		return 0;
+
+	return (unsigned long)adapter->rx_rings[qid]->rx_packets;
+}

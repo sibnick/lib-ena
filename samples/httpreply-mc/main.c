@@ -346,6 +346,7 @@ static int set_epoll_events(int epfd, int fd, uint32_t events)
 }
 
 void ena_netdev_dump_queue(struct uk_netdev *dev, uint16_t qid);
+unsigned long ena_netdev_rxq_pkts(struct uk_netdev *dev, uint16_t qid);
 
 static unsigned int mc_count_memp_free(void *head)
 {
@@ -386,6 +387,19 @@ static void drive_core_stack(int core_id)
 		printf("httpreply-mc: core %d heartbeat (polls=%lu, lwip_core=%u, listen_pcb=%p, active=%u, memp_free: pbuf=%u pcb=%u seg=%u)\n",
 		       core_id, poll_cnt[core_id], lwip_current_core_id(), (void *)l,
 		       active_pcbs, m_pbuf, m_pcb, m_seg);
+
+		/*
+		 * pbuf pool exhaustion warning. When the free pbuf count falls
+		 * below 4 the stack cannot allocate receive buffers. send()
+		 * returns ENOBUFS and connections stall. The 2026-09-25 console
+		 * evidence showed pbuf=1 at idle on core 0 — this log line
+		 * makes the condition visible in future captures.
+		 * [Ticket ba82aec88b]
+		 */
+		if (m_pbuf < 4)
+			printf("httpreply-mc: [WARN] core %d pbuf pool near-empty "
+			       "(free=%u) — send() will fail with ENOBUFS\n",
+			       core_id, m_pbuf);
 
 		struct uk_netdev *dev = uk_netdev_get(0);
 		if (dev)
@@ -592,10 +606,25 @@ static __noreturn void run_to_completion_worker(int core_id)
 					if (cfd < 0)
 						break;
 
-					printf("httpreply-mc: core %d ACCEPTED fd=%d from %s:%d\n",
-					       core_id, cfd,
-					       ip4addr_ntoa((const ip4_addr_t *)&client_addr.sin_addr),
-					       ntohs(client_addr.sin_port));
+					/*
+					 * Log the cumulative RX queue packet counter alongside
+					 * the accept. This shows whether accepted connections
+					 * follow the RSS queue distribution. [Ticket ba82aec88b]
+					 */
+					{
+						struct uk_netdev *_dev = uk_netdev_get(0);
+						unsigned long _rxpkts = 0;
+
+						if (_dev)
+							_rxpkts = ena_netdev_rxq_pkts(_dev,
+										      (uint16_t)core_id);
+						printf("httpreply-mc: core %d ACCEPTED fd=%d from %s:%d"
+						       " (rxq%d_pkts=%lu)\n",
+						       core_id, cfd,
+						       ip4addr_ntoa((const ip4_addr_t *)&client_addr.sin_addr),
+						       ntohs(client_addr.sin_port),
+						       core_id, _rxpkts);
+					}
 
 					configure_socket_options(cfd);
 
