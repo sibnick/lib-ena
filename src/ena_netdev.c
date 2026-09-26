@@ -16,12 +16,13 @@
 
 #ifdef __Unikraft__
 /*
- * Upstream Unikraft declares no link_state_get member in
+ * Upstream Unikraft declares no link_state_get or stop member in
  * struct uk_netdev_ops and no uk_alloc_get_current() in ukalloc.
- * The multi-core patch of this repository adds both to the same
- * tree. Check the member once so the driver builds against both
- * trees. When the member is absent, the RX netbuf allocator falls
- * back to uk_alloc_get_default() below.
+ * The multi-core patch of this repository adds all three to the
+ * same tree. Check each member once so the driver builds against
+ * both trees. When the members are absent, the ops table omits
+ * them and the RX netbuf allocator falls back to
+ * uk_alloc_get_default() below.
  */
 #if defined(__has_member)
 #  if __has_member(struct uk_netdev_ops, link_state_get)
@@ -29,8 +30,14 @@
 #  else
 #    define ENA_UK_HAS_LINK_STATE_GET 0
 #  endif
+#  if __has_member(struct uk_netdev_ops, stop)
+#    define ENA_UK_HAS_STOP 1
+#  else
+#    define ENA_UK_HAS_STOP 0
+#  endif
 #else
 #  define ENA_UK_HAS_LINK_STATE_GET 0
+#  define ENA_UK_HAS_STOP 0
 #endif
 #endif /* __Unikraft__ */
 
@@ -1121,6 +1128,9 @@ const struct uk_netdev_ops ena_ops = {
 	.rxq_configure   = ena_netdev_rxq_configure,
 	.txq_configure   = ena_netdev_txq_configure,
 	.start           = ena_netdev_start,
+#if ENA_UK_HAS_STOP
+	.stop            = ena_netdev_stop,
+#endif
 #if ENA_UK_HAS_LINK_STATE_GET
 	.link_state_get  = ena_netdev_link_state_get,
 #endif
