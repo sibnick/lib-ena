@@ -1747,3 +1747,24 @@ unsigned long ena_netdev_rxq_pkts(struct uk_netdev *dev, uint16_t qid)
 
 	return (unsigned long)adapter->rx_rings[qid]->rx_packets;
 }
+
+unsigned long ena_netdev_txq_pkts(struct uk_netdev *dev, uint16_t qid)
+{
+	struct ena_adapter *adapter;
+
+	if (!dev)
+		return 0;
+
+#ifdef __Unikraft__
+	adapter = &to_enadevice(dev)->adapter;
+#else
+	adapter = dev->adapter;
+#endif
+
+	if (!adapter || !adapter->tx_rings)
+		return 0;
+	if (qid >= adapter->num_tx_rings || !adapter->tx_rings[qid])
+		return 0;
+
+	return (unsigned long)adapter->tx_rings[qid]->tx_packets;
+}

@@ -311,13 +311,18 @@ static void mc_arp_adopt(unsigned int core_id)
 		return;
 
 	/* Check if any entry in our local ARP table is PENDING */
+	static __nsec last_arp_req;
+	__nsec now = ukplat_monotonic_clock();
+
 	cs = lwip_get_core_state();
 	for (i = 0; i < ARP_TABLE_SIZE; i++) {
 		struct etharp_entry *e = &cs->arp_table[i];
 
 		if (e->state == MC_ARP_STATE_PENDING &&
 		    !ip4_addr_isany_val(e->ipaddr)) {
-			if (!ip4_addr_cmp(&mc_arp_req.ipaddr, &e->ipaddr)) {
+			if (!ip4_addr_cmp(&mc_arp_req.ipaddr, &e->ipaddr) ||
+			    (now - last_arp_req >= ukarch_time_msec_to_nsec(500))) {
+				last_arp_req = now;
 				mc_arp_req.ipaddr = e->ipaddr;
 				uk_arch_wmb();
 				mc_arp_req.version++;
@@ -402,6 +407,7 @@ static int set_epoll_events(int epfd, int fd, uint32_t events)
 
 void ena_netdev_dump_queue(struct uk_netdev *dev, uint16_t qid);
 unsigned long ena_netdev_rxq_pkts(struct uk_netdev *dev, uint16_t qid);
+unsigned long ena_netdev_txq_pkts(struct uk_netdev *dev, uint16_t qid);
 
 static unsigned int mc_count_memp_free(void *head)
 {
@@ -421,13 +427,20 @@ static unsigned int mc_count_memp_free(void *head)
  */
 static void drive_core_stack(int core_id)
 {
+	static __nsec last_hb[MC_MAX_WORKERS];
 	static unsigned long poll_cnt[MC_MAX_WORKERS];
-	if ((++poll_cnt[core_id] % 5000000UL) == 0) {
+	__nsec now = ukplat_monotonic_clock();
+
+	poll_cnt[core_id]++;
+	if (now - last_hb[core_id] >= ukarch_time_sec_to_nsec(2)) {
+		last_hb[core_id] = now;
+
 		struct lwip_core_state *cs = lwip_get_core_state();
-		struct tcp_pcb_listen *l = cs->tcp_listen_pcbs.listen_pcbs;
 		unsigned int active_pcbs = 0;
 		struct tcp_pcb *p;
 		unsigned int m_pbuf = 0, m_pcb = 0, m_seg = 0;
+		struct uk_netdev *dev = uk_netdev_get(0);
+		unsigned long rxpkts = 0, txpkts = 0;
 
 		for (p = cs->tcp_active_pcbs; p != NULL; p = p->next)
 			active_pcbs++;
@@ -439,26 +452,25 @@ static void drive_core_stack(int core_id)
 		if (cs->memp_tabs[MEMP_TCP_SEG])
 			m_seg = mc_count_memp_free(cs->memp_tabs[MEMP_TCP_SEG]);
 
-		printf("httpreply-mc: core %d heartbeat (polls=%lu, lwip_core=%u, listen_pcb=%p, active=%u, memp_free: pbuf=%u pcb=%u seg=%u)\n",
-		       core_id, poll_cnt[core_id], lwip_current_core_id(), (void *)l,
+		if (dev) {
+			rxpkts = ena_netdev_rxq_pkts(dev, (uint16_t)core_id);
+			txpkts = ena_netdev_txq_pkts(dev, (uint16_t)core_id);
+		}
+
+		printf("httpreply-mc: core %d heartbeat (polls=%lu, rx=%lu, tx=%lu, active=%u, free: pbuf=%u pcb=%u seg=%u)\n",
+		       core_id, poll_cnt[core_id], rxpkts, txpkts,
 		       active_pcbs, m_pbuf, m_pcb, m_seg);
 
 		/*
 		 * pbuf pool exhaustion warning. When the free pbuf count falls
 		 * below 4 the stack cannot allocate receive buffers. send()
-		 * returns ENOBUFS and connections stall. The 2026-09-25 console
-		 * evidence showed pbuf=1 at idle on core 0 — this log line
-		 * makes the condition visible in future captures.
+		 * returns ENOBUFS and connections stall.
 		 * [Ticket ba82aec88b]
 		 */
 		if (m_pbuf < 4)
 			printf("httpreply-mc: [WARN] core %d pbuf pool near-empty "
 			       "(free=%u) — send() will fail with ENOBUFS\n",
 			       core_id, m_pbuf);
-
-		struct uk_netdev *dev = uk_netdev_get(0);
-		if (dev)
-			ena_netdev_dump_queue(dev, (uint16_t)core_id);
 	}
 	uknetdev_poll_rxqueue((uint16_t)core_id);
 	sys_check_timeouts();

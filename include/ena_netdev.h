@@ -309,5 +309,16 @@ void ena_netdev_dump_queue(struct uk_netdev *dev, uint16_t qid);
  */
 unsigned long ena_netdev_rxq_pkts(struct uk_netdev *dev, uint16_t qid);
 
+/**
+ * Return the cumulative transmit packet count for queue qid.
+ * Used to log per-queue TX distribution in the httpreply-mc heartbeat path.
+ * [Ticket ba82aec88b]
+ *
+ * @param dev Pointer to the network device.
+ * @param qid TX queue index.
+ * @return Cumulative packet count, or 0 if the queue does not exist.
+ */
+unsigned long ena_netdev_txq_pkts(struct uk_netdev *dev, uint16_t qid);
+
 #endif /* LIBENA_ENA_NETDEV_H */
 
