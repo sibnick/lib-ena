@@ -246,10 +246,27 @@ def register_ami(snapshot_id):
 
     return ami_id
 
+def wait_for_ip_free(ip):
+    while True:
+        enis = run_cmd([
+            "aws", "ec2", "describe-network-interfaces",
+            "--filters", f"Name=addresses.private-ip-address,Values={ip}",
+            "--query", "NetworkInterfaces[].NetworkInterfaceId",
+            "--region", AWS_REGION,
+            "--output", "json"
+        ])
+        eni_list = json.loads(enis) if enis else []
+        if not eni_list:
+            print(f"[SUCCESS] IP {ip} is free!")
+            break
+        print(f"[INFO] IP {ip} is still bound to ENIs {eni_list}, waiting 5s...")
+        time.sleep(5)
+
 def launch_target_instance(ami_id):
     print("==================================================")
     print(f"Step 4: Launching Unikraft Target Instance ({INSTANCE_TYPE})...")
     print("==================================================")
+    wait_for_ip_free(TARGET_PRIVATE_IP)
     launch_out = run_cmd([
         "aws", "ec2", "run-instances",
         "--image-id", ami_id,
@@ -285,6 +302,7 @@ def launch_client_instance():
     print("==================================================")
     print(f"Step 5: Launching wrk Client Instance ({INSTANCE_TYPE})...")
     print("==================================================")
+    wait_for_ip_free(CLIENT_PRIVATE_IP)
     user_data = f"""#!/bin/bash
 set -e
 exec > >(tee -a /root/diag.txt) 2>&1
