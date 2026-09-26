@@ -317,7 +317,7 @@ echo "Starting wrk sweep $(date)..." > /root/wrk_sweep.log
 
 CONCS="10 25 50 100 200"
 for c in $CONCS; do
-    CURL_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://{TARGET_PRIVATE_IP}/ || echo "FAIL")
+    CURL_CODE=$(curl -s -o /dev/null -w "%{{http_code}}" --max-time 3 http://{TARGET_PRIVATE_IP}/ || echo "FAIL")
     echo "=== STEP s1 c=$c start (ping=$CURL_CODE) $(date) ===" | tee -a /root/wrk_sweep.log
     RC=0
     timeout --kill-after=5s 45s wrk -t2 -c$c -d30s --latency http://{TARGET_PRIVATE_IP}/ > /root/wrk_s1_c$c.txt 2>&1 || RC=$?
