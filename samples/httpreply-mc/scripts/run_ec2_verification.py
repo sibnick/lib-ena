@@ -622,7 +622,7 @@ def main():
         print("Step 8: Teardown and Cleanup of AWS Resources...")
         print("==================================================")
         evidence_path = sample_dir / f"unikraft_console_evidence_{date_str}.txt"
-        if target_id and not evidence_path.exists():
+        if target_id:
             try:
                 print("[INFO] Fetching console output before teardown...")
                 time.sleep(10)
