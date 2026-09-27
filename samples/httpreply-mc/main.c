@@ -34,6 +34,7 @@
 #include <uk/lcpu/pm.h>
 #include <uk/pcpuvar.h>
 #include <uk/arch.h>
+#include <uk/arch/x86_64.h>
 #if defined(CONFIG_LIBUKBOOT_PERCORE_HEAP) && CONFIG_LIBUKBOOT_PERCORE_HEAP
 #include <uk/allocbbuddy.h>
 
@@ -610,6 +611,22 @@ static int create_core_listener(int core_id)
 }
 
 /*
+ * Idle-halt tracing [Ticket 6f89cf874e].
+ *
+ * A vCPU that enters the halt and is never woken prints the pre-halt
+ * line and then goes silent, so the console shows exactly which core
+ * stops waking. The first two halts per core are always traced. After
+ * that at most one line prints per 2 s, so the serial load stays
+ * negligible.
+ */
+struct idle_halt_trace {
+	uint64_t last_log;	/* monotonic ns of last line printed */
+	unsigned long halts;	/* halt entries on this core		*/
+};
+
+static struct idle_halt_trace ib_trace[8];
+
+/*
  * Sleep this vCPU for at most ns nanoseconds.
  *
  * The KVM platform implements this with a real halt: it arms a
@@ -620,17 +637,49 @@ static int create_core_listener(int core_id)
  * [Ticket 597c1b9731]
  */
 static inline void
-mc_idle_sleep(uint64_t ns)
+mc_idle_sleep(int core_id, uint64_t ns)
 {
 	unsigned long flags;
 	__nsec now;
+	int trace;
+	struct idle_halt_trace *t = &ib_trace[core_id];
 
-	flags = uk_lcpu_save_irqf();
-	uk_lcpu_disable_irq();
 	now = ukplat_monotonic_clock();
-	uk_lcpu_halt_irq_until((uint64_t)(now + ns));
-	uk_lcpu_irqs_handle_pending();
-	uk_lcpu_restore_irqf(flags);
+	t->halts++;
+	trace = (t->halts <= 2) || (now - t->last_log >= 2000000ULL);
+	if (trace) {
+		t->last_log = now;
+		printf("httpreply-mc: idle-trace core %d pre-halt #%lu ns=%llu\n",
+		       core_id, (unsigned long)t->halts,
+		       (unsigned long long)ns);
+	}
+
+	if (core_id == 0) {
+		/*
+		 * vCPU 0 is woken by the shared i8254 one-shot, wired to this core.
+		 */
+		flags = uk_lcpu_save_irqf();
+		uk_lcpu_disable_irq();
+		now = ukplat_monotonic_clock();
+		uk_lcpu_halt_irq_until((uint64_t)(now + ns));
+		uk_lcpu_irqs_handle_pending();
+		uk_lcpu_restore_irqf(flags);
+	} else {
+		/*
+		 * Secondary vCPU: the shared i8254 wake never reaches it, so a
+		 * halt here would leave its queue unpolled (the 50 % blackhole).
+		 * Spin until the deadline instead; its ENA queue interrupt still
+		 * lands, so the local stack stays responsive. [Ticket 6f89cf874e]
+		 */
+		__nsec deadline = now + ns;
+
+		while (ukplat_monotonic_clock() < deadline)
+			uk_lcpu_irqs_handle_pending();
+	}
+
+	if (trace)
+		printf("httpreply-mc: idle-trace core %d post-halt #%lu\n",
+		       core_id, (unsigned long)t->halts);
 }
 
 /*
@@ -813,7 +862,7 @@ static __noreturn void run_to_completion_worker(int core_id)
 
 		sleep_ns = ib_tick(&ib, ukplat_monotonic_clock(), work);
 		if (sleep_ns)
-			mc_idle_sleep(sleep_ns);
+			mc_idle_sleep(core_id, sleep_ns);
 	}
 }
 
