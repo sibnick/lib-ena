@@ -51,6 +51,7 @@ int uk_percore_heap_get(unsigned int i, __uptr *base, __sz *len);
 #include <lwip/memp.h>
 #include "netif/uknetdev.h"
 #include "lwip_percore.h"
+#include "idlebackoff.h"
 
 #define MC_MAX_WORKERS 2
 #define MC_RECVBUF_SIZE 4096
@@ -609,6 +610,30 @@ static int create_core_listener(int core_id)
 }
 
 /*
+ * Sleep this vCPU for at most ns nanoseconds.
+ *
+ * The KVM platform implements this with a real halt: it arms a
+ * one-shot timer interrupt for the wake, then executes sti; hlt. The
+ * vCPU leaves the run queue for the whole sleep, so an idle core
+ * uses no host CPU. The wake is the timer interrupt or any earlier
+ * interrupt.
+ * [Ticket 597c1b9731]
+ */
+static inline void
+mc_idle_sleep(uint64_t ns)
+{
+	unsigned long flags;
+	__nsec now;
+
+	flags = uk_lcpu_save_irqf();
+	uk_lcpu_disable_irq();
+	now = ukplat_monotonic_clock();
+	uk_lcpu_halt_irq_until((uint64_t)(now + ns));
+	uk_lcpu_irqs_handle_pending();
+	uk_lcpu_restore_irqf(flags);
+}
+
+/*
  * Run-to-completion worker engine. Bound to a single dedicated core
  * and its assigned hardware queue pair.
  */
@@ -618,6 +643,9 @@ static __noreturn void run_to_completion_worker(int core_id)
 	struct worker_ctx *w = &mc_workers[core_id];
 	struct epoll_event events[MAX_EVENTS];
 	struct epoll_event ev;
+	struct uk_netdev *dev;
+	struct ib_state ib;
+	unsigned long rx_prev, tx_prev;
 	int server_fd;
 	int n, i;
 
@@ -645,7 +673,21 @@ static __noreturn void run_to_completion_worker(int core_id)
 	printf("httpreply-mc: [INFO] core %d listening on port %d (queue pair %d)\n",
 	       core_id, LISTEN_PORT, core_id);
 
+	/*
+	 * Idle backoff state for this core. Work is detected from the
+	 * cumulative packet counters of this core's hardware queues, so
+	 * an iteration counts as work even when it produces no epoll
+	 * event (for example a timer-driven retransmit).
+	 */
+	dev = uk_netdev_get(0);
+	ib_init(&ib, ukplat_monotonic_clock());
+	rx_prev = dev ? ena_netdev_rxq_pkts(dev, (uint16_t)core_id) : 0UL;
+	tx_prev = dev ? ena_netdev_txq_pkts(dev, (uint16_t)core_id) : 0UL;
+
 	for (;;) {
+		int work;
+		uint64_t sleep_ns;
+
 		drive_core_stack(core_id);
 
 		n = epoll_wait(w->epoll_fd, events, MAX_EVENTS, 0);
@@ -751,13 +793,27 @@ static __noreturn void run_to_completion_worker(int core_id)
 			}
 		}
 
-		if (n == 0) {
-#if defined(__x86_64__)
-			__asm__ __volatile__("pause");
-#elif defined(__aarch64__)
-			__asm__ __volatile__("yield");
-#endif
+		/*
+		 * Idle backoff. This iteration found work if an epoll
+		 * event fired or a packet moved on this core's queues.
+		 * The policy (idlebackoff.h) decides whether to sleep
+		 * and for how long. [Ticket 597c1b9731]
+		 */
+		work = (n > 0);
+
+		if (dev) {
+			unsigned long rx_now, tx_now;
+
+			rx_now = ena_netdev_rxq_pkts(dev, (uint16_t)core_id);
+			tx_now = ena_netdev_txq_pkts(dev, (uint16_t)core_id);
+			work |= (rx_now > rx_prev) || (tx_now > tx_prev);
+			rx_prev = rx_now;
+			tx_prev = tx_now;
 		}
+
+		sleep_ns = ib_tick(&ib, ukplat_monotonic_clock(), work);
+		if (sleep_ns)
+			mc_idle_sleep(sleep_ns);
 	}
 }
 
