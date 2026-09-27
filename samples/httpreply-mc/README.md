@@ -134,23 +134,70 @@ wrk -t4 -c200 -d10s --latency http://<instance-ip>/
 
 ## 7. Verified AWS EC2 Performance Results
 
-Benchmark executed on 2026-09-27 on AWS EC2 `c6i.large` (2 vCPUs) in subnet 172.31.16.0/20 (us-east-1a). The Ubuntu 24.04 `wrk` client sits in the same subnet. Each level runs two 10 s sweeps per target.
+These results come from a same-day A/B run on 2026-09-27. Both servers are
+AWS EC2 `c6i.large` (2 vCPUs) in subnet 172.31.16.0/20 (us-east-1a), and the
+`wrk` 4.1.0 client (Ubuntu 24.04) sits in the same subnet. Both servers return
+a 14-byte HTTP body. Each level ran as two 10 s `wrk` sweeps (threads = 1 for
+c=1, 2 for c=2, 4 above), and the tables show the mean of the two sweeps.
 
-| Concurrency (`-c`) | Target Throughput | Achieved Req/s | Avg Latency (ms) | P50 (µs) | P99 (ms) | Socket Errors |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **c=10** | Baseline | **22,195.43** | 15.93 | 288.00 | 346.87 | **0** |
-| **c=25** | Baseline | **52,635.81** | 23.08 | 335.50 | 453.18 | **0** |
-| **c=50** | Baseline | **77,830.53** | 28.58 | 394.50 | 529.90 | **0** |
-| **c=100** | **>= 80,000 req/s** | **102,812.24** | 39.01 | 519.50 | 638.70 | **0** |
-| **c=200** | Stress | **109,122.67** | 53.67 | 879.00 | 949.98 | **0** |
+**What the levels mean.** c=1 through c=25 are reference points that show how
+throughput scales with the connection count at low load. c=50 is where the two
+stacks cross. c=100 is the only pass/fail goal of the multi-core design: it
+must reach at least 80,000 req/s, and it reached 102,812. c=200 is a stress
+probe of the saturation limit.
 
-### Comparison vs Linux Nginx Baseline
+### Table 1. Unikraft multi-core (`httpreply-mc`)
 
-On the same `c6i.large` instance type (same day, same subnet):
-- Linux Nginx plateaus at **~73k req/s** for concurrency 50 and above.
-- Unikraft multi-core scales to **102,812 req/s** at c=100 (+41.0% vs Nginx).
-- Unikraft peaks at **109,123 req/s** at c=200 (+49.3% vs Nginx).
-- Zero socket errors across 13,826,258 requests.
+| Concurrency (`-c`) | Req/s | Avg Latency (ms) | P50 (µs) | P99 (ms) | Socket Errors |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 3,859.92 | 9.83 | 228.50 | 197.12 | 0 |
+| 2 | 7,219.15 | 9.05 | 241.00 | 158.73 | 0 |
+| 10 | 22,195.43 | 15.93 | 288.00 | 346.87 | 0 |
+| 25 | 52,635.81 | 23.08 | 335.50 | 453.18 | 0 |
+| 50 | 77,830.53 | 28.58 | 394.50 | 529.90 | 0 |
+| 100 | 102,812.24 | 39.01 | 519.50 | 638.70 | 0 |
+| 200 | 109,122.67 | 53.67 | 879.00 | 949.98 | 0 |
+
+### Table 2. Linux Nginx baseline (Ubuntu 24.04, default configuration)
+
+| Concurrency (`-c`) | Req/s | Avg Latency (ms) | P50 (µs) | P99 (ms) | Socket Errors |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 4,872.26 | 0.21 | 201.00 | 0.26 | 0 |
+| 2 | 9,381.17 | 0.21 | 211.00 | 0.26 | 0 |
+| 10 | 32,145.55 | 0.25 | 245.00 | 0.33 | 0 |
+| 25 | 71,436.16 | 0.33 | 336.00 | 0.45 | 0 |
+| 50 | 73,361.01 | 0.65 | 641.50 | 0.84 | 0 |
+| 100 | 72,908.95 | 1.36 | 1,365.00 | 1.90 | 0 |
+| 200 | 73,079.49 | 2.79 | 2,730.00 | 3.85 | 0 |
+
+### Comparison
+
+The table compares the two servers row by row at equal concurrency.
+The last column is the relative difference (Unikraft minus Nginx, over Nginx).
+
+| Concurrency (`-c`) | Nginx Req/s | Unikraft Req/s | Unikraft vs Nginx |
+| :--- | ---: | ---: | ---: |
+| 1 | 4,872.26 | 3,859.92 | -20.8% |
+| 2 | 9,381.17 | 7,219.15 | -23.0% |
+| 10 | 32,145.55 | 22,195.43 | -31.0% |
+| 25 | 71,436.16 | 52,635.81 | -26.3% |
+| 50 | 73,361.01 | 77,830.53 | +6.1% |
+| 100 | 72,908.95 | 102,812.24 | +41.0% |
+| 200 | 73,079.49 | 109,122.67 | +49.3% |
+
+Nginx plateaus at about 73k req/s from c=50 up, because its two worker
+processes saturate there. The multi-core Unikraft server keeps scaling: from
+c=50 up, traffic spans both cores, and the gap widens with the connection count.
+
+At low concurrency (c=10 and below) Nginx is faster. Few connections map to one
+core's queue, and the userspace stack pays more per request than the kernel for
+this 14-byte reply. At c=50 and above, enough parallel flows exist to feed both
+cores, and the shared-nothing design wins by 6% to 49%.
+
+One caveat: the P99 column of Table 1 is inflated by the driver's 2 s heartbeat
+and console I/O pauses, visible in every run since 2026-09-24. Nginx P99 stays
+under 4 ms. Both stacks served all requests with zero socket errors (14,336,481
+requests across 28 `wrk` runs).
 
 ## 8. Configuration Reference
 
