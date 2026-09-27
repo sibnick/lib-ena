@@ -232,3 +232,30 @@ The lwIP stack runs in `NO_SYS` mode with per-core state encapsulation. Each cor
 At boot, the heap is split into N-1 partitions, where N is the CPU max count (`CONFIG_UKPLAT_CPU_MAXCOUNT`). Each non-boot core gets one partition. The boot core keeps the remaining region as the default allocator.
 
 Each core creates a standalone `ukalloc` (bbuddy) instance on its partition and binds it to a per-CPU slot (`uk_pcpuvar_percore_alloc`). All runtime allocations from that core (lwIP netbufs, sockets, ENA buffers) go to its own instance. This prevents two cores from touching the same allocator, which was the root cause of the concurrent `bbuddy_palloc` corruption.
+
+### Idle Backoff
+The worker loop was an unthrottled spin: at zero traffic it ran the loop
+1.3-2.3 M no-work iterations per second per core, each paying a fixed
+TSC, ARP, epoll, and queue-peek cost, so both vCPUs read 100% at all
+loads. The loop now backs off when it has no work
+(`idlebackoff.h`, [Ticket 597c1b9731]):
+
+- An iteration counts as work when an epoll event fires or a packet
+  arrives at or leaves the core's hardware queue (cumulative ENA
+  counters). After `IB_IDLE_STREAK_LIMIT` (8) consecutive no-work
+  iterations, the core sleeps.
+- The sleep is a real vCPU halt on the KVM platform: the guest arms a
+  one-shot timer for the wake and executes `sti; hlt`, so the vCPU
+  leaves the run queue for the whole sleep.
+- While traffic flows (work within the last `IB_ACTIVE_WINDOW_NS`,
+  2 ms), the sleep is a fixed `IB_ACTIVE_SLEEP_NS` (20 us). After
+  2 ms without work the budget grows `IB_LONG_BASE_NS` (1 ms) to
+  `IB_LONG_MAX_NS` (8 ms) in doubling steps until the next packet
+  wakes the core.
+
+The added wake latency is bounded: 20 us while traffic flows, and at
+most 8 ms once, for the first request after a long idle. At zero
+load both vCPUs are halted nearly all the time, so the instance shows
+idle vCPU usage instead of a permanent 100%. All thresholds are
+`#define`s in `idlebackoff.h`; the policy is covered by a host unit
+test (`tests/test_idlebackoff.c`).
