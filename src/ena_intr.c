@@ -13,9 +13,6 @@
 #include <string.h>
 
 #ifdef __Unikraft__
-#include <uk/sched.h>
-#include <uk/sched_impl.h>
-
 /*
  * The platform layer keeps a static copy of the arm request,
  * so this callback can keep the adapter in its argument.
@@ -54,15 +51,14 @@ static int msix_arm_device(struct ena_adapter *adapter,
 	req.arg = adapter;
 
 /*
- * Count the lcpus the same way the multi-core sample counts
- * workers: walk the scheduler lcpu list.
+ * Take the lcpu target count from the configured max core
+ * count. Use one core when the count is absent.
  */
-{
-		struct uk_sched *sl;
-
-		for (sl = uk_sched_head; sl != NULL; sl = sl->next)
-			ncpus++;
-	}
+#if defined(CONFIG_UKPLAT_CPU_MAXCOUNT) && (CONFIG_UKPLAT_CPU_MAXCOUNT > 0)
+	ncpus = (int)CONFIG_UKPLAT_CPU_MAXCOUNT;
+#else
+	ncpus = 1;
+#endif
 	if (ncpus < 1)
 		ncpus = 1;
 
