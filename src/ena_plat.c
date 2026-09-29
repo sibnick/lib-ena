@@ -170,17 +170,16 @@ int ena_plat_msix_probe(void *pci_dev, uint32_t *num_vectors)
 		if (cap_id == ENA_PLAT_PCI_CAP_ID_MSIX) {
 			uint32_t msg_ctrl = plat_pci_cfg_read(addr, cap + 2);
 
-			if (msg_ctrl & 0x0001u) {
-				ena_info("msix: capability is masked");
-				return 0;
-			}
-
 			/* The count field encodes vectors minus one. */
 			uint32_t count = (msg_ctrl >> 1) & 0x7FFFu;
 			uint32_t nvec = 1;
 
 			while (nvec <= count)
 				nvec <<= 1;
+
+			if (msg_ctrl & 0x0001u)
+				ena_info("msix: capability is masked at reset and the arm path will unmask it");
+
 			*num_vectors = nvec;
 			ena_info("msix: device exposes %u vectors", (unsigned)nvec);
 			return 0;
@@ -369,6 +368,7 @@ int ena_plat_msix_arm(const struct ena_msix_req *req)
 					&s_msix.ctx[i]);
 		if (ret) {
 			ena_err("msix: handler %d register failed (%d)", i, ret);
+			uk_intctlr_msix_free(s_msix.irqs[i]);
 			goto err_free;
 		}
 	}
