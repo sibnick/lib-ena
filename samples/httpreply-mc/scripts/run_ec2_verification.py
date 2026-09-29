@@ -323,7 +323,7 @@ echo "HTTPD_STARTED $(date)"
 
 echo "Waiting for Unikraft target http://{TARGET_PRIVATE_IP}/ ..."
 for i in $(seq 1 120); do
-    CODE=$(curl -s -o /dev/null -w "%{{http_code}}" http://{TARGET_PRIVATE_IP}/ || echo "000")
+    CODE=$(curl -s -o /dev/null --max-time 5 -w "%{{http_code}}" http://{TARGET_PRIVATE_IP}/ || echo "000")
     if [ "$CODE" = "200" ]; then
         echo "UK_HEALTH public/private=200 $(date) after $i tries"
         break

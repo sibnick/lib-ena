@@ -696,6 +696,14 @@ mc_idle_sleep(int core_id, uint64_t ns)
 	} else {
 		uint64_t arm_ns = ns;
 
+		/*
+		 * A secondary core is woken only by its own per-vCPU LAPIC
+		 * one-shot (vector 0x30). It must not use uk_lcpu_halt_irq_until:
+		 * that arms the shared i8254 (wired to core 0 only) and re-halts in
+		 * a loop, which leaves this core halted with no wake source once the
+		 * one-shot is consumed. A single halt below is correct: the armed
+		 * one-shot (or any earlier interrupt) ends it. [Ticket 6f89cf874e]
+		 */
 		mc_lapic_oneshot(core_id, arm_ns);
 
 		{
@@ -703,8 +711,7 @@ mc_idle_sleep(int core_id, uint64_t ns)
 
 			flags = uk_lcpu_save_irqf();
 			uk_lcpu_disable_irq();
-			now = ukplat_monotonic_clock();
-			uk_lcpu_halt_irq_until((uint64_t)(now + arm_ns));
+			uk_lcpu_halt_irq();
 			uk_lcpu_irqs_handle_pending();
 			uk_lcpu_restore_irqf(flags);
 
@@ -800,6 +807,21 @@ static void mc_diag_apic_mode(int core_id)
 
 static uint64_t mc_lapic_rate[8];
 static __u64 mc_lapic_base[8];
+static uint64_t mc_lapic_arm_ns[8];
+
+/*
+ * Give this vCPU a unique in-kernel APIC ID.
+ *
+ * KVM matches a physical IPI destination against the vCPU APIC ID that
+ * KVM derives from the x2APIC ID MSR (0x10). Every vCPU defaults to 0,
+ * so a posted peer IPI cannot address one vCPU alone. Write this
+ * core's index into the x2APIC ID fields to fix that.
+ */
+static void
+mc_set_x2apic_id(int core_id)
+{
+	uk_arch_x86_64_wrmsr(0x010, (__u32)(core_id << 24), (__u32)core_id);
+}
 
 static void
 mc_lapic_timer_prepare(int core_id)
@@ -819,16 +841,19 @@ mc_lapic_timer_prepare(int core_id)
 	ticr = b + 0x380;
 	tccr = b + 0x390;
 
-	/* Publish this core's APIC ID (ID register 0x000, low byte) so other
+	/* Publish this core's APIC ID (ID register 0x020, low byte) so other
 	 * cores can address it as the ICR2 destination of a posted IPI. */
-	mc_apic_id[core_id] = *(volatile __u32 *)(b + 0x000) & 0xFFu;
+	mc_apic_id[core_id] = *(volatile __u32 *)(b + 0x020) & 0xFFu;
 
-	/* Divider /1: finest tick. A large count never expires in the window. */
-	*(volatile __u32 *)(b + 0x3E0) = 0x4;
-	*lvt = (*lvt) & ~(1u << 16);
-	*lvt = (*lvt) | (0x30u << 8);
+	/*
+	 * Timer divider select /4 (TDCR = 0xB). LVTT (0x320) carries
+	 * vector 0x30 with fixed delivery. It is unmasked with a large
+	 * initial count, so the counter runs across the sampling window
+	 * and cannot expire inside it.
+	 */
+	*(volatile __u32 *)(b + 0x3E0) = 0xB;
+	*lvt = 0x30u;
 	*ticr = 0x10000000u;
-	*lvt = (*lvt) & ~(1u << 16);
 
 	t0 = ukplat_monotonic_clock();
 	c0 = *tccr;
@@ -837,12 +862,13 @@ mc_lapic_timer_prepare(int core_id)
 	c1 = *tccr;
 	t1 = ukplat_monotonic_clock();
 
+	/* Ticks per nanosecond, scaled by 2^32 for the one-shot math. */
 	if (c0 > c1 && t1 > t0)
-		mc_lapic_rate[core_id] = ((t1 - t0) << 32) / (uint64_t)(c0 - c1);
+		mc_lapic_rate[core_id] = ((uint64_t)(c0 - c1) << 32) / (uint64_t)(t1 - t0);
 	else
 		mc_lapic_rate[core_id] = ((uint64_t)1 << 32) / 2;
 
-	*lvt = (*lvt) | (1u << 16);
+	*lvt = 0x30u | (1u << 16);
 
 	uk_pr_info("httpreply-mc: LAPIC core %d prepared, base=0x%lx apic_id=%u\n",
 		   core_id, (unsigned long)mc_lapic_base[core_id],
@@ -860,20 +886,23 @@ mc_lapic_oneshot(int core_id, uint64_t ns)
 	volatile __u32 *ticr = (volatile __u32 *)(mc_lapic_base[core_id] + 0x380);
 	uint64_t ticks;
 
-	if (ns > 20000)
-		ns = 20000;
-
 	ticks = (ns * mc_lapic_rate[core_id]) >> 32;
 	if (ticks < 1)
 		ticks = 1;
 	if (ticks > 0xFFFFFFFF)
 		ticks = 0xFFFFFFFF;
 
-	*lvt = (*lvt) | (1u << 16);
-	*lvt = (*lvt) | (0x30u << 8);
-	*lvt = (*lvt) | (1u << 17);
+	/*
+	 * Mask LVTT, set the one-shot configuration (vector 0x30, fixed
+	 * delivery, edge trigger, one-shot mode: bit 17), load the tick
+	 * count, then unmask. The timer fires exactly once, after ticks.
+	 * It does not reload, so no tick follows while this core idles.
+	 */
+	*lvt = 0x30u | (1u << 17) | (1u << 16);
 	*ticr = (uint32_t)ticks;
-	*lvt = (*lvt) & ~(1u << 16);
+	*lvt = 0x30u | (1u << 17);
+
+	mc_lapic_arm_ns[core_id] = ukplat_monotonic_clock();
 }
 
 /*
@@ -902,11 +931,12 @@ mc_lapic_timer_irq(void *arg)
 		       (unsigned)idx);
 	} else if (fires[idx] < 3) {
 		fires[idx]++;
-		printf("httpreply-mc: lapic-irq core %u fire %d: TMICT=%x TMCCT=%x LVT0=%x\n",
+		printf("httpreply-mc: lapic-irq core %u fire %d: TMICT=%x TMCCT=%x LVT0=%x fire-after=%lld ns\n",
 		       (unsigned)idx, fires[idx],
 		       *(volatile __u32 *)(b + 0x380),
 		       *(volatile __u32 *)(b + 0x390),
-		       *(volatile __u32 *)(b + 0x320));
+		       *(volatile __u32 *)(b + 0x320),
+		       (long long)(ukplat_monotonic_clock() - mc_lapic_arm_ns[idx]));
 	}
 	return 1;
 }
@@ -952,6 +982,8 @@ static __noreturn void run_to_completion_worker(int core_id)
 			}
 		}
 	}
+
+	mc_set_x2apic_id(core_id);
 
 	mc_lapic_timer_init(core_id);
 	mc_percore_alloc_selftest(core_id);
