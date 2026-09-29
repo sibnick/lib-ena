@@ -51,33 +51,37 @@ index 9ce531b..2673c44 100644
 +uk_intctlr_msix_alloc
 +uk_intctlr_msix_free
 diff --git a/drivers/ukintctlr/xpic/include/uk/intctlr/limits.h b/drivers/ukintctlr/xpic/include/uk/intctlr/limits.h
-index 6e748f0..399e83a 100644
+index 6e748f0..dfcd550 100644
 --- a/drivers/ukintctlr/xpic/include/uk/intctlr/limits.h
 +++ b/drivers/ukintctlr/xpic/include/uk/intctlr/limits.h
-@@ -6,8 +6,18 @@
+@@ -6,11 +6,21 @@
  #ifndef __UK_INTCTLR_XPIC_LIMITS_H__
  #define __UK_INTCTLR_XPIC_LIMITS_H__
  
 -#define UK_INTCTLR_FIRST_ALLOCABLE_IRQ			16
 -#define UK_INTCTLR_LAST_ALLOCABLE_IRQ			224
 +/*
-+ * Vectors 48..51 (irq 16..19) stay outside the allocatable pool:
-+ * they are reserved for IPIs. The interim wake scheme posts IPIs
-+ * with vector 0x30 (irq 16) and the per-vCPU LAPIC one-shot scheme
-+ * may use the rest of the band. MSI-X allocation therefore starts at
-+ * vector 52 and never collides with an IPI vector.
++ * Vectors 48..51 (irq 16..19) stay outside the allocatable pool.
++ * IPIs use this band. The interim wake scheme posts IPIs with
++ * vector 0x30 (irq 16). The per-vCPU LAPIC one-shot scheme may
++ * use the rest of the band. MSI-X allocation starts at vector 52
++ * and never collides with an IPI vector.
 + *
-+ * The allocatable pool stops at vector 254, one below the
-+ * spurious vector 255, which must never be programmed.
++ * The allocatable pool spans irq 20..222, that is vectors 52..254.
++ * The spurious vector 255 stays outside the pool.
 + */
 +#define UK_INTCTLR_FIRST_ALLOCABLE_IRQ			20
-+#define UK_INTCTLR_LAST_ALLOCABLE_IRQ			223
++#define UK_INTCTLR_LAST_ALLOCABLE_IRQ			222
  #define UK_INTCTLR_MAX_IRQ				(256 - 32)
  
  #define UK_INTCTLR_ALLOCABLE_IRQ_COUNT			\
+-	(UK_INTCTLR_LAST_ALLOCABLE_IRQ - UK_INTCTLR_FIRST_ALLOCABLE_IRQ)
++	(UK_INTCTLR_LAST_ALLOCABLE_IRQ - UK_INTCTLR_FIRST_ALLOCABLE_IRQ + 1)
+ 
+ #endif /* __UK_INTCTLR_XPIC_LIMITS_H__ */
 diff --git a/drivers/ukintctlr/xpic/include/uk/intctlr/msix.h b/drivers/ukintctlr/xpic/include/uk/intctlr/msix.h
 new file mode 100644
-index 0000000..1b9a548
+index 0000000..a2675ac
 --- /dev/null
 +++ b/drivers/ukintctlr/xpic/include/uk/intctlr/msix.h
 @@ -0,0 +1,56 @@
@@ -104,14 +108,14 @@ index 0000000..1b9a548
 + * Allocate one MSI-X vector and build its 16-byte message.
 + *
 + * Reserves one irq from the uk_intctlr pool. The hardware vector
-+ * number is 32 + irq, so the interrupt lands in the per-lcpu IDT
-+ * IRQ gate of the target lcpu and is dispatched by uk_intctlr with
-+ * the EOI written by the APIC handler.
++ * number is 32 + irq, so the interrupt lands in the target lcpu's
++ * IDT IRQ gate. uk_intctlr dispatches the interrupt, and the APIC
++ * handler writes the EOI.
 + *
-+ * The interrupt is targeted at lcpu @p lcpu using xAPIC physical
-+ * destination mode. The destination APIC ID is taken from the
-+ * lcpu's recorded initial APIC ID (uk_pcpuvar_cpu_id), which the
-+ * KVM and QEMU platforms set equal to the vCPU index.
++ * The message targets lcpu @p lcpu in xAPIC physical destination
++ * mode. The function reads the destination APIC ID from the
++ * lcpu's recorded initial APIC ID (uk_pcpuvar_cpu_id). KVM and
++ * QEMU set that ID equal to the vCPU index.
 + *
 + * @param lcpu    Target lcpu that should receive the interrupt.
 + * @param irq     Output: allocated irq number (vector = 32 + irq).
@@ -139,10 +143,10 @@ index 0000000..1b9a548
 +#endif /* __UK_INTCTLR_MSIX_H__ */
 diff --git a/drivers/ukintctlr/xpic/msix.c b/drivers/ukintctlr/xpic/msix.c
 new file mode 100644
-index 0000000..6c805f4
+index 0000000..5192c89
 --- /dev/null
 +++ b/drivers/ukintctlr/xpic/msix.c
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,108 @@
 +/* SPDX-License-Identifier: BSD-3-Clause */
 +/*
 + * MSI-X vector allocation and message construction for the x86_64
@@ -163,7 +167,7 @@ index 0000000..6c805f4
 +
 +/*
 + * xAPIC physical destination mode: the low 32 bits of the 64-bit
-+ * MSI address are the APIC MMIO base (0xFEE00000) and the top byte
++ * MSI address are the APIC MMIO base (0xFEE00000). The top byte
 + * (bits 55:48) holds the destination APIC ID.
 + */
 +#define UK_MSIX_XAPIC_ADDR_BASE		0xFEE00000ULL
@@ -182,8 +186,8 @@ index 0000000..6c805f4
 +							  uk_pcpuvar_cpu_id);
 +
 +	/*
-+	 * A slot that was not populated at bring-up falls back to the
-+	 * vCPU index, which is the APIC ID on KVM and QEMU.
++	 * If bring-up did not populate a slot, the code falls back to
++	 * the vCPU index. KVM and QEMU use that index as the APIC ID.
 +	 */
 +	if (id == 0 && lcpu != 0)
 +		id = lcpu;
@@ -208,8 +212,9 @@ index 0000000..6c805f4
 +	vector = 32 + nirq;
 +
 +	/*
-+	 * The spurious vector (0xff) must never be programmed into a
-+	 * table entry, and the reserved IPI band must stay clear.
++	 * The spurious vector 0xff never enters a table entry, and
++	 * the reserved IPI band stays clear. The check guards against
++	 * a pool that grows past its last valid vector.
 +	 */
 +	if (vector < UK_MSIX_FIRST_VECTOR || vector >= 0xff) {
 +		uk_intctlr_irq_free(&nirq, 1);
