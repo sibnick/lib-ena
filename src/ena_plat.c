@@ -194,10 +194,10 @@ int ena_plat_msix_probe(void *pci_dev, uint32_t *num_vectors)
 
 
 /*
- * MSI-X table and PBA location decoded from the capability. The
- * four low bits of each 32-bit offset select the BAR; the rest
- * is the byte offset inside that BAR. The PBA lives in the same
- * BAR as the table.
+ * MSI-X table and PBA location. The driver decodes the location
+ * from the capability. The four low bits of each 32-bit offset
+ * select the BAR. The rest is the byte offset inside that BAR.
+ * The PBA lives in the same BAR as the table.
  */
 struct ena_msix_loc {
 	const struct pci_address *pci_dev;
@@ -272,8 +272,8 @@ struct msix_tramp_ctx {
 };
 
 /*
- * State armed by ena_plat_msix_arm(). One trampoline context is
- * stored per allocated vector, plus the driver request and the
+ * State that ena_plat_msix_arm() arms. It holds one trampoline
+ * context per allocated vector, plus the driver request and the
  * decoded table and PBA location.
  */
 static struct {
@@ -287,9 +287,9 @@ static struct {
 } s_msix;
 
 /*
- * The EOI for the delivered vector is written by the xpic handler
- * after the event dispatch, so this trampoline only counts the
- * delivery and hands it to the driver callback.
+ * The xpic handler writes the EOI for the delivered vector after
+ * the event dispatch. This trampoline only counts the delivery
+ * and hands it to the driver callback.
  */
 static int msix_tramp(void *arg)
 {

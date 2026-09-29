@@ -35,9 +35,9 @@ struct ena_msix_msg {
 
 /*
  * MSI-X arm request. The platform layer allocates one vector per
- * entry from the unikernel interrupt pool, targets each vector at
- * the given lcpu, programs the 16-byte table entries and the PBA
- * in the device BAR, and enables the capability.
+ * entry from the unikernel interrupt pool. It targets each vector
+ * at the given lcpu. It programs the 16-byte table entries and
+ * the PBA in the device BAR. It then enables the capability.
  */
 struct ena_msix_req {
 	const struct pci_address *pci_dev;

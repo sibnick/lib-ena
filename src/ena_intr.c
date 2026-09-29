@@ -26,10 +26,10 @@ static void msix_on_fire(void *arg, uint32_t vector_id)
 }
 
 /*
- * Arm the device MSI-X capability: allocate one unikernel
- * vector per MSI-X vector, target it at the core that polls
- * the queue the vector reports (queue i-1 is polled by core
- * i-1), and unmask the capability.
+ * Arm the device MSI-X capability. The driver allocates one
+ * unikernel vector per MSI-X vector. It targets each vector at
+ * the core that polls the queue that vector reports. Core i-1
+ * polls queue i-1. The driver then unmasks the capability.
  */
 static int msix_arm_device(struct ena_adapter *adapter,
 			   const struct pci_address *bdf)
