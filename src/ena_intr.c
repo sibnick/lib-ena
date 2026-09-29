@@ -153,6 +153,7 @@ int ena_intr_setup(struct ena_adapter *adapter, void *pci_dev)
 	ena_intr_unmask_vector(adapter, 0);
 
 #ifdef __Unikraft__
+#if defined(CONFIG_LIBENA_MSIX)
 /*
  * Arm the real MSI-X capability (table, PBA, unmask). The
  * platform pci_dev handle is the PCI bus/device/function. On
@@ -168,6 +169,10 @@ int ena_intr_setup(struct ena_adapter *adapter, void *pci_dev)
 			return ret;
 		}
 }
+#else
+	/* Arming is off in this bisect build: software polling mode. */
+	ena_info("msix: arming disabled (bisect build); software polling mode");
+#endif
 #endif
 
 	ena_info("msix: %u vectors active (admin vector enabled)", (unsigned)nvec);

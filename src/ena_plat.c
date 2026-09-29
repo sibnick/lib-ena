@@ -416,6 +416,11 @@ int ena_plat_msix_arm(const struct ena_msix_req *req)
 		/* Enable the capability: clear the masked bit. */
 		plat_pci_cfg_write(s_msix.loc.pci_dev, s_msix.loc.msgctl_off,
 			       msg_ctrl & ~0x1u);
+
+		ena_info("msix: msgctl before=0x%04x bit15=%u after=0x%04x bit15=%u",
+			 (unsigned)msg_ctrl, (unsigned)((msg_ctrl >> 15) & 0x1u),
+			 (unsigned)(msg_ctrl & ~0x1u),
+			 (unsigned)(((msg_ctrl & ~0x1u) >> 15) & 0x1u));
 	}
 
 	s_msix.armed = 1;
