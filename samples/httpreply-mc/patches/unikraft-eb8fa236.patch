@@ -51,27 +51,30 @@ index 9ce531b..2673c44 100644
 +uk_intctlr_msix_alloc
 +uk_intctlr_msix_free
 diff --git a/drivers/ukintctlr/xpic/include/uk/intctlr/limits.h b/drivers/ukintctlr/xpic/include/uk/intctlr/limits.h
-index 6e748f0..dfcd550 100644
+index 6e748f0..9d52f8c 100644
 --- a/drivers/ukintctlr/xpic/include/uk/intctlr/limits.h
 +++ b/drivers/ukintctlr/xpic/include/uk/intctlr/limits.h
-@@ -6,11 +6,21 @@
+@@ -6,11 +6,24 @@
  #ifndef __UK_INTCTLR_XPIC_LIMITS_H__
  #define __UK_INTCTLR_XPIC_LIMITS_H__
  
 -#define UK_INTCTLR_FIRST_ALLOCABLE_IRQ			16
 -#define UK_INTCTLR_LAST_ALLOCABLE_IRQ			224
 +/*
-+ * Vectors 48..51 (irq 16..19) stay outside the allocatable pool.
-+ * IPIs use this band. The interim wake scheme posts IPIs with
-+ * vector 0x30 (irq 16). The per-vCPU LAPIC one-shot scheme may
-+ * use the rest of the band. MSI-X allocation starts at vector 52
-+ * and never collides with an IPI vector.
-+ *
-+ * The allocatable pool spans irq 20..222, that is vectors 52..254.
-+ * The spurious vector 255 stays outside the pool.
-+ */
++*
++ * The wake IPI uses irq 208 (vector 0xF0), and the per-vCPU LAPIC
++ * one-shot timer keeps vector 0x30 (irq 16). Both bands stay
++ * outside the allocatable pool, so an allocated MSI-X or device
++ * vector can never collide with either. The IPI band no longer
++ * shares a vector with the one-shot band, so a pending IPI can
++ * no longer drop a one-shot tick in the KVM xAPIC. [Ticket 1152cbcaca]
++*
++ * The allocatable pool spans irq 20..207, that is vectors 52..239.
++ * Vectors 240..254 stay outside the pool. The spurious vector 255
++ * stays outside the pool.
++*/
 +#define UK_INTCTLR_FIRST_ALLOCABLE_IRQ			20
-+#define UK_INTCTLR_LAST_ALLOCABLE_IRQ			222
++#define UK_INTCTLR_LAST_ALLOCABLE_IRQ			207
  #define UK_INTCTLR_MAX_IRQ				(256 - 32)
  
  #define UK_INTCTLR_ALLOCABLE_IRQ_COUNT			\
@@ -143,10 +146,10 @@ index 0000000..a2675ac
 +#endif /* __UK_INTCTLR_MSIX_H__ */
 diff --git a/drivers/ukintctlr/xpic/msix.c b/drivers/ukintctlr/xpic/msix.c
 new file mode 100644
-index 0000000..5192c89
+index 0000000..3250c33
 --- /dev/null
 +++ b/drivers/ukintctlr/xpic/msix.c
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,109 @@
 +/* SPDX-License-Identifier: BSD-3-Clause */
 +/*
 + * MSI-X vector allocation and message construction for the x86_64
@@ -173,10 +176,11 @@ index 0000000..5192c89
 +#define UK_MSIX_XAPIC_ADDR_BASE		0xFEE00000ULL
 +
 +/*
-+ * The first vectors of the allocatable pool stay reserved for IPIs:
-+ * the interim core-0 wake posts vector 0x30 (irq 16). With the pool
-+ * start moved to irq 20 (see limits.h) an allocated MSI-X vector can
-+ * never collide with a vector in the 48..51 range.
++ * Two bands stay outside the allocatable pool: the wake IPI (irq
++ * 208, vector 0xF0) and the per-vCPU LAPIC one-shot (irq 16,
++ * vector 0x30). With the pool spanning irq 20..207 (see limits.h)
++ * an allocated MSI-X vector can never collide with either band,
++ * and the IPI band no longer shares a vector with the one-shot.
 + */
 +#define UK_MSIX_FIRST_VECTOR		(32 + UK_INTCTLR_FIRST_ALLOCABLE_IRQ)
 +
