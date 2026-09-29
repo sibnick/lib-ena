@@ -412,6 +412,8 @@ static int set_epoll_events(int epfd, int fd, uint32_t events)
 void ena_netdev_dump_queue(struct uk_netdev *dev, uint16_t qid);
 unsigned long ena_netdev_rxq_pkts(struct uk_netdev *dev, uint16_t qid);
 unsigned long ena_netdev_txq_pkts(struct uk_netdev *dev, uint16_t qid);
+/* Armed MSI-X vector count. Zero means software polling. */
+uint32_t ena_plat_msix_state(void);
 
 static unsigned int mc_count_memp_free(void *head)
 {
@@ -461,9 +463,9 @@ static void drive_core_stack(int core_id)
 			txpkts = ena_netdev_txq_pkts(dev, (uint16_t)core_id);
 		}
 
-		printf("httpreply-mc: core %d heartbeat (polls=%lu, rx=%lu, tx=%lu, active=%u, free: pbuf=%u pcb=%u seg=%u)\n",
+		printf("httpreply-mc: core %d heartbeat (polls=%lu, rx=%lu, tx=%lu, active=%u, msix=%u, free: pbuf=%u pcb=%u seg=%u)\n",
 		       core_id, poll_cnt[core_id], rxpkts, txpkts,
-		       active_pcbs, m_pbuf, m_pcb, m_seg);
+		       active_pcbs, ena_plat_msix_state(), m_pbuf, m_pcb, m_seg);
 
 		/*
 		 * pbuf pool exhaustion warning. When the free pbuf count falls

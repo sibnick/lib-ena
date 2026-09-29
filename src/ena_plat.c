@@ -142,7 +142,36 @@ static void plat_pci_cfg_write(const struct pci_address *addr,
 }
 
 /* PCI capability ID for MSI-X (PCI revision 3.x). */
-#define ENA_PLAT_PCI_CAP_ID_MSIX	11u
+#define ENA_PLAT_PCI_CAP_ID_MSIX	0x11u
+
+/*
+ * Print the PCI config space from 0x000 to 0x3FF, 16 bytes per
+ * line. This runs when the capability list search misses the
+ * MSI-X capability. It shows the real layout of the device.
+ */
+static void msix_cfg_dump(const struct pci_address *addr)
+{
+	uint32_t off;
+
+	for (off = 0; off < 0x400u; off += 16u) {
+		uint32_t v0 = plat_pci_cfg_read(addr, off);
+		uint32_t v1 = plat_pci_cfg_read(addr, off + 4u);
+		uint32_t v2 = plat_pci_cfg_read(addr, off + 8u);
+		uint32_t v3 = plat_pci_cfg_read(addr, off + 12u);
+
+		ena_info("cfg: %03x: %02x %02x %02x %02x %02x %02x %02x %02x "
+			"%02x %02x %02x %02x %02x %02x %02x %02x",
+			(unsigned)off,
+			(unsigned)(v0 & 0xFFu), (unsigned)((v0 >> 8) & 0xFFu),
+			(unsigned)((v0 >> 16) & 0xFFu), (unsigned)((v0 >> 24) & 0xFFu),
+			(unsigned)(v1 & 0xFFu), (unsigned)((v1 >> 8) & 0xFFu),
+			(unsigned)((v1 >> 16) & 0xFFu), (unsigned)((v1 >> 24) & 0xFFu),
+			(unsigned)(v2 & 0xFFu), (unsigned)((v2 >> 8) & 0xFFu),
+			(unsigned)((v2 >> 16) & 0xFFu), (unsigned)((v2 >> 24) & 0xFFu),
+			(unsigned)(v3 & 0xFFu), (unsigned)((v3 >> 8) & 0xFFu),
+			(unsigned)((v3 >> 16) & 0xFFu), (unsigned)((v3 >> 24) & 0xFFu));
+	}
+}
 
 /*
  * Probe the device MSI-X capability and report the number of
@@ -164,24 +193,25 @@ int ena_plat_msix_probe(void *pci_dev, uint32_t *num_vectors)
 	/* Walk the PCI capability list for the MSI-X capability. */
 	cap = plat_pci_cfg_read(addr, 0x34) & 0xFCu;
 	while (cap) {
-		uint32_t cap_id = plat_pci_cfg_read(addr, cap) & 0xFFu;
-		uint32_t next = plat_pci_cfg_read(addr, cap + 1) & 0xFFu;
+		/*
+		 * One read gets the whole header. The low byte is
+		 * the id, the next byte is the next pointer, and
+		 * the high word is the message control.
+		 */
+		uint32_t dw = plat_pci_cfg_read(addr, cap);
+		uint32_t cap_id = dw & 0xFFu;
+		uint32_t next = (dw >> 8) & 0xFFu;
+		uint32_t msg_ctrl = (dw >> 16) & 0xFFFFu;
 
 		if (cap_id == ENA_PLAT_PCI_CAP_ID_MSIX) {
-			uint32_t msg_ctrl = plat_pci_cfg_read(addr, cap + 2);
-
 			/* The count field encodes vectors minus one. */
 			uint32_t count = (msg_ctrl >> 1) & 0x7FFFu;
-			uint32_t nvec = 1;
-
-			while (nvec <= count)
-				nvec <<= 1;
 
 			if (msg_ctrl & 0x0001u)
 				ena_info("msix: capability is masked at reset and the arm path will unmask it");
 
-			*num_vectors = nvec;
-			ena_info("msix: device exposes %u vectors", (unsigned)nvec);
+			*num_vectors = count + 1u;
+			ena_info("msix: device exposes %u vectors", (unsigned)(count + 1u));
 			return 0;
 		}
 
@@ -189,6 +219,7 @@ int ena_plat_msix_probe(void *pci_dev, uint32_t *num_vectors)
 	}
 
 	ena_info("msix: no MSI-X capability found");
+	msix_cfg_dump(addr);
 	return 0;
 }
 
@@ -217,19 +248,24 @@ static int msix_find(const struct pci_address *addr, struct ena_msix_loc *loc)
 	memset(loc, 0, sizeof(*loc));
 	loc->pci_dev = addr;
 
+	/* Walk the PCI capability list for the MSI-X capability. */
 	cap = plat_pci_cfg_read(addr, 0x34) & 0xFCu;
 	while (cap) {
-		uint32_t cap_id = plat_pci_cfg_read(addr, cap) & 0xFFu;
-		uint32_t next = plat_pci_cfg_read(addr, cap + 1) & 0xFFu;
+		/*
+		 * One read gets the header. Byte 0 is the id, byte 1
+		 * is the next pointer, and the high word is the message
+		 * control. The table address is the next dword, and
+		 * the PBA address is the one after that.
+		 */
+		uint32_t dw = plat_pci_cfg_read(addr, cap);
+		uint32_t cap_id = dw & 0xFFu;
+		uint32_t next = (dw >> 8) & 0xFFu;
+		uint32_t msg_ctrl = (dw >> 16) & 0xFFFFu;
 
 		if (cap_id == ENA_PLAT_PCI_CAP_ID_MSIX) {
-			uint32_t msg_ctrl = plat_pci_cfg_read(addr, cap + 2);
-			uint32_t table_off = plat_pci_cfg_read(addr, cap + 8);
-			uint32_t pba_off = plat_pci_cfg_read(addr, cap + 12);
+			uint32_t table_off = plat_pci_cfg_read(addr, cap + 4);
+			uint32_t pba_off = plat_pci_cfg_read(addr, cap + 8);
 			uint32_t bar;
-
-			if (msg_ctrl & 0x0001u)
-				return -EAGAIN; /* masked: never arm */
 
 			loc->msgctl_off = cap + 2;
 			loc->count = ((msg_ctrl >> 1) & 0x7FFFu) + 1;
@@ -436,6 +472,15 @@ uint32_t ena_plat_msix_count_get(void)
 	for (i = 0; i < s_msix.nvec; i++)
 		total += s_msix.count[i];
 	return total;
+}
+
+/*
+ * The number of vectors currently armed. Zero means the
+ * platform is in software polling mode.
+ */
+uint32_t ena_plat_msix_state(void)
+{
+	return s_msix.armed ? s_msix.nvec : 0;
 }
 
 void *ena_dma_alloc(size_t size, uint64_t *phys_out)
