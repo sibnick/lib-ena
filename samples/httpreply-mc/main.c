@@ -632,6 +632,8 @@ static struct idle_halt_trace ib_trace[8];
 
 static void mc_diag_apic_mode(int core_id);
 static void mc_lapic_oneshot(int core_id, uint64_t ns);
+static void mc_poke_halted_peers(void);
+static void mc_apic_snapshot(int core_id, uint64_t ns, const char *tag);
 
 /*
  * Per-core state for the posted-IPI idle wake.
@@ -651,6 +653,20 @@ extern int uk_plat_native_except_send_ipi(__u64 id, __u32 irq);
 static __u32 mc_apic_id[8];
 static volatile unsigned mc_ipi_wake[8];
 static volatile unsigned mc_halted[8];
+
+/*
+ * Hang-investigation diagnostics. [Ticket 1152cbcaca]
+ *
+ * mc_last_hb[] is refreshed on every iteration of a core's worker
+ * loop, so a growing (now - mc_last_hb[c]) means core c stopped
+ * executing at all. mc_last_stuck_warn[] rate-limits the resulting
+ * PEER_STUCK lines. mc_snap_last_ns[] / mc_snap_count[] rate-limit
+ * the APIC-SNAP lines to the first halts plus every 50th halt.
+ */
+static uint64_t mc_last_hb[8];
+static uint64_t mc_last_stuck_warn[8];
+static uint64_t mc_snap_last_ns[8];
+static unsigned long mc_snap_count[8];
 
 /*
  * Sleep this vCPU for at most ns nanoseconds.
@@ -683,16 +699,38 @@ mc_idle_sleep(int core_id, uint64_t ns)
 	mc_halted[core_id] = 1;
 
 	if (core_id == 0) {
-		/*
-		 * vCPU 0 is woken by the shared i8254 one-shot, wired to this core.
-		 */
-		flags = uk_lcpu_save_irqf();
-		uk_lcpu_disable_irq();
-		now = ukplat_monotonic_clock();
-		uk_lcpu_halt_irq_until((uint64_t)(now + ns));
-		uk_lcpu_irqs_handle_pending();
-		uk_lcpu_restore_irqf(flags);
+		uint64_t deadline = now + ns;
 
+		/*
+		 * vCPU 0 is woken by the shared i8254 one-shot, wired to this
+		 * core. The library implementation of uk_lcpu_halt_irq_until()
+		 * (time_block_until) re-arms and re-halts in an unbounded loop,
+		 * and no application code runs inside it, so a halted peer
+		 * would not be poked for the whole sleep. Bound each chunk to
+		 * 50 ms (well under the i8254 65535-tick limit) and poke the
+		 * peers on every wake. The i8254 stays core 0's only timer; it
+		 * is deliberately not moved to the per-vCPU LAPIC one-shot.
+		 * [Ticket 1152cbcaca]
+		 */
+		mc_apic_snapshot(core_id, ns, "pre");
+
+		while (1) {
+			__nsec now2;
+			uint64_t chunk;
+
+			now2 = ukplat_monotonic_clock();
+			if (now2 >= deadline)
+				break;
+			chunk = deadline - now2;
+			if (chunk > 50000000ULL)
+				chunk = 50000000ULL;
+			flags = uk_lcpu_save_irqf();
+			uk_lcpu_disable_irq();
+			uk_lcpu_halt_irq_until((uint64_t)(now2 + chunk));
+			uk_lcpu_irqs_handle_pending();
+			uk_lcpu_restore_irqf(flags);
+			mc_poke_halted_peers();
+		}
 	} else {
 		uint64_t arm_ns = ns;
 
@@ -705,6 +743,7 @@ mc_idle_sleep(int core_id, uint64_t ns)
 		 * one-shot (or any earlier interrupt) ends it. [Ticket 6f89cf874e]
 		 */
 		mc_lapic_oneshot(core_id, arm_ns);
+		mc_apic_snapshot(core_id, arm_ns, "arm");
 
 		{
 			__nsec t_in = ukplat_monotonic_clock();
@@ -808,6 +847,51 @@ static void mc_diag_apic_mode(int core_id)
 static uint64_t mc_lapic_rate[8];
 static __u64 mc_lapic_base[8];
 static uint64_t mc_lapic_arm_ns[8];
+
+/*
+ * Print a compact read-back of this core's virtual xAPIC state, with
+ * the sleep that was about to be requested and the global halt mask.
+ *
+ * Called from just before each halt, so a core that dies in the halt
+ * leaves its last snapshot on the console. If the host drops the
+ * timer, TMICT/TMCCT show the armed state at death; if the guest never
+ * armed it, the same lines show that. A per-core backup LVT timer is
+ * deliberately not used: with forced xAPIC mode (bit 10 of the APIC
+ * base MSR clear) only LVT0 is a physical timer, so a dead core cannot
+ * be revived by the guest. [Ticket 1152cbcaca]
+ */
+static void
+mc_apic_snapshot(int core_id, uint64_t ns, const char *tag)
+{
+	unsigned long h = ib_trace[core_id].halts;
+
+	if (h <= 4 || (h % 50) == 0) {
+		uint64_t now = ukplat_monotonic_clock();
+		volatile __u32 *b = (volatile __u32 *)mc_lapic_base[core_id];
+		char halted[9];
+		int c;
+
+		mc_snap_last_ns[core_id] = now;
+		mc_snap_count[core_id] = h;
+
+		for (c = 0; c < 8; c++)
+			halted[c] = mc_halted[c] ? '1' : '0';
+		halted[8] = '\0';
+
+		printf("httpreply-mc: APIC-SNAP %s core %d asked=%llu ns now=%llu ns hlt=%s\n",
+		       tag, core_id,
+		       (unsigned long long)ns,
+		       (unsigned long long)now,
+		       halted);
+		printf("httpreply-mc: APIC-SNAP   svr=%08x irr=%08x %08x %08x %08x isr=%08x %08x %08x %08x tmr=%08x %08x %08x %08x\n",
+		       b[0xF0 / 4],
+		       b[0x200 / 4], b[0x210 / 4], b[0x220 / 4], b[0x230 / 4],
+		       b[0x100 / 4], b[0x110 / 4], b[0x120 / 4], b[0x130 / 4],
+		       b[0x180 / 4], b[0x190 / 4], b[0x1A0 / 4], b[0x1B0 / 4]);
+		printf("httpreply-mc: APIC-SNAP   lvt0=%08x lvt1=%08x tmi=%08x tmcct=%08x (xapic: one physical timer only; no backup LVT)\n",
+		       b[0x320 / 4], b[0x330 / 4], b[0x380 / 4], b[0x390 / 4]);
+	}
+}
 
 /*
  * Give this vCPU a unique in-kernel APIC ID.
@@ -1035,6 +1119,7 @@ static __noreturn void run_to_completion_worker(int core_id)
 		int work;
 		uint64_t sleep_ns;
 
+		mc_last_hb[core_id] = ukplat_monotonic_clock();
 		drive_core_stack(core_id);
 
 		/*
@@ -1045,8 +1130,36 @@ static __noreturn void run_to_completion_worker(int core_id)
 		 * post-idle poke alone would never fire while it has packets.
 		 * [Ticket a5b91e7993]
 		 */
-		if (core_id == 0)
+		if (core_id == 0) {
 			mc_poke_halted_peers();
+
+			/*
+			 * Stuck-peer detector. If a peer has been halted for more
+			 * than 15 s (far beyond any legitimate idle) and its worker
+			 * loop has not iterated since, it is probably dead. Report
+			 * it, plus core 0's own LAPIC timer read-back, so the console
+			 * shows who was armed and who went silent. At most one line
+			 * per 30 s per core. [Ticket 1152cbcaca]
+			 */
+			{
+				uint64_t nowh = ukplat_monotonic_clock();
+				volatile __u32 *b = (volatile __u32 *)mc_lapic_base[0];
+				unsigned c;
+
+				for (c = 1; c < 8; c++) {
+					if (!mc_halted[c] || mc_last_hb[c] == 0)
+						continue;
+					if (nowh - mc_last_hb[c] > 15000000000ULL &&
+					    nowh - mc_last_stuck_warn[c] > 30000000000ULL) {
+						mc_last_stuck_warn[c] = nowh;
+						printf("httpreply-mc: PEER_STUCK core %u silent %llus; self lvt0=%x tmi=%x tmcct=%x\n",
+						       c,
+						       (unsigned long long)((nowh - mc_last_hb[c]) / 1000000000ULL),
+						       b[0x320 / 4], b[0x380 / 4], b[0x390 / 4]);
+					}
+				}
+			}
+		}
 
 		n = epoll_wait(w->epoll_fd, events, MAX_EVENTS, 0);
 		if (n < 0) {
