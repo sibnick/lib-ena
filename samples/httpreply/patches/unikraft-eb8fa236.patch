@@ -1,3 +1,255 @@
+diff --git a/drivers/ukintctlr/xpic/Makefile.uk b/drivers/ukintctlr/xpic/Makefile.uk
+index 7329d2a..495636a 100644
+--- a/drivers/ukintctlr/xpic/Makefile.uk
++++ b/drivers/ukintctlr/xpic/Makefile.uk
+@@ -8,3 +8,4 @@ LIBUKINTCTLR_XPIC_CINCLUDES-y += -I$(CONFIG_UK_BASE)/plat/common/include
+ 
+ LIBUKINTCTLR_XPIC_SRCS-y += $(LIBUKINTCTLR_XPIC_BASE)/pic.c
+ LIBUKINTCTLR_XPIC_SRCS-y += $(LIBUKINTCTLR_XPIC_BASE)/ukintctlr.c
++LIBUKINTCTLR_XPIC_SRCS-$(CONFIG_LIBUKINTCTLR_APIC) += $(LIBUKINTCTLR_XPIC_BASE)/msix.c
+diff --git a/drivers/ukintctlr/xpic/exportsyms.uk b/drivers/ukintctlr/xpic/exportsyms.uk
+index 9ce531b..2673c44 100644
+--- a/drivers/ukintctlr/xpic/exportsyms.uk
++++ b/drivers/ukintctlr/xpic/exportsyms.uk
+@@ -1,2 +1,4 @@
+ uk_intctlr_probe
+ uk_intctlr_xpic_handle_irq
++uk_intctlr_msix_alloc
++uk_intctlr_msix_free
+diff --git a/drivers/ukintctlr/xpic/include/uk/intctlr/limits.h b/drivers/ukintctlr/xpic/include/uk/intctlr/limits.h
+index 6e748f0..399e83a 100644
+--- a/drivers/ukintctlr/xpic/include/uk/intctlr/limits.h
++++ b/drivers/ukintctlr/xpic/include/uk/intctlr/limits.h
+@@ -6,8 +6,18 @@
+ #ifndef __UK_INTCTLR_XPIC_LIMITS_H__
+ #define __UK_INTCTLR_XPIC_LIMITS_H__
+ 
+-#define UK_INTCTLR_FIRST_ALLOCABLE_IRQ			16
+-#define UK_INTCTLR_LAST_ALLOCABLE_IRQ			224
++/*
++ * Vectors 48..51 (irq 16..19) stay outside the allocatable pool:
++ * they are reserved for IPIs. The interim wake scheme posts IPIs
++ * with vector 0x30 (irq 16) and the per-vCPU LAPIC one-shot scheme
++ * may use the rest of the band. MSI-X allocation therefore starts at
++ * vector 52 and never collides with an IPI vector.
++ *
++ * The allocatable pool stops at vector 254, one below the
++ * spurious vector 255, which must never be programmed.
++ */
++#define UK_INTCTLR_FIRST_ALLOCABLE_IRQ			20
++#define UK_INTCTLR_LAST_ALLOCABLE_IRQ			223
+ #define UK_INTCTLR_MAX_IRQ				(256 - 32)
+ 
+ #define UK_INTCTLR_ALLOCABLE_IRQ_COUNT			\
+diff --git a/drivers/ukintctlr/xpic/include/uk/intctlr/msix.h b/drivers/ukintctlr/xpic/include/uk/intctlr/msix.h
+new file mode 100644
+index 0000000..1b9a548
+--- /dev/null
++++ b/drivers/ukintctlr/xpic/include/uk/intctlr/msix.h
+@@ -0,0 +1,56 @@
++/* SPDX-License-Identifier: BSD-3-Clause */
++/*
++ * MSI-X vector allocation and message construction for the x86_64
++ * APIC-based interrupt controller (xpic).
++ *
++ * Copyright (c) 2026, Unikraft GmbH and The Unikraft Authors.
++ * Licensed under the BSD-3-Clause License (the "License").
++ * You may not use this file except in compliance with the License.
++ */
++
++#ifndef __UK_INTCTLR_MSIX_H__
++#define __UK_INTCTLR_MSIX_H__
++
++#include <uk/essentials.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/**
++ * Allocate one MSI-X vector and build its 16-byte message.
++ *
++ * Reserves one irq from the uk_intctlr pool. The hardware vector
++ * number is 32 + irq, so the interrupt lands in the per-lcpu IDT
++ * IRQ gate of the target lcpu and is dispatched by uk_intctlr with
++ * the EOI written by the APIC handler.
++ *
++ * The interrupt is targeted at lcpu @p lcpu using xAPIC physical
++ * destination mode. The destination APIC ID is taken from the
++ * lcpu's recorded initial APIC ID (uk_pcpuvar_cpu_id), which the
++ * KVM and QEMU platforms set equal to the vCPU index.
++ *
++ * @param lcpu    Target lcpu that should receive the interrupt.
++ * @param irq     Output: allocated irq number (vector = 32 + irq).
++ * @param addr    Output: 64-bit MSI address to store in table
++ *                words 0 and 1 (low and high 32-bit halves).
++ * @param data    Output: 32-bit data word (the vector) to store in
++ *                table word 2.
++ * @return zero on success, or a negative errno value on failure.
++ */
++int uk_intctlr_msix_alloc(unsigned int lcpu, unsigned int *irq,
++			  __u64 *addr, __u32 *data);
++
++/**
++ * Free a vector previously allocated by uk_intctlr_msix_alloc().
++ *
++ * @param irq The irq number returned by uk_intctlr_msix_alloc().
++ * @return zero on success, or a negative errno value on failure.
++ */
++int uk_intctlr_msix_free(unsigned int irq);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* __UK_INTCTLR_MSIX_H__ */
+diff --git a/drivers/ukintctlr/xpic/msix.c b/drivers/ukintctlr/xpic/msix.c
+new file mode 100644
+index 0000000..6c805f4
+--- /dev/null
++++ b/drivers/ukintctlr/xpic/msix.c
+@@ -0,0 +1,107 @@
++/* SPDX-License-Identifier: BSD-3-Clause */
++/*
++ * MSI-X vector allocation and message construction for the x86_64
++ * APIC-based interrupt controller (xpic).
++ *
++ * Copyright (c) 2026, Unikraft GmbH and The Unikraft Authors.
++ * Licensed under the BSD-3-Clause License (the "License").
++ * You may not use this file except in compliance with the License.
++ */
++
++#include <errno.h>
++#include <uk/intctlr.h>
++#include <uk/intctlr/msix.h>
++#include <uk/intctlr/limits.h>
++#include <uk/pcpuvar.h>
++
++#if CONFIG_LIBUKINTCTLR_APIC
++
++/*
++ * xAPIC physical destination mode: the low 32 bits of the 64-bit
++ * MSI address are the APIC MMIO base (0xFEE00000) and the top byte
++ * (bits 55:48) holds the destination APIC ID.
++ */
++#define UK_MSIX_XAPIC_ADDR_BASE		0xFEE00000ULL
++
++/*
++ * The first vectors of the allocatable pool stay reserved for IPIs:
++ * the interim core-0 wake posts vector 0x30 (irq 16). With the pool
++ * start moved to irq 20 (see limits.h) an allocated MSI-X vector can
++ * never collide with a vector in the 48..51 range.
++ */
++#define UK_MSIX_FIRST_VECTOR		(32 + UK_INTCTLR_FIRST_ALLOCABLE_IRQ)
++
++static unsigned int apic_id_of_lcpu(unsigned int lcpu)
++{
++	unsigned int id = (unsigned int)uk_pcpuvar_lval(lcpu,
++							  uk_pcpuvar_cpu_id);
++
++	/*
++	 * A slot that was not populated at bring-up falls back to the
++	 * vCPU index, which is the APIC ID on KVM and QEMU.
++	 */
++	if (id == 0 && lcpu != 0)
++		id = lcpu;
++
++	return id;
++}
++
++int uk_intctlr_msix_alloc(unsigned int lcpu, unsigned int *irq,
++			   __u64 *addr, __u32 *data)
++{
++	unsigned int nirq;
++	__u32 vector;
++	int rc;
++
++	if (!irq || !addr || !data)
++		return -EINVAL;
++
++	rc = uk_intctlr_irq_alloc(&nirq, 1);
++	if (rc)
++		return rc;
++
++	vector = 32 + nirq;
++
++	/*
++	 * The spurious vector (0xff) must never be programmed into a
++	 * table entry, and the reserved IPI band must stay clear.
++	 */
++	if (vector < UK_MSIX_FIRST_VECTOR || vector >= 0xff) {
++		uk_intctlr_irq_free(&nirq, 1);
++		return -ENOSPC;
++	}
++
++	*irq = nirq;
++	*data = vector;
++	*addr = UK_MSIX_XAPIC_ADDR_BASE |
++	       ((__u64)apic_id_of_lcpu(lcpu) << 56);
++
++	return 0;
++}
++
++int uk_intctlr_msix_free(unsigned int irq)
++{
++	unsigned int nirq = irq;
++
++	return uk_intctlr_irq_free(&nirq, 1);
++}
++
++#else /* !CONFIG_LIBUKINTCTLR_APIC */
++
++int uk_intctlr_msix_alloc(unsigned int lcpu, unsigned int *irq,
++			   __u64 *addr, __u32 *data)
++{
++	(void)lcpu;
++	(void)irq;
++	(void)addr;
++	(void)data;
++	return -ENOTSUP;
++}
++
++int uk_intctlr_msix_free(unsigned int irq)
++{
++	(void)irq;
++	return -ENOTSUP;
++}
++
++#endif /* !CONFIG_LIBUKINTCTLR_APIC */
+diff --git a/drivers/ukintctlr/xpic/pic.c b/drivers/ukintctlr/xpic/pic.c
+index 7e8b51a..26094d2 100644
+--- a/drivers/ukintctlr/xpic/pic.c
++++ b/drivers/ukintctlr/xpic/pic.c
+@@ -86,10 +86,19 @@ void pic_ack_irq(unsigned int irq)
+ 	uk_arch_x86_64_outb(PIC1_COMMAND, PIC_EOI);
+ }
+ 
++/*
++ * The 8259 only decodes irq 0..15 (master 0..7, slave 8..15).
++ * Higher irq numbers are APIC-only (IPIs, extensions,
++ * MSI-X vectors) and their masking lives elsewhere (for MSI-X, the
++ * device PBA). Such irqs must not touch the 8259.
++ */
+ static void pic_mask_irq(unsigned int irq)
+ {
+ 	__u16 port;
+ 
++	if (irq >= 16)
++		return;
++
+ 	port = IRQ_PORT(irq);
+ 	uk_arch_x86_64_outb(port, uk_arch_x86_64_inb(port) | (1 << IRQ_OFFSET(irq)));
+ }
+@@ -98,6 +107,9 @@ static void pic_clear_irq(unsigned int irq)
+ {
+ 	__u16 port;
+ 
++	if (irq >= 16)
++		return;
++
+ 	port = IRQ_PORT(irq);
+ 	uk_arch_x86_64_outb(port, uk_arch_x86_64_inb(port) & ~(1 << IRQ_OFFSET(irq)));
+ }
 diff --git a/lib/uknetdev/include/uk/netdev.h b/lib/uknetdev/include/uk/netdev.h
 index 03bfe4a..5b3c46e 100644
 --- a/lib/uknetdev/include/uk/netdev.h

@@ -21,6 +21,36 @@
 #define ena_warn(fmt, ...)   uk_pr_warn("ena: " fmt, ##__VA_ARGS__)
 #define ena_err(fmt, ...)    uk_pr_err("ena: " fmt, ##__VA_ARGS__)
 #define ena_debug(fmt, ...)  uk_pr_debug("ena: " fmt, ##__VA_ARGS__)
+
+/* Max MSI-X vectors the platform arm path handles (matches
+ * ENA_MAX_MSIX_VECTORS in ena_intr.h without a circular include). */
+#define ENA_PLAT_MSIX_MAX_VECTORS	32
+
+/* One 16-byte entry of the device MSI-X table. */
+struct ena_msix_msg {
+	uint64_t addr;
+	uint32_t data;
+	uint32_t reserved;
+};
+
+/*
+ * MSI-X arm request. The platform layer allocates one vector per
+ * entry from the unikernel interrupt pool, targets each vector at
+ * the given lcpu, programs the 16-byte table entries and the PBA
+ * in the device BAR, and enables the capability.
+ */
+struct ena_msix_req {
+	const struct pci_address *pci_dev;
+	uint32_t nvec;
+	uint32_t lcpu[ENA_PLAT_MSIX_MAX_VECTORS];
+	void (*on_fire)(void *arg, uint32_t vector_id);
+	void *arg;
+};
+
+int ena_plat_msix_arm(const struct ena_msix_req *req);
+void ena_plat_msix_disarm(void);
+uint32_t ena_plat_msix_count_get(void);
+
 #else
 #include <stdio.h>
 #include <stdlib.h>
