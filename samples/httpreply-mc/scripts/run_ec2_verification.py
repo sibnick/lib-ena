@@ -298,6 +298,50 @@ def launch_target_instance(ami_id):
             return instance_id, public_ip
         time.sleep(3)
 
+def repair_public_ip(instance_id):
+    print("==================================================")
+    print("Step 4b: Repairing stale public IP association...")
+    print("==================================================")
+    desc_out = run_cmd([
+        "aws", "ec2", "describe-instances",
+        "--instance-ids", instance_id,
+        "--region", AWS_REGION,
+        "--output", "json"
+    ])
+    inst = json.loads(desc_out)["Reservations"][0]["Instances"][0]
+    old_ip = inst.get("PublicIpAddress", "")
+    if old_ip:
+        try:
+            run_cmd([
+                "aws", "ec2", "disassociate-address",
+                "--public-ip", old_ip,
+                "--region", AWS_REGION,
+                "--output", "json"
+            ])
+            print(f"[INFO] Disassociated stale auto public IP {old_ip}")
+        except Exception as e:
+            print(f"[INFO] Disassociate of {old_ip} reported: {e}")
+    time.sleep(5)
+    alloc_out = run_cmd([
+        "aws", "ec2", "allocate-address",
+        "--domain", "vpc",
+        "--region", AWS_REGION,
+        "--output", "json"
+    ])
+    alloc = json.loads(alloc_out)
+    allocation_id = alloc["AllocationId"]
+    new_ip = alloc.get("PublicIp", "")
+    run_cmd([
+        "aws", "ec2", "associate-address",
+        "--allocation-id", allocation_id,
+        "--instance-id", instance_id,
+        "--allow-reassociation",
+        "--region", AWS_REGION,
+        "--output", "json"
+    ])
+    print(f"[SUCCESS] Fresh EIP {new_ip} ({allocation_id}) associated to {instance_id}")
+    return new_ip, allocation_id
+
 def launch_client_instance():
     print("==================================================")
     print(f"Step 5: Launching wrk Client Instance ({INSTANCE_TYPE})...")
@@ -312,24 +356,45 @@ echo "T0_EPOCH=$(date +%s)"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y wrk python3
+apt-get install -y wrk python3 tcpdump
 
 wrk -v || true
 echo "WRK_READY $(date)"
+
+ip -4 -o addr show
+nohup tcpdump -i eth0 -w /root/cap.pcap -s 0 >/root/cap.log 2>&1 &
+CAP_PID=$!
+echo "CAP_STARTED pid=$CAP_PID $(date)"
+which tcpdump || echo NO_TCPDUMP_BINARY
 
 cd /root
 python3 -m http.server 80 &
 echo "HTTPD_STARTED $(date)"
 
-echo "Waiting for Unikraft target http://{TARGET_PRIVATE_IP}/ ..."
+echo "Curl gate: waiting for target http://{TARGET_PRIVATE_IP}/ ..."
+UK_OK=0
 for i in $(seq 1 120); do
     CODE=$(curl -s -o /dev/null --max-time 5 -w "%{{http_code}}" http://{TARGET_PRIVATE_IP}/ || echo "000")
     if [ "$CODE" = "200" ]; then
-        echo "UK_HEALTH public/private=200 $(date) after $i tries"
+        UK_OK=1
+        echo "UK_HEALTH private=200 $(date) after $i tries"
         break
     fi
     sleep 2
 done
+
+kill -INT "$CAP_PID" 2>/dev/null || true
+sleep 2
+ls -la /root/cap.pcap || echo CAP_MISSING
+echo "CAP_STOPPED $(date)"
+
+if [ "$UK_OK" != "1" ]; then
+    echo "GATE_FAIL: target never returned HTTP 200; wrk sweep NOT started" > /root/wrk_sweep.log
+    echo "GATE_FAIL: target never returned HTTP 200; wrk sweep NOT started" >> /root/diag.txt
+    echo "ALL_DONE $(date)" >> /root/wrk_sweep.log
+    echo "ALL_DONE $(date)" >> /root/diag.txt
+    exit 0
+fi
 
 echo "Starting wrk sweep $(date)..." > /root/wrk_sweep.log
 
@@ -451,6 +516,8 @@ def main():
     client_id = None
     ami_id = None
     snapshot_id = None
+    eip_allocation_id = None
+    gate_failed = False
     date_str = "2026-09-29"
 
     try:
@@ -460,22 +527,20 @@ def main():
 
         target_id, target_pub_ip = launch_target_instance(ami_id)
 
-        print("[INFO] Testing Unikraft HTTP endpoint directly from host...")
-        target_healthy = False
-        for attempt in range(30):
-            try:
-                with urllib.request.urlopen(f"http://{target_pub_ip}/", timeout=2) as resp:
-                    if resp.status == 200:
-                        body = resp.read().decode("utf-8")
-                        print(f"[SUCCESS] Target HTTP 200 OK! Response: {body.strip()}")
-                        target_healthy = True
-                        break
-            except Exception as e:
-                print(f"[INFO] Target connect attempt {attempt+1}/30: {e}, waiting 2s...")
-                time.sleep(2)
-
-        if not target_healthy:
-            print("[WARN] Target did not respond directly over public IP (could be SG / routing).")
+        # The public-IP path in this VPC black-holes (stale ENI
+        # associations), so it is probed once, for diagnostics only.
+        # The gate is the client-side curl to the target private IP on
+        # port 80. The wrk sweep runs only after that answers 200.
+        try:
+            with urllib.request.urlopen(f"http://{target_pub_ip}/", timeout=10) as resp:
+                if resp.status == 200:
+                    body = resp.read().decode("utf-8", "replace").strip()
+                    print(f"[INFO] Public IP path answers (diagnostic): {body}")
+                else:
+                    print(f"[INFO] Public IP path answered status {resp.status} (diagnostic).")
+        except Exception:
+            print("[INFO] Public IP path does not answer (expected in this VPC).")
+            print("[INFO] The gate is the client-side curl to the private IP on port 80.")
 
         client_id, client_pub_ip = launch_client_instance()
 
@@ -501,8 +566,11 @@ def main():
         # Monitor wrk progress
         last_log = ""
         bench_done = False
+        console_poll_count = 0
+        last_console = ""
+        silent_polls = 0
         start_wait = time.time()
-        while time.time() - start_wait < 600:
+        while time.time() - start_wait < 2400:
             try:
                 with urllib.request.urlopen(f"http://{client_pub_ip}/wrk_sweep.log", timeout=3) as resp:
                     curr_log = resp.read().decode("utf-8", errors="replace")
@@ -523,6 +591,34 @@ def main():
                         break
             except Exception:
                 pass
+
+            console_poll_count += 1
+            if console_poll_count % 12 == 1:
+                poll_n = console_poll_count // 12
+                try:
+                    console_out = run_cmd([
+                        "aws", "ec2", "get-console-output",
+                        "--instance-id", target_id,
+                        "--latest",
+                        "--region", AWS_REGION,
+                        "--output", "json"
+                    ])
+                    cdata = json.loads(console_out)
+                    ctext = cdata.get("Output", "")
+                    if last_console != "" and ctext == last_console:
+                        silent_polls += 1
+                    else:
+                        silent_polls = 0
+                    last_console = ctext
+                    cpath = sample_dir / f"target_console_poll{poll_n}_{date_str}.txt"
+                    cpath.write_text(ctext)
+                    last_line = (ctext.rstrip().splitlines() or ["<empty>"])[-1]
+                    print(f"[CONSOLE] poll{poll_n} saved {len(ctext)} bytes; last: {last_line[:200]}")
+                    if silent_polls >= 3:
+                        print(f"[HANG] Target console silent for 180 s (3 identical polls). Stopping monitor early.")
+                        break
+                except Exception as ce:
+                    print(f"[CONSOLE] poll{poll_n} failed: {ce}")
 
             time.sleep(5)
 
@@ -585,6 +681,16 @@ def main():
                     "p99_ms": 0.0
                 })
 
+        # Download the gate-phase packet capture (tcpdump on the client eth0)
+        try:
+            with urllib.request.urlopen(f"http://{client_pub_ip}/cap.pcap", timeout=15) as resp:
+                pcap_bytes = resp.read()
+                pcap_path = sample_dir / f"cap_{date_str}.pcap"
+                pcap_path.write_bytes(pcap_bytes)
+                print(f"[INFO] Downloaded cap.pcap ({len(pcap_bytes)} bytes) -> {pcap_path}")
+        except Exception as e:
+            print(f"[WARN] Could not retrieve cap.pcap: {e}")
+
         # Save JSON & CSV
         date_str = "2026-09-29"
         json_path = sample_dir / f"benchmark_results_{date_str}.json"
@@ -635,8 +741,13 @@ def main():
                 ])
                 console_data = json.loads(console_out)
                 console_text = console_data.get("Output", "")
-                evidence_path.write_text(console_text)
-                print(f"[SUCCESS] Saved {len(console_text)} bytes of console output to {evidence_path}")
+                if gate_failed:
+                    out_path = sample_dir / f"unikraft_console_evidence_gatefail_{date_str}.txt"
+                    print(f"[GATE] Saving gate-fail evidence to {out_path} (standard evidence file kept as-is)")
+                else:
+                    out_path = evidence_path
+                out_path.write_text(console_text)
+                print(f"[SUCCESS] Saved {len(console_text)} bytes of console output to {out_path}")
             except Exception as e:
                 print(f"[WARN] Failed to fetch console output: {e}")
 
@@ -658,6 +769,14 @@ def main():
                     print("[SUCCESS] All instances terminated.")
                     break
                 time.sleep(3)
+
+        if eip_allocation_id:
+            print(f"[INFO] Releasing EIP {eip_allocation_id}")
+            try:
+                run_cmd(["aws", "ec2", "disassociate-address", "--allocation-id", eip_allocation_id, "--region", AWS_REGION])
+            except Exception as e:
+                print(f"[INFO] EIP disassociate reported: {e}")
+            run_cmd(["aws", "ec2", "release-address", "--allocation-id", eip_allocation_id, "--region", AWS_REGION])
 
         if ami_id:
             print(f"[INFO] Deregistering AMI: {ami_id}")
