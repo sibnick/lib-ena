@@ -1289,10 +1289,10 @@ index fc156a0..5ad621f 100644
  }
  
 diff --git a/plat/native/arch/x86_64/except.c b/plat/native/arch/x86_64/except.c
-index 133b4e1..363d890 100644
+index 133b4e1..f539f27 100644
 --- a/plat/native/arch/x86_64/except.c
 +++ b/plat/native/arch/x86_64/except.c
-@@ -654,67 +654,59 @@ __isr __uptr uk_plat_native_except_get_except_stack_base(void)
+@@ -654,67 +654,67 @@ __isr __uptr uk_plat_native_except_get_except_stack_base(void)
  }
  
  #if CONFIG_HAVE_SMP
@@ -1356,9 +1356,9 @@ index 133b4e1..363d890 100644
 +	 * vector in the SVR register at offset 0xF0.
  	 */
 +	volatile __u32 *svr = (volatile __u32 *)(apic_base_addr + 0xF0);
- 
-+	*svr = (*svr) | 0x100 | 0xFF;
 +
++	*svr = (*svr) | 0x100 | 0xFF;
+ 
 +	apic_is_x2apic = 0;
  	return 0;
  }
@@ -1367,20 +1367,28 @@ index 133b4e1..363d890 100644
 +static inline void apic_send_ipi(__u32 irqno, __u64 dest)
  {
 -	__u32 eax;
--
--	UK_ASSERT(((32 + irqno) & 0xff) == (32 + irqno));
-+	volatile __u32 *icr_hi = (volatile __u32 *)(apic_base_addr + 0x310);
 +	volatile __u32 *icr_lo = (volatile __u32 *)(apic_base_addr + 0x300);
 +	__u32 vector = (32 + irqno) & 0xff;
  
+-	UK_ASSERT(((32 + irqno) & 0xff) == (32 + irqno));
+-
 -	eax = UK_ARCH_X86_64_APIC_ICR_TRIGGER_LEVEL |
 -	      UK_ARCH_X86_64_APIC_ICR_LEVEL_ASSERT |
 -	      UK_ARCH_X86_64_APIC_ICR_DESTMODE_PHYSICAL |
 -	      UK_ARCH_X86_64_APIC_ICR_DMODE_FIXED | (32 + irqno);
 -
 -	uk_arch_x86_64_wrmsr(UK_ARCH_X86_64_APIC_MSR_ICR, eax, dest);
-+	*icr_hi = ((__u32)dest) << 24;
-+	*icr_lo = 0x00004000U | vector;
++	/*
++	 * xAPIC physical IPI: the destination APIC ID goes into bits
++	 * 28:24 of ICR-low, with fixed delivery (bits 15:8 = 0) and
++	 * edge trigger (bit 10 = 0), and with no level or self bit.
++	 * ICR-high (0x310) only applies in x2APIC mode, and 0x4000 in
++	 * ICR-low is the SELF-IPI flag: the old code wrote the
++	 * destination to ICR-high and set the self bit, so it only
++	 * ever posted the IPI to the sender itself.
++	 * [Ticket aa0fc35743]
++	 */
++	*icr_lo = (vector & 0xffU) | ((__u32)(dest & 0xffU) << 24);
  }
  
 -#define apic_enable		x2apic_enable
@@ -1396,7 +1404,7 @@ index 133b4e1..363d890 100644
  
  __isr int uk_plat_native_except_init(void)
  {
-@@ -730,3 +722,4 @@ __isr int uk_plat_native_except_init(void)
+@@ -730,3 +730,4 @@ __isr int uk_plat_native_except_init(void)
  
  	return 0;
  }
