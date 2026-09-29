@@ -23,7 +23,7 @@ from pathlib import Path
 AWS_REGION = "us-east-1"
 INSTANCE_TYPE = "c6i.large"
 SUBNET_ID = "subnet-0e6ba9e8b1e7dcdf0"
-SG_ID = "sg-06271d99bc8638ee4"
+SG_ID = "sg-0ac75f6a09207fcfe"
 GATEWAY_IP = "172.31.16.1"
 NETMASK = "255.255.240.0"
 TARGET_PRIVATE_IP = "172.31.16.153"
@@ -451,7 +451,7 @@ def main():
     client_id = None
     ami_id = None
     snapshot_id = None
-    date_str = "2026-09-26"
+    date_str = "2026-09-29"
 
     try:
         disk_raw = create_bootable_disk(kernel_path, sample_dir)
@@ -586,7 +586,7 @@ def main():
                 })
 
         # Save JSON & CSV
-        date_str = "2026-09-26"
+        date_str = "2026-09-29"
         json_path = sample_dir / f"benchmark_results_{date_str}.json"
         csv_path = sample_dir / f"benchmark_results_{date_str}.csv"
 

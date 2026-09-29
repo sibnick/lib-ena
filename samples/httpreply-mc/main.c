@@ -34,6 +34,9 @@
 #include <uk/lcpu/pm.h>
 #include <uk/pcpuvar.h>
 #include <uk/arch.h>
+#include <uk/arch/x86_64.h>
+#include <uk/intctlr.h>
+#include <uk/print.h>
 #if defined(CONFIG_LIBUKBOOT_PERCORE_HEAP) && CONFIG_LIBUKBOOT_PERCORE_HEAP
 #include <uk/allocbbuddy.h>
 
@@ -409,6 +412,8 @@ static int set_epoll_events(int epfd, int fd, uint32_t events)
 void ena_netdev_dump_queue(struct uk_netdev *dev, uint16_t qid);
 unsigned long ena_netdev_rxq_pkts(struct uk_netdev *dev, uint16_t qid);
 unsigned long ena_netdev_txq_pkts(struct uk_netdev *dev, uint16_t qid);
+/* Armed MSI-X vector count. Zero means software polling. */
+uint32_t ena_plat_msix_state(void);
 
 static unsigned int mc_count_memp_free(void *head)
 {
@@ -458,9 +463,9 @@ static void drive_core_stack(int core_id)
 			txpkts = ena_netdev_txq_pkts(dev, (uint16_t)core_id);
 		}
 
-		printf("httpreply-mc: core %d heartbeat (polls=%lu, rx=%lu, tx=%lu, active=%u, free: pbuf=%u pcb=%u seg=%u)\n",
+		printf("httpreply-mc: core %d heartbeat (polls=%lu, rx=%lu, tx=%lu, active=%u, msix=%u, free: pbuf=%u pcb=%u seg=%u)\n",
 		       core_id, poll_cnt[core_id], rxpkts, txpkts,
-		       active_pcbs, m_pbuf, m_pcb, m_seg);
+		       active_pcbs, ena_plat_msix_state(), m_pbuf, m_pcb, m_seg);
 
 		/*
 		 * pbuf pool exhaustion warning. When the free pbuf count falls
@@ -610,6 +615,44 @@ static int create_core_listener(int core_id)
 }
 
 /*
+ * Idle-halt tracing [Ticket 6f89cf874e].
+ *
+ * A vCPU that enters the halt and is never woken prints the pre-halt
+ * line and then goes silent, so the console shows exactly which core
+ * stops waking. The first two halts per core are always traced. After
+ * that at most one line prints per 2 s, so the serial load stays
+ * negligible.
+ */
+struct idle_halt_trace {
+	uint64_t last_log;	/* monotonic ns of last line printed */
+	unsigned long halts;	/* halt entries on this core		*/
+};
+
+static struct idle_halt_trace ib_trace[8];
+
+static void mc_diag_apic_mode(int core_id);
+static void mc_lapic_oneshot(int core_id, uint64_t ns);
+
+/*
+ * Per-core state for the posted-IPI idle wake.
+ * [Ticket a5b91e7993]
+ *
+ * Declared before mc_idle_sleep() because that function sets the
+ * per-core halted flag around each hlt; core 0 reads the other cores'
+ * flags to decide which core 0 sends the posted IPI.
+ *
+ * In KVM the in-kernel xAPIC id equals the vCPU index, so
+ * the ICR2 destination for core c is simply c. The raw APIC ID register
+ * read is not reliable in the forced-xAPIC bring-up (it returned the
+ * same value for every core), so it is not used for addressing.
+ */
+extern int uk_plat_native_except_send_ipi(__u64 id, __u32 irq);
+
+static __u32 mc_apic_id[8];
+static volatile unsigned mc_ipi_wake[8];
+static volatile unsigned mc_halted[8];
+
+/*
  * Sleep this vCPU for at most ns nanoseconds.
  *
  * The KVM platform implements this with a real halt: it arms a
@@ -620,18 +663,271 @@ static int create_core_listener(int core_id)
  * [Ticket 597c1b9731]
  */
 static inline void
-mc_idle_sleep(uint64_t ns)
+mc_idle_sleep(int core_id, uint64_t ns)
 {
 	unsigned long flags;
 	__nsec now;
+	int trace;
+	struct idle_halt_trace *t = &ib_trace[core_id];
 
-	flags = uk_lcpu_save_irqf();
-	uk_lcpu_disable_irq();
 	now = ukplat_monotonic_clock();
-	uk_lcpu_halt_irq_until((uint64_t)(now + ns));
-	uk_lcpu_irqs_handle_pending();
-	uk_lcpu_restore_irqf(flags);
+	t->halts++;
+	trace = (t->halts <= 2) || (now - t->last_log >= 2000000ULL);
+	if (trace) {
+		t->last_log = now;
+		printf("httpreply-mc: idle-trace core %d pre-halt #%lu ns=%llu\n",
+		       core_id, (unsigned long)t->halts,
+		       (unsigned long long)ns);
+	}
+
+	mc_halted[core_id] = 1;
+
+	if (core_id == 0) {
+		/*
+		 * vCPU 0 is woken by the shared i8254 one-shot, wired to this core.
+		 */
+		flags = uk_lcpu_save_irqf();
+		uk_lcpu_disable_irq();
+		now = ukplat_monotonic_clock();
+		uk_lcpu_halt_irq_until((uint64_t)(now + ns));
+		uk_lcpu_irqs_handle_pending();
+		uk_lcpu_restore_irqf(flags);
+
+	} else {
+		uint64_t arm_ns = ns;
+
+		mc_lapic_oneshot(core_id, arm_ns);
+
+		{
+			__nsec t_in = ukplat_monotonic_clock();
+
+			flags = uk_lcpu_save_irqf();
+			uk_lcpu_disable_irq();
+			now = ukplat_monotonic_clock();
+			uk_lcpu_halt_irq_until((uint64_t)(now + arm_ns));
+			uk_lcpu_irqs_handle_pending();
+			uk_lcpu_restore_irqf(flags);
+
+				if (t->halts <= 4)
+					printf("httpreply-mc: idle-wake core %d asked %llu ns, woke after %lld ns\n",
+					       core_id, (unsigned long long)arm_ns,
+					       (long long)(ukplat_monotonic_clock() - t_in));
+		}
+	}
+
+	mc_halted[core_id] = 0;
+
+	if (trace) {
+		printf("httpreply-mc: idle-trace core %d post-halt #%lu\n",
+		       core_id, (unsigned long)t->halts);
+		mc_diag_apic_mode(core_id);
+	}
 }
+
+/*
+ * Core 0 is the wake coordinator. It posts an IPI to any peer core that is
+ * blocked in hlt, so the peer re-enters the run loop and polls its own ENA
+ * queues (there is no NIC interrupt in this software-polling build, so a
+ * halted peer would otherwise stay asleep and blackhole its traffic).
+ * [Ticket a5b91e7993]
+ *
+ * The call is rate-limited to one burst per 2 ms of wall time. A busy
+ * coordinator loops with a zero-timeout epoll (it spins while it has
+ * packets), so without the gate it would post one IPI per loop iteration
+ * and flood the target's interrupt queue. The 2 ms period keeps an idle
+ * peer's worst-case wake latency small while bounding IPI volume.
+ * Only core 0 calls this, so the function-static last-tick is single-writer.
+ */
+static void
+mc_poke_halted_peers(void)
+{
+	static uint64_t last_poke;
+	static uint64_t last_log;
+	uint64_t now = (uint64_t)ukplat_monotonic_clock();
+	uint64_t poked = 0;
+	int c;
+
+	if (now - last_poke < 2000000ULL)
+		return;
+	last_poke = now;
+
+	for (c = 1; c < mc_nworkers && c < 8; c++) {
+		if (mc_halted[c]) {
+			mc_ipi_wake[c] = 1;
+			uk_plat_native_except_send_ipi((uint32_t)c, 16);
+			poked++;
+		}
+	}
+
+	if (poked && now - last_log >= 2000000000ULL) {
+		last_log = now;
+		printf("httpreply-mc: [poke] core 0 posted IPI to %llu halted peer(s)\n",
+		       (unsigned long long)poked);
+	}
+}
+
+/*
+ * APIC mode diagnostic [Ticket a5b91e7993].
+ *
+ * Each core reads and prints the APIC base MSR (0x01B) of its own
+ * local APIC. Bit 11 is the xAPIC enable, bit 10 is the x2APIC
+ * enable. We need xAPIC enabled and x2APIC clear, so the KVM
+ * in-kernel xAPIC (MMIO) emulation, including the one-shot timer
+ * used as the per-vCPU wake source, applies. The read cannot fault,
+ * so this probe is safe.
+ */
+static void mc_diag_apic_mode(int core_id)
+{
+	__u32 lo = 0, hi = 0;
+
+	uk_arch_x86_64_rdmsr(0x01B, &lo, &hi);
+
+	printf("httpreply-mc: [diag] core %d APIC base MSR=0x%08x "
+	       "xapic_en=%d x2apic_en=%d mmio_base=0x%08x\n",
+	       core_id, (unsigned)lo,
+	       (int)((lo >> 11) & 1u), (int)((lo >> 10) & 1u),
+	       (unsigned)(lo & 0xFFFFF000UL));
+}
+
+/*
+ * Per-core LAPIC one-shot timer that wakes a secondary core.
+ *
+ * The in-kernel APIC timer rate is measured in prepare() by
+ * sampling the current count over a short TSC window, and is
+ * used to turn a requested sleep into a one-shot tick count.
+ */
+#define MC_LAPIC_CAL_NS 1000000ULL
+
+static uint64_t mc_lapic_rate[8];
+static __u64 mc_lapic_base[8];
+
+static void
+mc_lapic_timer_prepare(int core_id)
+{
+	__u32 lo = 0, hi = 0;
+	volatile __u32 *b, *lvt, *ticr, *tccr;
+	__nsec t0, t1;
+	uint32_t c0, c1;
+
+	uk_arch_x86_64_rdmsr(0x01B, &lo, &hi);
+	mc_lapic_base[core_id] = (((__u64)hi << 32) | (__u64)lo) & 0xFFFFF000UL;
+	if (!mc_lapic_base[core_id])
+		mc_lapic_base[core_id] = 0xFEE00000UL;
+
+	b = (volatile __u32 *)mc_lapic_base[core_id];
+	lvt = b + 0x320;
+	ticr = b + 0x380;
+	tccr = b + 0x390;
+
+	/* Publish this core's APIC ID (ID register 0x000, low byte) so other
+	 * cores can address it as the ICR2 destination of a posted IPI. */
+	mc_apic_id[core_id] = *(volatile __u32 *)(b + 0x000) & 0xFFu;
+
+	/* Divider /1: finest tick. A large count never expires in the window. */
+	*(volatile __u32 *)(b + 0x3E0) = 0x4;
+	*lvt = (*lvt) & ~(1u << 16);
+	*lvt = (*lvt) | (0x30u << 8);
+	*ticr = 0x10000000u;
+	*lvt = (*lvt) & ~(1u << 16);
+
+	t0 = ukplat_monotonic_clock();
+	c0 = *tccr;
+	while (ukplat_monotonic_clock() - t0 < MC_LAPIC_CAL_NS)
+		;
+	c1 = *tccr;
+	t1 = ukplat_monotonic_clock();
+
+	if (c0 > c1 && t1 > t0)
+		mc_lapic_rate[core_id] = ((t1 - t0) << 32) / (uint64_t)(c0 - c1);
+	else
+		mc_lapic_rate[core_id] = ((uint64_t)1 << 32) / 2;
+
+	*lvt = (*lvt) | (1u << 16);
+
+	uk_pr_info("httpreply-mc: LAPIC core %d prepared, base=0x%lx apic_id=%u\n",
+		   core_id, (unsigned long)mc_lapic_base[core_id],
+		   (unsigned)mc_apic_id[core_id]);
+}
+
+/*
+ * Arm the one-shot timer of this core to fire at most ns
+ * nanoseconds from now, then unmask the LVT.
+ */
+static void
+mc_lapic_oneshot(int core_id, uint64_t ns)
+{
+	volatile __u32 *lvt = (volatile __u32 *)(mc_lapic_base[core_id] + 0x320);
+	volatile __u32 *ticr = (volatile __u32 *)(mc_lapic_base[core_id] + 0x380);
+	uint64_t ticks;
+
+	if (ns > 20000)
+		ns = 20000;
+
+	ticks = (ns * mc_lapic_rate[core_id]) >> 32;
+	if (ticks < 1)
+		ticks = 1;
+	if (ticks > 0xFFFFFFFF)
+		ticks = 0xFFFFFFFF;
+
+	*lvt = (*lvt) | (1u << 16);
+	*lvt = (*lvt) | (0x30u << 8);
+	*lvt = (*lvt) | (1u << 17);
+	*ticr = (uint32_t)ticks;
+	*lvt = (*lvt) & ~(1u << 16);
+}
+
+/*
+ * Interrupt handler for the LAPIC timer (vector 0x30, IRQ 16):
+ * write the EOI register and stop the dispatch.
+ */
+static int
+mc_lapic_timer_irq(void *arg)
+{
+	static int fires[8];
+	__u64 idx = uk_lcpu_get_current_idx_in_except();
+	__u64 b;
+
+	(void)arg;
+	if (idx >= 8)
+		return 1;
+
+	b = mc_lapic_base[idx];
+	*(volatile __u32 *)(b + 0x0B0) = 0;
+
+	if (mc_ipi_wake[idx]) {
+		/* A posted IPI woke this halted core. Clear the marker so a
+		 * later real timer expiry is not misreported as an IPI. */
+		mc_ipi_wake[idx] = 0;
+		printf("httpreply-mc: ipi-wake core %u (posted IPI from coordinator)\n",
+		       (unsigned)idx);
+	} else if (fires[idx] < 3) {
+		fires[idx]++;
+		printf("httpreply-mc: lapic-irq core %u fire %d: TMICT=%x TMCCT=%x LVT0=%x\n",
+		       (unsigned)idx, fires[idx],
+		       *(volatile __u32 *)(b + 0x380),
+		       *(volatile __u32 *)(b + 0x390),
+		       *(volatile __u32 *)(b + 0x320));
+	}
+	return 1;
+}
+
+/*
+ * Register the per-core timer interrupt (once; the handler table
+ * is shared) and prepare this core's timer.
+ */
+static int mc_lapic_irq_registered;
+
+static void
+mc_lapic_timer_init(int core_id)
+{
+	mc_lapic_timer_prepare(core_id);
+
+	if (!mc_lapic_irq_registered) {
+		uk_intctlr_irq_register(16, mc_lapic_timer_irq, NULL);
+		mc_lapic_irq_registered = 1;
+	}
+}
+
 
 /*
  * Run-to-completion worker engine. Bound to a single dedicated core
@@ -639,6 +935,25 @@ mc_idle_sleep(uint64_t ns)
  */
 static __noreturn void run_to_completion_worker(int core_id)
 {
+	mc_diag_apic_mode(core_id);
+	/*
+	 * Defensive: if the APIC still runs in x2APIC mode the one-shot
+	 * timer below cannot be armed. Refuse to enter the main loop.
+	 */
+	{
+		__u32 lo = 0, hi = 0;
+
+		uk_arch_x86_64_rdmsr(0x01B, &lo, &hi);
+		if (lo & (1u << 10)) {
+			uk_pr_err("httpreply-mc: [FATAL] core %d APIC in x2APIC mode; not entering main loop\n",
+			       core_id);
+			for (;;) {
+				uk_sched_yield();
+			}
+		}
+	}
+
+	mc_lapic_timer_init(core_id);
 	mc_percore_alloc_selftest(core_id);
 	struct worker_ctx *w = &mc_workers[core_id];
 	struct epoll_event events[MAX_EVENTS];
@@ -689,6 +1004,17 @@ static __noreturn void run_to_completion_worker(int core_id)
 		uint64_t sleep_ns;
 
 		drive_core_stack(core_id);
+
+		/*
+		 * Core 0 is the wake coordinator. Post a (rate-limited) IPI to any
+		 * peer blocked in hlt so it re-polls its own ENA queues. This must
+		 * run from the top of the loop, not only after an idle sleep: a busy
+		 * coordinator spins on a zero-timeout epoll and never idles, so a
+		 * post-idle poke alone would never fire while it has packets.
+		 * [Ticket a5b91e7993]
+		 */
+		if (core_id == 0)
+			mc_poke_halted_peers();
 
 		n = epoll_wait(w->epoll_fd, events, MAX_EVENTS, 0);
 		if (n < 0) {
@@ -812,8 +1138,10 @@ static __noreturn void run_to_completion_worker(int core_id)
 		}
 
 		sleep_ns = ib_tick(&ib, ukplat_monotonic_clock(), work);
-		if (sleep_ns)
-			mc_idle_sleep(sleep_ns);
+
+		if (sleep_ns) {
+			mc_idle_sleep(core_id, sleep_ns);
+		}
 	}
 }
 

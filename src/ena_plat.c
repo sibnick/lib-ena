@@ -110,12 +110,15 @@ void ena_debug(const char *fmt, ...)
 #else /* __Unikraft__ */
 
 #include <uk/alloc.h>
+#include <uk/intctlr.h>
+#include <uk/intctlr/msix.h>
 #include <uk/plat/memory.h>
 #include <uk/plat/time.h>
 #include <uk/arch/util.h>
 
 /* PCI config space access (same method as the probe path in ena_pci.c). */
-static uint32_t plat_pci_cfg_read(const struct pci_address *addr, uint32_t reg)
+static uint32_t plat_pci_cfg_read(const struct pci_address *addr,
+				      uint32_t reg)
 {
 	uint32_t config_addr = (1u << 31)
 		| ((uint32_t)addr->bus << 16)
@@ -126,9 +129,55 @@ static uint32_t plat_pci_cfg_read(const struct pci_address *addr, uint32_t reg)
 	return uk_arch_x86_64_inl(PCI_CONFIG_DATA);
 }
 
-/* PCI capability ID for MSI-X (PCI revision 3.x). */
-#define ENA_PLAT_PCI_CAP_ID_MSIX	11u
+static void plat_pci_cfg_write(const struct pci_address *addr,
+				     uint32_t reg, uint32_t val)
+{
+	uint32_t config_addr = (1u << 31)
+		| ((uint32_t)addr->bus << 16)
+		| ((uint32_t)addr->devid << 11)
+		| ((uint32_t)addr->function << 8)
+		| (reg & 0xFC);
+	uk_arch_x86_64_outl(PCI_CONFIG_ADDR, config_addr);
+	uk_arch_x86_64_outl(PCI_CONFIG_DATA, val);
+}
 
+/* PCI capability ID for MSI-X (PCI revision 3.x). */
+#define ENA_PLAT_PCI_CAP_ID_MSIX	0x11u
+
+/*
+ * Print the PCI config space from 0x000 to 0x3FF, 16 bytes per
+ * line. This runs when the capability list search misses the
+ * MSI-X capability. It shows the real layout of the device.
+ */
+static void msix_cfg_dump(const struct pci_address *addr)
+{
+	uint32_t off;
+
+	for (off = 0; off < 0x400u; off += 16u) {
+		uint32_t v0 = plat_pci_cfg_read(addr, off);
+		uint32_t v1 = plat_pci_cfg_read(addr, off + 4u);
+		uint32_t v2 = plat_pci_cfg_read(addr, off + 8u);
+		uint32_t v3 = plat_pci_cfg_read(addr, off + 12u);
+
+		ena_info("cfg: %03x: %02x %02x %02x %02x %02x %02x %02x %02x "
+			"%02x %02x %02x %02x %02x %02x %02x %02x",
+			(unsigned)off,
+			(unsigned)(v0 & 0xFFu), (unsigned)((v0 >> 8) & 0xFFu),
+			(unsigned)((v0 >> 16) & 0xFFu), (unsigned)((v0 >> 24) & 0xFFu),
+			(unsigned)(v1 & 0xFFu), (unsigned)((v1 >> 8) & 0xFFu),
+			(unsigned)((v1 >> 16) & 0xFFu), (unsigned)((v1 >> 24) & 0xFFu),
+			(unsigned)(v2 & 0xFFu), (unsigned)((v2 >> 8) & 0xFFu),
+			(unsigned)((v2 >> 16) & 0xFFu), (unsigned)((v2 >> 24) & 0xFFu),
+			(unsigned)(v3 & 0xFFu), (unsigned)((v3 >> 8) & 0xFFu),
+			(unsigned)((v3 >> 16) & 0xFFu), (unsigned)((v3 >> 24) & 0xFFu));
+	}
+}
+
+/*
+ * Probe the device MSI-X capability and report the number of
+ * vectors it exposes (message control count + 1). A count of
+ * zero means the driver must stay in software polling mode.
+ */
 int ena_plat_msix_probe(void *pci_dev, uint32_t *num_vectors)
 {
 	const struct pci_address *addr = (const struct pci_address *)pci_dev;
@@ -144,28 +193,25 @@ int ena_plat_msix_probe(void *pci_dev, uint32_t *num_vectors)
 	/* Walk the PCI capability list for the MSI-X capability. */
 	cap = plat_pci_cfg_read(addr, 0x34) & 0xFCu;
 	while (cap) {
-		uint32_t cap_id = plat_pci_cfg_read(addr, cap) & 0xFFu;
-		uint32_t next = plat_pci_cfg_read(addr, cap + 1) & 0xFFu;
+		/*
+		 * One read gets the whole header. The low byte is
+		 * the id, the next byte is the next pointer, and
+		 * the high word is the message control.
+		 */
+		uint32_t dw = plat_pci_cfg_read(addr, cap);
+		uint32_t cap_id = dw & 0xFFu;
+		uint32_t next = (dw >> 8) & 0xFFu;
+		uint32_t msg_ctrl = (dw >> 16) & 0xFFFFu;
 
 		if (cap_id == ENA_PLAT_PCI_CAP_ID_MSIX) {
-			uint32_t msg_ctrl = plat_pci_cfg_read(addr, cap + 2);
+			/* The count field encodes vectors minus one. */
+			uint32_t count = (msg_ctrl >> 1) & 0x7FFFu;
 
-			if (!(msg_ctrl & 0x0001u)) {
-				uint32_t count = (msg_ctrl >> 1) & 0x7FFFu;
-				uint32_t nvec = 1;
+			if (msg_ctrl & 0x0001u)
+				ena_info("msix: capability is masked at reset and the arm path will unmask it");
 
-				/* The count field encodes vectors minus one. */
-				while (nvec <= count)
-					nvec <<= 1;
-				ena_info("msix: device exposes %u vectors", (unsigned)nvec);
-			} else {
-				ena_info("msix: capability is masked");
-			}
-
-			/* The pinned Unikraft platform (>=0.17.0) exposes no
-			 * interrupt allocation API. The driver cannot arm the
-			 * MSI-X table, so it reports zero vectors and stays
-			 * in software polling mode. */
+			*num_vectors = count + 1u;
+			ena_info("msix: device exposes %u vectors", (unsigned)(count + 1u));
 			return 0;
 		}
 
@@ -173,7 +219,268 @@ int ena_plat_msix_probe(void *pci_dev, uint32_t *num_vectors)
 	}
 
 	ena_info("msix: no MSI-X capability found");
+	msix_cfg_dump(addr);
 	return 0;
+}
+
+
+/*
+ * MSI-X table and PBA location. The driver decodes the location
+ * from the capability. The four low bits of each 32-bit offset
+ * select the BAR. The rest is the byte offset inside that BAR.
+ * The PBA lives in the same BAR as the table.
+ */
+struct ena_msix_loc {
+	const struct pci_address *pci_dev;
+	uint32_t msgctl_off;
+	uint32_t count;
+	void *table;
+	void *pba;
+};
+
+static int msix_find(const struct pci_address *addr, struct ena_msix_loc *loc)
+{
+	uint32_t cap;
+	uint32_t bar_reg;
+	uint32_t bar_lo;
+	uint64_t bar_base;
+
+	memset(loc, 0, sizeof(*loc));
+	loc->pci_dev = addr;
+
+	/* Walk the PCI capability list for the MSI-X capability. */
+	cap = plat_pci_cfg_read(addr, 0x34) & 0xFCu;
+	while (cap) {
+		/*
+		 * One read gets the header. Byte 0 is the id, byte 1
+		 * is the next pointer, and the high word is the message
+		 * control. The table address is the next dword, and
+		 * the PBA address is the one after that.
+		 */
+		uint32_t dw = plat_pci_cfg_read(addr, cap);
+		uint32_t cap_id = dw & 0xFFu;
+		uint32_t next = (dw >> 8) & 0xFFu;
+		uint32_t msg_ctrl = (dw >> 16) & 0xFFFFu;
+
+		if (cap_id == ENA_PLAT_PCI_CAP_ID_MSIX) {
+			uint32_t table_off = plat_pci_cfg_read(addr, cap + 4);
+			uint32_t pba_off = plat_pci_cfg_read(addr, cap + 8);
+			uint32_t bar;
+
+			loc->msgctl_off = cap + 2;
+			loc->count = ((msg_ctrl >> 1) & 0x7FFFu) + 1;
+
+			/*
+			 * The KVM and QEMU platforms map guest physical
+			 * addresses 1:1, the same assumption the BAR mapping
+			 * in ena_pci.c uses. The BAR value read from config
+			 * space is directly usable as a virtual address.
+			 */
+			bar = table_off & 0xFu;
+			bar_reg = 0x10 + 4 * bar;
+			bar_lo = plat_pci_cfg_read(addr, bar_reg) & ~0x0Fu;
+			if ((plat_pci_cfg_read(addr, bar_reg) & 0x06u) == 0x04u) {
+				/* 64-bit memory BAR: the high part is the next dword. */
+				bar_base = (uint64_t)bar_lo
+					| ((uint64_t)plat_pci_cfg_read(addr, bar_reg + 4) << 32);
+			} else {
+				bar_base = bar_lo;
+			}
+
+			if (bar_base == 0)
+				return -ENODEV;
+
+			loc->table = (void *)(bar_base + (table_off & ~0xFu));
+			loc->pba = (void *)(bar_base + (pba_off & ~0xFu));
+			return 0;
+		}
+
+		cap = next;
+	}
+
+	return -ENODEV;
+}
+
+
+/* One trampoline argument per armed vector. */
+struct msix_tramp_ctx {
+	uint32_t vector_id;
+};
+
+/*
+ * State that ena_plat_msix_arm() arms. It holds one trampoline
+ * context per allocated vector, plus the driver request and the
+ * decoded table and PBA location.
+ */
+static struct {
+	int armed;
+	uint32_t nvec;
+	unsigned int irqs[ENA_PLAT_MSIX_MAX_VECTORS];
+	uint32_t count[ENA_PLAT_MSIX_MAX_VECTORS];
+	struct msix_tramp_ctx ctx[ENA_PLAT_MSIX_MAX_VECTORS];
+	struct ena_msix_req req;
+	struct ena_msix_loc loc;
+} s_msix;
+
+/*
+ * The xpic handler writes the EOI for the delivered vector after
+ * the event dispatch. This trampoline only counts the delivery
+ * and hands it to the driver callback.
+ */
+static int msix_tramp(void *arg)
+{
+	struct msix_tramp_ctx *ctx = arg;
+
+	s_msix.count[ctx->vector_id]++;
+	if (s_msix.req.on_fire)
+		s_msix.req.on_fire(s_msix.req.arg, ctx->vector_id);
+	return 0;
+}
+
+/*
+ * Arm the device MSI-X: allocate one unikernel interrupt vector
+ * per entry, program the 16-byte table entries and clear the PBA
+ * bits, then unmask the capability.
+ */
+int ena_plat_msix_arm(const struct ena_msix_req *req)
+{
+	volatile uint32_t *table;
+	volatile uint32_t *pba;
+	int nvec;
+	int i;
+	int ret;
+
+	if (!req || !req->pci_dev)
+		return -EINVAL;
+
+	if (s_msix.armed)
+		return -EBUSY;
+
+	ret = msix_find(req->pci_dev, &s_msix.loc);
+	if (ret) {
+		ena_warn("msix: capability lookup failed (%d)", ret);
+		return ret;
+	}
+
+	table = (volatile uint32_t *)s_msix.loc.table;
+	pba = (volatile uint32_t *)s_msix.loc.pba;
+
+	nvec = (int)req->nvec;
+	if (nvec > (int)s_msix.loc.count)
+		nvec = (int)s_msix.loc.count;
+	if (nvec > ENA_PLAT_MSIX_MAX_VECTORS)
+		nvec = ENA_PLAT_MSIX_MAX_VECTORS;
+	if (nvec <= 0)
+		return -ENODEV;
+
+	s_msix.req = *req;
+	s_msix.req.nvec = (uint32_t)nvec;
+
+	for (i = 0; i < nvec; i++) {
+		__u64 maddr;
+		__u32 mdata;
+
+		ret = uk_intctlr_msix_alloc(req->lcpu[i],
+						 &s_msix.irqs[i],
+						 &maddr, &mdata);
+		if (ret) {
+			ena_err("msix: vector %d allocation failed (%d)",
+				      i, ret);
+			goto err_free;
+		}
+
+		s_msix.ctx[i].vector_id = (uint32_t)i;
+
+		/* Program the 16-byte table entry: address, data, reserved. */
+		table[4 * i + 0] = (uint32_t)(maddr & 0xFFFFFFFFu);
+		table[4 * i + 1] = (uint32_t)(maddr >> 32);
+		table[4 * i + 2] = mdata;
+		table[4 * i + 3] = 0;
+
+		/* Unmask the vector: clear its PBA bit. */
+		pba[i / 32] &= ~(1u << (i % 32));
+
+		ret = uk_intctlr_irq_register(s_msix.irqs[i], msix_tramp,
+					&s_msix.ctx[i]);
+		if (ret) {
+			ena_err("msix: handler %d register failed (%d)", i, ret);
+			uk_intctlr_msix_free(s_msix.irqs[i]);
+			goto err_free;
+		}
+	}
+
+	{
+		uint32_t msg_ctrl = plat_pci_cfg_read(s_msix.loc.pci_dev,
+						    s_msix.loc.msgctl_off);
+
+		/* Enable the capability: clear the masked bit. */
+		plat_pci_cfg_write(s_msix.loc.pci_dev, s_msix.loc.msgctl_off,
+			       msg_ctrl & ~0x1u);
+	}
+
+	s_msix.armed = 1;
+	s_msix.nvec = (uint32_t)nvec;
+	ena_info("msix: armed %d vectors", nvec);
+	return 0;
+
+err_free:
+	for (i--; i >= 0; i--) {
+		uk_intctlr_irq_unregister(s_msix.irqs[i], msix_tramp);
+		uk_intctlr_msix_free(s_msix.irqs[i]);
+	}
+	return ret;
+}
+
+
+/*
+ * Release all armed vectors and disable the capability. Safe to
+ * call when not armed (no-op).
+ */
+void ena_plat_msix_disarm(void)
+{
+	volatile uint32_t *pba;
+	uint32_t i;
+	uint32_t msg_ctrl;
+
+	if (!s_msix.armed)
+		return;
+
+	pba = (volatile uint32_t *)s_msix.loc.pba;
+	for (i = 0; i < s_msix.nvec; i++) {
+		/* Re-mask the vector in the PBA, then release it. */
+		pba[i / 32] |= 1u << (i % 32);
+		uk_intctlr_irq_unregister(s_msix.irqs[i], msix_tramp);
+		uk_intctlr_msix_free(s_msix.irqs[i]);
+	}
+
+	msg_ctrl = plat_pci_cfg_read(s_msix.loc.pci_dev,
+				    s_msix.loc.msgctl_off);
+	msg_ctrl |= 0x1u; /* Disable the capability: set the masked bit. */
+	plat_pci_cfg_write(s_msix.loc.pci_dev, s_msix.loc.msgctl_off,
+		       msg_ctrl);
+	s_msix.armed = 0;
+	s_msix.nvec = 0;
+	ena_info("msix: disarmed");
+}
+
+/* Total MSI-X interrupts delivered since arm. */
+uint32_t ena_plat_msix_count_get(void)
+{
+	uint32_t total = 0;
+	uint32_t i;
+
+	for (i = 0; i < s_msix.nvec; i++)
+		total += s_msix.count[i];
+	return total;
+}
+
+/*
+ * The number of vectors currently armed. Zero means the
+ * platform is in software polling mode.
+ */
+uint32_t ena_plat_msix_state(void)
+{
+	return s_msix.armed ? s_msix.nvec : 0;
 }
 
 void *ena_dma_alloc(size_t size, uint64_t *phys_out)

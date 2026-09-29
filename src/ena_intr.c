@@ -12,6 +12,66 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef __Unikraft__
+/*
+ * The platform layer keeps a static copy of the arm request,
+ * so this callback can keep the adapter in its argument.
+ */
+static void msix_on_fire(void *arg, uint32_t vector_id)
+{
+	struct ena_adapter *adapter = arg;
+
+	if (vector_id < adapter->num_irq_vectors)
+		adapter->irq_vectors[vector_id].intr_count++;
+}
+
+/*
+ * Arm the device MSI-X capability. The driver allocates one
+ * unikernel vector per MSI-X vector. It targets each vector at
+ * the core that polls the queue that vector reports. Core i-1
+ * polls queue i-1. The driver then unmasks the capability.
+ */
+static int msix_arm_device(struct ena_adapter *adapter,
+			   const struct pci_address *bdf)
+{
+	struct ena_msix_req req;
+	uint32_t nvec;
+	uint32_t i;
+	int ncpus;
+	int ret;
+
+	nvec = adapter->num_irq_vectors;
+	if (nvec == 0)
+		return -ENODEV;
+
+	memset(&req, 0, sizeof(req));
+	req.pci_dev = bdf;
+	req.nvec = nvec;
+	req.on_fire = msix_on_fire;
+	req.arg = adapter;
+
+/*
+ * Take the lcpu target count from the configured max core
+ * count. Use one core when the count is absent.
+ */
+#if defined(CONFIG_UKPLAT_CPU_MAXCOUNT) && (CONFIG_UKPLAT_CPU_MAXCOUNT > 0)
+	ncpus = (int)CONFIG_UKPLAT_CPU_MAXCOUNT;
+#else
+	ncpus = 1;
+#endif
+	if (ncpus < 1)
+		ncpus = 1;
+
+	for (i = 0; i < nvec; i++)
+		req.lcpu[i] = (i == 0) ? 0 : (i - 1) % (uint32_t)ncpus;
+
+	ret = ena_plat_msix_arm(&req);
+	if (ret)
+		ena_err("msix: device arm failed (%d)", ret);
+	return ret;
+}
+#endif /* __Unikraft__ */
+
 int ena_intr_msix_init(struct ena_adapter *adapter, uint32_t num_vectors)
 {
 	uint32_t i;
@@ -47,6 +107,11 @@ void ena_intr_msix_fini(struct ena_adapter *adapter)
 {
 	if (!adapter || !adapter->irq_vectors)
 		return;
+
+#ifdef __Unikraft__
+/* Release any armed platform vectors before the table goes. */
+	ena_plat_msix_disarm();
+#endif
 
 	ena_intr_mask_all(adapter);
 	free(adapter->irq_vectors);
@@ -86,6 +151,24 @@ int ena_intr_setup(struct ena_adapter *adapter, void *pci_dev)
 	/* Enable the device interrupt for the admin/AENQ vector (vector 0).
 	 * IO queue vectors stay masked until their queues are active. */
 	ena_intr_unmask_vector(adapter, 0);
+
+#ifdef __Unikraft__
+/*
+ * Arm the real MSI-X capability (table, PBA, unmask). The
+ * platform pci_dev handle is the PCI bus/device/function. On
+ * failure the driver stays in software polling mode.
+ */
+{
+		const struct pci_address *bdf = (const struct pci_address *)pci_dev;
+
+		ret = msix_arm_device(adapter, bdf);
+		if (ret) {
+			ena_warn("msix: arm failed (%d), using software polling", ret);
+			ena_intr_msix_fini(adapter);
+			return ret;
+		}
+}
+#endif
 
 	ena_info("msix: %u vectors active (admin vector enabled)", (unsigned)nvec);
 	return 0;
