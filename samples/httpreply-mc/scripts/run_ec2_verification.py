@@ -518,7 +518,7 @@ def main():
     snapshot_id = None
     eip_allocation_id = None
     gate_failed = False
-    date_str = "2026-09-29"
+    date_str = "2026-09-30"
 
     try:
         disk_raw = create_bootable_disk(kernel_path, sample_dir)
@@ -587,6 +587,8 @@ def main():
                     diag = resp.read().decode("utf-8", errors="replace")
                     if "ALL_DONE" in diag:
                         bench_done = True
+                        if "GATE_FAIL" in diag:
+                            gate_failed = True
                         print("\n[SUCCESS] Benchmark run completed on client!")
                         break
             except Exception:
@@ -692,7 +694,7 @@ def main():
             print(f"[WARN] Could not retrieve cap.pcap: {e}")
 
         # Save JSON & CSV
-        date_str = "2026-09-29"
+        date_str = "2026-09-30"
         json_path = sample_dir / f"benchmark_results_{date_str}.json"
         csv_path = sample_dir / f"benchmark_results_{date_str}.csv"
 
@@ -706,6 +708,16 @@ def main():
             for row in benchmark_results:
                 writer.writerow(row)
         print(f"[SUCCESS] Saved results to {json_path} and {csv_path}")
+
+        if any(r.get("requests_sec", 0) > 0 for r in benchmark_results):
+            with open(sample_dir / "benchmark_results.json", "w") as f:
+                json.dump(benchmark_results, f, indent=2)
+            with open(sample_dir / "benchmark_results.csv", "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=csv_fields, extrasaction='ignore')
+                writer.writeheader()
+                for row in benchmark_results:
+                    writer.writerow(row)
+            print(f"[SUCCESS] Updated latest {sample_dir / 'benchmark_results.json'} and {sample_dir / 'benchmark_results.csv'}")
 
         # Capture EC2 console output of Unikraft instance
         print("Waiting 15s for console ring buffer to flush...")
