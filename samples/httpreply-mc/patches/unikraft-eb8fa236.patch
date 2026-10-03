@@ -51,24 +51,21 @@ index 9ce531b..2673c44 100644
 +uk_intctlr_msix_alloc
 +uk_intctlr_msix_free
 diff --git a/drivers/ukintctlr/xpic/include/uk/intctlr/limits.h b/drivers/ukintctlr/xpic/include/uk/intctlr/limits.h
-index 6e748f0..9d52f8c 100644
+index 6e748f0..ca006cd 100644
 --- a/drivers/ukintctlr/xpic/include/uk/intctlr/limits.h
 +++ b/drivers/ukintctlr/xpic/include/uk/intctlr/limits.h
-@@ -6,11 +6,24 @@
+@@ -6,11 +6,21 @@
  #ifndef __UK_INTCTLR_XPIC_LIMITS_H__
  #define __UK_INTCTLR_XPIC_LIMITS_H__
  
 -#define UK_INTCTLR_FIRST_ALLOCABLE_IRQ			16
 -#define UK_INTCTLR_LAST_ALLOCABLE_IRQ			224
 +/*
-+*
-+ * The wake IPI uses irq 208 (vector 0xF0), and the per-vCPU LAPIC
-+ * one-shot timer keeps vector 0x30 (irq 16). Both bands stay
-+ * outside the allocatable pool, so an allocated MSI-X or device
-+ * vector can never collide with either. The IPI band no longer
-+ * shares a vector with the one-shot band, so a pending IPI can
-+ * no longer drop a one-shot tick in the KVM xAPIC. [Ticket 1152cbcaca]
-+*
++ * The per-vCPU LAPIC one-shot timer keeps irq 16 (vector 0x30).
++ * That band stays outside the allocatable pool, so an allocated
++ * MSI-X or device vector can never collide with it.
++ * [Ticket a5b91e7993]
++ *
 + * The allocatable pool spans irq 20..207, that is vectors 52..239.
 + * Vectors 240..254 stay outside the pool. The spurious vector 255
 + * stays outside the pool.
@@ -302,7 +299,7 @@ index 7e8b51a..26094d2 100644
  	uk_arch_x86_64_outb(port, uk_arch_x86_64_inb(port) & ~(1 << IRQ_OFFSET(irq)));
  }
 diff --git a/drivers/ukintctlr/xpic/ukintctlr.c b/drivers/ukintctlr/xpic/ukintctlr.c
-index 6a04e3b..2674d98 100644
+index 6a04e3b..c117aa0 100644
 --- a/drivers/ukintctlr/xpic/ukintctlr.c
 +++ b/drivers/ukintctlr/xpic/ukintctlr.c
 @@ -11,56 +11,58 @@
@@ -398,6 +395,20 @@ index 6a04e3b..2674d98 100644
  #endif /* CONFIG_LIBUKINTCTLR_APIC */
  
  #include "pic.h"
+@@ -90,7 +92,12 @@ static int uk_intctlr_xpic_handle_irq(void *data)
+ 	 * soon as we fully implement APIC and get rid of
+ 	 * PIC
+ 	 */
+-	if (irq <= 16)
++	/*
++	 * The 8259 decodes irq 0..15 only. The per-vCPU LAPIC
++	 * timer uses irq 16: it must not send an EOI to the
++	 * 8259. [Ticket a5b91e7993]
++	 */
++	if (irq <= 15)
+ 		pic_ack_irq(irq);
+ #else   /* !CONFIG_LIBUKINTCTLR_APIC */
+ 	pic_ack_irq(irq);
 diff --git a/lib/posix-fdio/fdctl.c b/lib/posix-fdio/fdctl.c
 index 04bc0ed..1cbb4b6 100644
 --- a/lib/posix-fdio/fdctl.c
@@ -1377,18 +1388,276 @@ index fc156a0..5ad621f 100644
  }
  
 diff --git a/plat/kvm/x86/tscclock.c b/plat/kvm/x86/tscclock.c
-index eb89f76..8278c41 100644
+index eb89f76..e9e3111 100644
 --- a/plat/kvm/x86/tscclock.c
 +++ b/plat/kvm/x86/tscclock.c
-@@ -56,6 +56,7 @@
+@@ -55,7 +55,10 @@
+ #include <stdint.h>
  
  #include <uk/arch/util.h>
++#include <uk/arch/x86_64.h>
++#include <uk/intctlr.h>
  #include <uk/lcpu.h>
 +#include <uk/pcpuvar.h>
  #include <uk/plat/time.h>
  #include <uk/timeconv.h>
  #include <uk/print.h>
-@@ -388,12 +389,41 @@ static void tscclock_cpu_block(__u64 until)
+@@ -316,6 +319,217 @@ __u64 tscclock_epochoffset(void)
+  */
+ #define PIT_MIN_DELTA	16
+ 
++/*
++ * Per-vCPU LAPIC one-shot wake. [Ticket a5b91e7993]
++ *
++ * The i8254 one-shot reaches only vCPU 0. Its output is wired to
++ * the 8259, and the hypervisor routes that interrupt to the boot
++ * CPU. A halted secondary core then has no wake source, so its
++ * device queue goes unpolled. The local APIC timer is per-vCPU.
++ * Arm it in one-shot mode for the sleep, so each core is woken by
++ * its own timer.
++ *
++ * The platform runs the local APIC in xAPIC (MMIO) mode: the boot
++ * code forces that mode in except.c, in the xpic driver, and in
++ * lcpu.c, because the x2APIC TSC-deadline timer raises #GP on this
++ * hypervisor. The one-shot LVT path is a different code path. The
++ * prepare step below prints the APIC base MSR (bit 10 shows the
++ * mode) and probes the one-shot path once per core: it arms a
++ * masked one-shot and checks that the current-count register runs
++ * down. If the probe fails, the code keeps the i8254 arm.
++ */
++
++#define APIC_LVT_TIMER_REG     0x320
++#define APIC_TIMER_ICR_REG     0x380
++#define APIC_TIMER_CCR_REG     0x390
++#define APIC_TIMER_DCR_REG     0x3E0
++#define APIC_LVT_MASKED        (1u << 16)
++/* Timer mode bits 18:17: 00 one-shot, 01 TSC-deadline, 10 periodic. */
++#define APIC_LVT_TIMER_ONESHOT 0u
++/* The timer vector sits at irq 16, outside the allocatable pool. */
++#define APIC_TIMER_IRQ         16
++#define APIC_TIMER_VECTOR      (32 + APIC_TIMER_IRQ)
++/* Divide configuration: divide by one (P6 and later encoding). */
++#define APIC_TIMER_DIV1        0xB
++
++/* Probe and calibration windows, ns. */
++#define LAPIC_PROBE_NS         1000000ULL
++#define LAPIC_CAL_NS           1000000ULL
++
++/*
++ * A longer sleep uses the maximum one-shot count; the caller loop
++ * re-arms for the rest. The cap also keeps the delta times the
++ * multiplier product inside 64 bits.
++ */
++#define LAPIC_MAX_DELTA_NS     200000000ULL
++
++/* Do not halt for a delta below about 2 us. */
++#define LAPIC_MIN_DELTA_NS     2000ULL
++
++#define LAPIC_MAX_CPUS         16
++
++/* Per-CPU state, indexed by the lcpu id. */
++static __u64 lapic_mmio_base[LAPIC_MAX_CPUS];
++/* Ticks per ns, 32 fractional bits. Valid when lapic_ready is set. */
++static __u64 lapic_mult[LAPIC_MAX_CPUS];
++static unsigned int lapic_tried[LAPIC_MAX_CPUS];
++static unsigned int lapic_ready[LAPIC_MAX_CPUS];
++static unsigned int lapic_timer_irq_registered;
++
++static inline __u32 lapic_reg_read(__u64 base, unsigned int off)
++{
++	return *(volatile __u32 *)((volatile __u8 *)base + off);
++}
++
++static inline void lapic_reg_write(__u64 base, unsigned int off, __u32 val)
++{
++	*(volatile __u32 *)((volatile __u8 *)base + off) = val;
++}
++
++/*
++ * Handler for the per-vCPU timer vector. The wake is the interrupt
++ * that ends the halt. The xpic dispatch writes the APIC EOI after
++ * this handler returns.
++ */
++static int lapic_timer_handler(void *arg __unused)
++{
++	return 1;
++}
++
++/*
++ * Detect the APIC mode, probe the one-shot path, and measure the
++ * tick rate. Runs once per core, with interrupts disabled, from
++ * the first halt of that core.
++ */
++static void tscclock_lapic_prepare(void)
++{
++	unsigned int id = uk_pcpuvar_current_get(uk_pcpuvar_cpu_id);
++	__u32 lo = 0, hi = 0;
++	__u64 base;
++	__u32 c0, c1;
++	__nsec t0, t1;
++
++	if (id >= LAPIC_MAX_CPUS)
++		return;
++	if (lapic_tried[id])
++		return;
++	lapic_tried[id] = 1;
++
++	uk_arch_x86_64_rdmsr(UK_ARCH_X86_64_APIC_MSR_BASE, &lo, &hi);
++	uk_pr_info("kvm: cpu %u APIC base MSR 0x%08x%08x: EN=%u EXTD(x2apic)=%u\n",
++		   id, hi, lo, (lo >> 11) & 1u, (lo >> 10) & 1u);
++
++	if (!(lo & UK_ARCH_X86_64_APIC_BASE_EN)) {
++		uk_pr_warn("kvm: cpu %u local APIC not enabled; using i8254 wake\n",
++			   id);
++		return;
++	}
++	if (lo & UK_ARCH_X86_64_APIC_BASE_EXTD) {
++		uk_pr_warn("kvm: cpu %u local APIC in x2APIC mode; one-shot probe not attempted; using i8254 wake\n",
++			   id);
++		return;
++	}
++
++	base = (((__u64)hi << 32) | (__u64)lo) & 0xFFFFF000UL;
++	if (!base)
++		base = 0xFEE00000UL;
++	lapic_mmio_base[id] = base;
++
++	/*
++	 * Probe: arm a masked one-shot with the maximum count. A
++	 * masked timer still counts down. If the current-count
++	 * register moves, the one-shot path is emulated.
++	 */
++	lapic_reg_write(base, APIC_TIMER_DCR_REG, APIC_TIMER_DIV1);
++	lapic_reg_write(base, APIC_LVT_TIMER_REG,
++			APIC_LVT_MASKED | APIC_LVT_TIMER_ONESHOT |
++			APIC_TIMER_VECTOR);
++	lapic_reg_write(base, APIC_TIMER_ICR_REG, 0xFFFFFFFFu);
++
++	t0 = ukplat_monotonic_clock();
++	while (ukplat_monotonic_clock() - t0 < LAPIC_PROBE_NS)
++		;
++	c0 = lapic_reg_read(base, APIC_TIMER_CCR_REG);
++	lapic_reg_write(base, APIC_TIMER_ICR_REG, 0);
++
++	if (c0 == 0xFFFFFFFFu) {
++		uk_pr_warn("kvm: cpu %u LAPIC one-shot probe failed: counter did not move; using i8254 wake\n",
++			   id);
++		return;
++	}
++
++	/* Calibration: sample the running counter over a short window. */
++	lapic_reg_write(base, APIC_LVT_TIMER_REG,
++			APIC_LVT_MASKED | APIC_LVT_TIMER_ONESHOT |
++			APIC_TIMER_VECTOR);
++	lapic_reg_write(base, APIC_TIMER_ICR_REG, 0xFFFFFFFFu);
++	c0 = lapic_reg_read(base, APIC_TIMER_CCR_REG);
++	t0 = ukplat_monotonic_clock();
++	while (ukplat_monotonic_clock() - t0 < LAPIC_CAL_NS)
++		;
++	c1 = lapic_reg_read(base, APIC_TIMER_CCR_REG);
++	t1 = ukplat_monotonic_clock();
++	lapic_reg_write(base, APIC_TIMER_ICR_REG, 0);
++
++	if (c0 <= c1 || t1 <= t0) {
++		uk_pr_warn("kvm: cpu %u LAPIC one-shot calibration failed; using i8254 wake\n",
++			   id);
++		return;
++	}
++
++	lapic_mult[id] = ((__u64)(c0 - c1) << 32) / (__u64)(t1 - t0);
++
++	if (!lapic_timer_irq_registered) {
++		if (uk_intctlr_irq_register(APIC_TIMER_IRQ,
++					   lapic_timer_handler, __NULL) < 0) {
++			uk_pr_warn("kvm: cpu %u failed to register timer irq %u; using i8254 wake\n",
++				   id, APIC_TIMER_IRQ);
++			return;
++		}
++		lapic_timer_irq_registered = 1;
++	}
++
++	lapic_ready[id] = 1;
++	uk_pr_info("kvm: cpu %u LAPIC one-shot wake ready: %u ticks/us\n",
++		   id, (unsigned int)((lapic_mult[id] * 1000ULL) >> 32));
++}
++
++/*
++ * Halt this core until the deadline, armed on its own LAPIC
++ * one-shot. Returns after any interrupt, like the i8254 path.
++ */
++static void tscclock_cpu_block_lapic(unsigned int id, __u64 delta_ns)
++{
++	__u64 ticks;
++
++	if (delta_ns < LAPIC_MIN_DELTA_NS) {
++		/*
++		 * Too short to program. Spin with interrupts briefly
++		 * enabled, as the i8254 path does.
++		 */
++		uk_lcpu_enable_irq();
++		uk_arch_x86_64_nop(); /* ints are enabled 1 instr after sti */
++		uk_lcpu_disable_irq();
++		return;
++	}
++
++	if (delta_ns > LAPIC_MAX_DELTA_NS)
++		ticks = 0xFFFFFFFFULL;
++	else
++		ticks = (delta_ns * lapic_mult[id]) >> 32;
++	if (ticks == 0)
++		ticks = 1;
++	if (ticks > 0xFFFFFFFFULL)
++		ticks = 0xFFFFFFFFULL;
++
++	lapic_reg_write(lapic_mmio_base[id], APIC_LVT_TIMER_REG,
++			APIC_LVT_TIMER_ONESHOT | APIC_TIMER_VECTOR);
++	lapic_reg_write(lapic_mmio_base[id], APIC_TIMER_ICR_REG,
++			(__u32)ticks);
++
++	uk_lcpu_halt_irq();
++}
++
+ /*
+  * Returns early if any interrupts are serviced, or if the requested delay is
+  * too short. Must be called with interrupts disabled, will enable interrupts
+@@ -332,17 +546,35 @@ static void tscclock_cpu_block(__u64 until)
+ 	__u64 now, delta_ns;
+ 	__u64 delta_ticks;
+ 	unsigned int ticks;
++	unsigned int id;
+ 
+ 	UK_ASSERT(uk_lcpu_irqs_disabled());
+ 
+ 	now = ukplat_monotonic_clock();
++	delta_ns = until - now;
++
++	/*
++	 * Prefer the per-vCPU LAPIC one-shot: it wakes this core.
++	 * The i8254 path below reaches only vCPU 0. The prepare
++	 * step runs once per core and probes the one-shot path;
++	 * if it fails, this core keeps the i8254 arm.
++	 * [Ticket a5b91e7993]
++	 */
++	id = uk_pcpuvar_current_get(uk_pcpuvar_cpu_id);
++	if (id < LAPIC_MAX_CPUS) {
++		if (!lapic_tried[id])
++			tscclock_lapic_prepare();
++		if (lapic_ready[id]) {
++			tscclock_cpu_block_lapic(id, delta_ns);
++			return;
++		}
++	}
+ 
+ 	/*
+ 	 * Compute delta in PIT ticks. Return if it is less than minimum safe
+ 	 * amount of ticks.  Essentially this will cause us to spin until
+ 	 * the timeout.
+ 	 */
+-	delta_ns = until - now;
+ 	delta_ticks = uk_arch_x86_64_mul64_32(delta_ns, pit_mult);
+ 	if (delta_ticks < PIT_MIN_DELTA) {
+ 		/*
+@@ -388,12 +620,41 @@ static void tscclock_cpu_block(__u64 until)
  
  unsigned long sched_have_pending_events;
  
