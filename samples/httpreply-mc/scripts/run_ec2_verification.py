@@ -399,10 +399,14 @@ fi
 echo "Starting wrk sweep $(date)..." > /root/wrk_sweep.log
 
 CONCS="10 25 50 100 200"
+STEP_N=0
 for c in $CONCS; do
-    CURL_CODE=$(curl -s -o /dev/null -w "%{{http_code}}" --max-time 3 http://{TARGET_PRIVATE_IP}/ || echo "FAIL")
+    CURL_CODE=$(curl -s -o /dev/null -w "code=%{{http_code}} t=%{{time_total}}s" --max-time 3 http://{TARGET_PRIVATE_IP}/ || echo FAIL)
     echo "=== STEP s1 c=$c start (ping=$CURL_CODE) $(date) ===" | tee -a /root/wrk_sweep.log
     RC=0
+    STEP_N=$((STEP_N + 1))
+    (timeout 40s tcpdump -i any -nn -c 150000 "tcp port 80 and host {TARGET_PRIVATE_IP}" > /root/cap_$STEP_N.txt 2>&1 &)
+    sleep 2
     timeout --kill-after=5s 45s wrk -t2 -c$c -d30s --latency http://{TARGET_PRIVATE_IP}/ > /root/wrk_s1_c$c.txt 2>&1 || RC=$?
     echo "=== STEP s1 c=$c end rc=$RC $(date) ===" | tee -a /root/wrk_sweep.log
     echo "STEP_DONE c=$c rc=$RC" >> /root/diag.txt
@@ -526,6 +530,26 @@ def main():
         ami_id = register_ami(snapshot_id)
 
         target_id, target_pub_ip = launch_target_instance(ami_id)
+
+        # Early boot-console capture. The probe, reset, and MSI-X arm
+        # logs scroll out of the 64 KB console ring once the heartbeat
+        # loop runs, so grab the ring now, before the benchmark.
+        try:
+            print("[INFO] Waiting 45s for boot/probe logs (console API lag), then capturing console...")
+            time.sleep(45)
+            boot_out = run_cmd([
+                "aws", "ec2", "get-console-output",
+                "--instance-id", target_id,
+                "--latest",
+                "--region", AWS_REGION,
+                "--output", "json",
+            ])
+            boot_text = json.loads(boot_out).get("Output", "")
+            boot_path = sample_dir / f"unikraft_console_boot_{date_str}.txt"
+            boot_path.write_text(boot_text)
+            print(f"[SUCCESS] Saved {len(boot_text)} bytes of boot console to {boot_path}")
+        except Exception as exc:
+            print(f"[WARN] Early boot-console capture failed: {exc}")
 
         # The public-IP path in this VPC black-holes (stale ENI
         # associations), so it is probed once, for diagnostics only.
@@ -652,6 +676,17 @@ def main():
         # Download wrk output files and parse metrics
         concurrencies = [10, 25, 50, 100, 200]
         benchmark_results = []
+        try:
+            for i in range(1, len(concurrencies) + 1):
+                try:
+                    with urllib.request.urlopen(f"http://{client_pub_ip}/cap_{i}.txt", timeout=5) as resp:
+                        cap = resp.read().decode("utf-8", errors="replace")
+                        (sample_dir / f"client_tcpdump_step{i}.txt").write_text(cap)
+                        print(f"[INFO] Downloaded client_tcpdump_step{i}.txt")
+                except Exception as e:
+                    print(f"[WARN] Could not retrieve cap_{i}.txt: {e}")
+        except Exception as e:
+            print(f"[WARN] cap retrieval failed: {e}")
         for c in concurrencies:
             fname = f"wrk_s1_c{c}.txt"
             try:
