@@ -361,6 +361,59 @@ static void test_rx_multi_descriptor_flags(void)
 	printf("[PASS] test_rx_multi_descriptor_flags passed\n");
 }
 
+static void test_rx_doorbell_rearm_across_wrap_and_idle(void)
+{
+	printf("[TEST] Running test_rx_doorbell_rearm_across_wrap_and_idle...\n");
+
+	struct mock_ena_hw hw;
+	struct ena_adapter adapter;
+	struct ena_ring *ring = NULL;
+	struct ena_rx_pkt pkts[8];
+	unsigned int refilled;
+
+	assert(setup_adapter(&hw, &adapter) == 0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 8, 8, &ring) == 0);
+	assert(ena_ring_create_hw(ring, 0) == 0);
+
+	/* Fill the ring. The doorbell must carry the submission pointer. */
+	assert(ena_rx_refill(ring, 8, mock_alloc_netbuf_helper, NULL, &refilled) == 8);
+	assert(ring->sq_tail == 8);
+	assert(mock_ena_hw_get_reg32(&hw, ring->sq_db_offset) == 8);
+
+	/* Drain all eight, then refill across the ring wrap. The
+	 * doorbell value tracks the unmasked submission pointer. */
+	mock_ena_hw_emulate_rx(&hw, ring, 8, 100, 0, 0);
+	assert(ena_rx_poll(ring, pkts, 8) == 8);
+	assert(ena_rx_refill(ring, 8, mock_alloc_netbuf_helper, NULL, &refilled) == 8);
+	assert(ring->sq_tail == 16);
+	assert(ring->sq_phase == 1);
+	assert(mock_ena_hw_get_reg32(&hw, ring->sq_db_offset) == 16);
+
+	/* Idle: the ring is full, so no buffer can be posted. The
+	 * driver must still re-publish the submission pointer, or the
+	 * device never re-arms its RX fetch after the idle period.
+	 * The sentinel shows whether a doorbell write happened. */
+	mock_ena_hw_set_reg32(&hw, ring->sq_db_offset, 0xDEADBEEFu);
+	assert(ena_rx_refill(ring, 0, mock_alloc_netbuf_helper, NULL, &refilled) == 0);
+	assert(refilled == 0);
+	assert(mock_ena_hw_get_reg32(&hw, ring->sq_db_offset) == ring->sq_tail);
+
+	/* Resume: one completion arrives, the driver consumes it and
+	 * posts the freed slot. The doorbell stays equal to the
+	 * submission pointer. */
+	mock_ena_hw_emulate_rx(&hw, ring, 1, 120, 0, 0);
+	assert(ena_rx_poll(ring, pkts, 1) == 1);
+	assert(ena_rx_refill(ring, 1, mock_alloc_netbuf_helper, NULL, &refilled) == 1);
+	assert(ring->sq_tail == 17);
+	assert(mock_ena_hw_get_reg32(&hw, ring->sq_db_offset) == 17);
+
+	assert(ena_ring_destroy_hw(ring) == 0);
+	ena_ring_free(ring);
+	ena_admin_fini(&adapter);
+
+	printf("[PASS] test_rx_doorbell_rearm_across_wrap_and_idle passed\n");
+}
+
 int main(void)
 {
 	printf("========================================\n");
@@ -374,10 +427,11 @@ int main(void)
 	test_rx_checksum_and_frag_flags();
 	test_rx_phase_flip_multicycle();
 	test_rx_multi_descriptor_flags();
+	test_rx_doorbell_rearm_across_wrap_and_idle();
 	test_rx_invalid_args();
 
 	printf("========================================\n");
-	printf("ALL PHASE 6 RX TESTS PASSED (8/8)       \n");
+	printf("ALL PHASE 6 RX TESTS PASSED (9/9)       \n");
 	printf("========================================\n");
 	return 0;
 }

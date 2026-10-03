@@ -136,8 +136,13 @@ int ena_rx_refill(struct ena_ring *ring, unsigned int count,
 		refilled++;
 	}
 
-	if (refilled > 0)
-		ena_rx_doorbell(ring);
+	/* Always publish the current submission pointer. The device
+	 * learns about available RX buffers only from this write. A
+	 * full ring posts nothing new, but the write still re-arms
+	 * the device RX fetch after an idle period. The value equals
+	 * ring->sq_tail, so the available-buffer accounting does not
+	 * change. [Ticket 6069373755] */
+	ena_rx_doorbell(ring);
 
 	if (refilled_count)
 		*refilled_count = refilled;
