@@ -40,10 +40,10 @@ int ena_device_reset(struct ena_adapter *adapter)
 	if (!adapter || !adapter->bar0_base)
 		return -EINVAL;
 
-	/* Read-modify-write reset bit and reason code, preserving other DEV_CTL bits. */
+	/* Read-modify-write reset bit and reason code, preserving other DEV_CTL bits.
+	 * Reason 0 is NORMAL, the value used for an init reset. */
 	uint32_t ctl = ena_reg_read32(adapter->bar0_base + ENA_REGS_DEV_CTL_OFF);
 	ctl &= ~ENA_DEV_CTL_RESET_REASON_MASK;
-	ctl |= (1u << ENA_DEV_CTL_RESET_REASON_SHIFT);
 	ctl |= ENA_DEV_CTL_DEV_RESET_MASK;
 	ena_reg_write32(adapter->bar0_base + ENA_REGS_DEV_CTL_OFF, ctl);
 
@@ -56,6 +56,10 @@ int ena_device_wait_reset_complete(struct ena_adapter *adapter, unsigned int max
 		return -EINVAL;
 	if (max_polls == 0)
 		max_polls = 1;
+
+	/* The upstream driver sleeps 100 ms before the first status
+	 * read. A reset takes tens of milliseconds at least. */
+	ena_delay_us(100000);
 
 	/* Bounded poll for reset completion (or a fatal error). A short
 	 * delay between reads makes the budget time-based, so a real reset

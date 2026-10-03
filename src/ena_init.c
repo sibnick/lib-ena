@@ -303,6 +303,13 @@ int ena_init_config_llq(struct ena_adapter *adapter)
 		return 0;
 	}
 
+	/*
+	 * [Ticket 1152cbcaca] The LLQ push path loses TX after idle on
+	 * EC2 hosts. Keep the standard host-memory SQ path.
+	 */
+	ena_info("LLQ: disabled (post-idle TX loss), using standard SQ path");
+	return 0;
+
 	ena_info("LLQ: max_llq_num=%u max_llq_depth=%u header_loc=0x%x entry_size=0x%x",
 		 llq.max_llq_num, llq.max_llq_depth,
 		 llq.header_location_ctrl_supported, llq.entry_size_ctrl_supported);
@@ -355,6 +362,64 @@ int ena_init_config_llq(struct ena_adapter *adapter)
 	return 0;
 }
 
+int ena_init_config_aenq(struct ena_adapter *adapter)
+{
+	struct ena_admin_get_feat_inline get_req;
+	struct ena_admin_set_feat_aenq_inline set_req;
+	struct ena_admin_feature_aenq_desc aenq;
+	uint32_t resp[14];
+	uint32_t groups;
+	int ret;
+
+	if (!adapter)
+		return -EINVAL;
+
+	/* The feature must appear in the device supported_features
+	 * bitmap. Real ENA devices on EC2 advertise it. */
+	if ((adapter->supported_features & (1u << ENA_ADMIN_AENQ_CONFIG)) == 0) {
+		ena_info("aenq: device does not advertise AENQ_CONFIG, events stay disabled");
+		return 0;
+	}
+
+	memset(&get_req, 0, sizeof(get_req));
+	get_req.feat_common.flags = ENA_ADMIN_FEAT_SELECT_CURRENT;
+	get_req.feat_common.feature_id = ENA_ADMIN_AENQ_CONFIG;
+
+	memset(resp, 0, sizeof(resp));
+	ret = ena_init_exec(adapter, ENA_ADMIN_GET_FEATURE, &get_req,
+			    sizeof(get_req), resp, sizeof(resp));
+	if (ret) {
+		ena_warn("aenq: get config failed (%d), events stay disabled", ret);
+		return 0;
+	}
+
+	memcpy(&aenq, resp, sizeof(aenq));
+	groups = aenq.supported_groups & ENA_ADMIN_AENQ_GROUPS_ALL;
+	if (groups == 0) {
+		ena_info("aenq: device reports no event groups");
+		return 0;
+	}
+
+	memset(&set_req, 0, sizeof(set_req));
+	set_req.feat_common.flags = ENA_ADMIN_FEAT_SELECT_CURRENT;
+	set_req.feat_common.feature_id = ENA_ADMIN_AENQ_CONFIG;
+	set_req.aenq.supported_groups = aenq.supported_groups;
+	set_req.aenq.enabled_groups = groups;
+
+	ret = ena_init_exec(adapter, ENA_ADMIN_SET_FEATURE, &set_req,
+			    sizeof(set_req), NULL, 0);
+	if (ret) {
+		ena_warn("aenq: set config failed (%d), events stay disabled", ret);
+		return 0;
+	}
+
+	adapter->aenq_enabled_groups = groups;
+	ena_info("aenq: enabled groups 0x%x (supported 0x%x, keep_alive %s)",
+		 groups, aenq.supported_groups,
+		 (groups & ENA_ADMIN_AENQ_GROUP_KEEP_ALIVE) ? "on" : "off");
+	return 0;
+}
+
 int ena_init_run(struct ena_adapter *adapter, uint32_t mtu)
 {
 	int ret;
@@ -373,6 +438,10 @@ int ena_init_run(struct ena_adapter *adapter, uint32_t mtu)
 	ret = ena_init_set_host_info(adapter);
 	if (ret)
 		return ret;
+
+	/* Best-effort: enable AENQ events (keep-alive carries the
+	 * device-side drop counters). [Ticket 1152cbcaca] */
+	ena_init_config_aenq(adapter);
 
 	ret = ena_init_config_llq(adapter);
 	if (ret)

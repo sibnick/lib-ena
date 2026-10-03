@@ -164,6 +164,15 @@ static int ena_netdev_start_rings_hw(struct ena_adapter *adapter,
 		}
 	}
 
+	/*
+	 * Unmask the IO queue interrupts now that the queues exist.
+	 * The device delivers the first interrupt per queue without
+	 * this write, but the write is idempotent and makes the
+	 * unmasked state explicit.
+	 */
+	if (adapter->irq_vectors)
+		ena_intr_unmask_all(adapter);
+
 	return 0;
 
 err_rollback:
@@ -899,7 +908,9 @@ int ena_netdev_rx_one(struct uk_netdev *dev,
 	if (queue->queue_id == 0)
 		ena_netdev_drain_aenq(&edev->adapter);
 
-	/* Reap TX completions for this queue only. */
+	/* Reap TX completions for this queue only. Draining another
+	 * core's TX CQ frees that core's netbufs on this core's
+	 * per-core heap and corrupts the allocator. */
 	ena_netdev_poll_tx_completions_queue(&edev->adapter, queue->queue_id);
 
 	ring = queue->ring;
@@ -1757,6 +1768,292 @@ void ena_netdev_dump_queue(struct uk_netdev *dev, uint16_t qid)
  * Used by the httpreply-mc ACCEPTED log line to show whether accepted
  * connections follow the RSS queue distribution. [Ticket ba82aec88b]
  */
+/*
+ * Diagnostics: last device keep-alive report (AEN). [Ticket 1152cbcaca]
+ */
+void ena_netdev_aen_report(struct uk_netdev *dev, uint32_t *count,
+			   uint64_t *rx_drops, uint64_t *tx_drops)
+{
+	struct ena_adapter *adapter;
+
+	if (count)
+		*count = 0;
+	if (rx_drops)
+		*rx_drops = 0;
+	if (tx_drops)
+		*tx_drops = 0;
+	if (!dev)
+		return;
+
+#ifdef __Unikraft__
+	adapter = &to_enadevice(dev)->adapter;
+#else
+	adapter = dev->adapter;
+#endif
+
+	if (!adapter)
+		return;
+	if (count)
+		*count = adapter->aen_keepalives;
+	if (rx_drops)
+		*rx_drops = adapter->aen_rx_drops;
+	if (tx_drops)
+		*tx_drops = adapter->aen_tx_drops;
+}
+
+/*
+ * Read the device-side counters with the GET_STATS admin command.
+ * Basic counters (rx_drops, tx_drops, packet totals) are always read.
+ * ENI counters are read only when the device advertises the ENI_STATS
+ * capability (device attributes bit 0). [Ticket 1152cbcaca]
+ */
+int ena_netdev_dev_stats(struct uk_netdev *dev,
+			 uint64_t *rx_drops, uint64_t *tx_drops,
+			 uint64_t *rx_pkts, uint64_t *tx_pkts,
+			 uint64_t *eni, int *eni_valid)
+{
+	struct ena_adapter *adapter;
+	struct ena_admin_basic_stats basic;
+	int ret;
+
+	if (eni_valid)
+		*eni_valid = 0;
+
+	if (!dev)
+		return -EINVAL;
+
+#ifdef __Unikraft__
+	adapter = &to_enadevice(dev)->adapter;
+#else
+	adapter = dev->adapter;
+#endif
+
+	if (!adapter)
+		return -EINVAL;
+
+	memset(&basic, 0, sizeof(basic));
+	ret = ena_admin_get_basic_stats(adapter, &basic);
+	if (ret)
+		return ret;
+
+	if (rx_drops)
+		*rx_drops = ((uint64_t)basic.rx_drops_high << 32) |
+			    basic.rx_drops_low;
+	if (tx_drops)
+		*tx_drops = ((uint64_t)basic.tx_drops_high << 32) |
+			    basic.tx_drops_low;
+	if (rx_pkts)
+		*rx_pkts = ((uint64_t)basic.rx_pkts_high << 32) |
+			   basic.rx_pkts_low;
+	if (tx_pkts)
+		*tx_pkts = ((uint64_t)basic.tx_pkts_high << 32) |
+			   basic.tx_pkts_low;
+
+	if (eni && (adapter->attr_caps & (1u << 0))) {
+		struct ena_admin_eni_stats eni_stats;
+
+		memset(&eni_stats, 0, sizeof(eni_stats));
+		if (ena_admin_get_eni_stats(adapter, &eni_stats) == 0) {
+			eni[0] = eni_stats.bw_in_allowance_exceeded;
+			eni[1] = eni_stats.bw_out_allowance_exceeded;
+			eni[2] = eni_stats.pps_allowance_exceeded;
+			eni[3] = eni_stats.conntrack_allowance_exceeded;
+			eni[4] = eni_stats.linklocal_allowance_exceeded;
+			if (eni_valid)
+				*eni_valid = 1;
+		}
+	}
+
+	return 0;
+}
+
+/*
+ * Diagnostics: RX descriptors posted but not yet consumed, and refill
+ * errors, for one receive queue. A posted count near zero while the
+ * link is idle means the host stopped offering buffers.
+ * [Ticket 1152cbcaca]
+ */
+uint32_t ena_netdev_rx_posted(struct uk_netdev *dev, uint16_t qid)
+{
+	struct ena_adapter *adapter;
+	struct ena_ring *ring;
+
+	if (!dev)
+		return 0xFFFFFFFFu;
+
+#ifdef __Unikraft__
+	adapter = &to_enadevice(dev)->adapter;
+#else
+	adapter = dev->adapter;
+#endif
+
+	if (!adapter || !adapter->rx_rings)
+		return 0xFFFFFFFFu;
+	if (qid >= adapter->num_rx_rings || !adapter->rx_rings[qid])
+		return 0xFFFFFFFFu;
+
+	ring = adapter->rx_rings[qid];
+	return (uint32_t)((ring->sq_tail - ring->sq_head) &
+			  (uint16_t)(ring->sq_depth - 1));
+}
+
+/*
+ * Diagnostics: raw TX ring accounting. [Ticket 1152cbcaca]
+ */
+void ena_netdev_tx_ring_state(struct uk_netdev *dev, uint16_t qid,
+			      uint32_t *free_reqs, uint32_t *inflight,
+			      uint32_t *sq_tail, uint32_t *cq_head)
+{
+	struct ena_adapter *adapter;
+	struct ena_ring *ring;
+	uint32_t i, inf = 0;
+
+	if (free_reqs) *free_reqs = 0;
+	if (inflight) *inflight = 0;
+	if (sq_tail) *sq_tail = 0;
+	if (cq_head) *cq_head = 0;
+	if (!dev)
+		return;
+
+#ifdef __Unikraft__
+	adapter = &to_enadevice(dev)->adapter;
+#else
+	adapter = dev->adapter;
+#endif
+
+	if (!adapter || !adapter->tx_rings)
+		return;
+	if (qid >= adapter->num_tx_rings || !adapter->tx_rings[qid])
+		return;
+
+	ring = adapter->tx_rings[qid];
+	if (ring->req_in_flight) {
+		for (i = 0; i < ring->sq_depth; i++)
+			if (ring->req_in_flight[i])
+				inf++;
+	}
+	if (free_reqs) *free_reqs = ring->free_req_count;
+	if (inflight) *inflight = inf;
+	if (sq_tail) *sq_tail = ring->sq_tail;
+	if (cq_head) *cq_head = ring->cq_head;
+}
+
+/*
+ * Keep a quiet receive queue visible to the device. The device defers
+ * delivery on queues whose driver has been silent; rewriting the RX
+ * submission-queue doorbell with the current producer index tells the
+ * device the host buffers are still live. [Ticket 1152cbcaca]
+ */
+void ena_netdev_rx_kick(struct uk_netdev *dev, uint16_t qid)
+{
+	struct ena_adapter *adapter;
+	struct ena_ring *ring;
+
+	if (!dev)
+		return;
+
+#ifdef __Unikraft__
+	adapter = &to_enadevice(dev)->adapter;
+#else
+	adapter = dev->adapter;
+#endif
+
+	if (!adapter || !adapter->rx_rings)
+		return;
+	if (qid >= adapter->num_rx_rings || !adapter->rx_rings[qid])
+		return;
+
+	ring = adapter->rx_rings[qid];
+	if (ring->hw_valid && ring->sq_db)
+		ena_reg_write32(ring->sq_db, ring->sq_tail);
+}
+
+/*
+ * Diagnostics: raw RX ring accounting. [Ticket 1152cbcaca]
+ */
+void ena_netdev_rx_ring_state(struct uk_netdev *dev, uint16_t qid,
+			      uint32_t *free_reqs, uint32_t *inflight,
+			      uint32_t *sq_tail, uint32_t *sq_head,
+			      uint32_t *cq_head)
+{
+	struct ena_adapter *adapter;
+	struct ena_ring *ring;
+	uint32_t i, inf = 0;
+
+	if (free_reqs) *free_reqs = 0;
+	if (inflight) *inflight = 0;
+	if (sq_tail) *sq_tail = 0;
+	if (sq_head) *sq_head = 0;
+	if (cq_head) *cq_head = 0;
+	if (!dev)
+		return;
+
+#ifdef __Unikraft__
+	adapter = &to_enadevice(dev)->adapter;
+#else
+	adapter = dev->adapter;
+#endif
+
+	if (!adapter || !adapter->rx_rings)
+		return;
+	if (qid >= adapter->num_rx_rings || !adapter->rx_rings[qid])
+		return;
+
+	ring = adapter->rx_rings[qid];
+	if (ring->req_in_flight) {
+		for (i = 0; i < ring->sq_depth; i++)
+			if (ring->req_in_flight[i])
+				inf++;
+	}
+	if (free_reqs) *free_reqs = ring->free_req_count;
+	if (inflight) *inflight = inf;
+	if (sq_tail) *sq_tail = ring->sq_tail;
+	if (sq_head) *sq_head = ring->sq_head;
+	if (cq_head) *cq_head = ring->cq_head;
+}
+
+uint64_t ena_netdev_rx_dropped(struct uk_netdev *dev, uint16_t qid)
+{
+	struct ena_adapter *adapter;
+
+	if (!dev)
+		return 0;
+
+#ifdef __Unikraft__
+	adapter = &to_enadevice(dev)->adapter;
+#else
+	adapter = dev->adapter;
+#endif
+
+	if (!adapter || !adapter->rx_rings)
+		return 0;
+	if (qid >= adapter->num_rx_rings || !adapter->rx_rings[qid])
+		return 0;
+
+	return adapter->rx_rings[qid]->rx_dropped;
+}
+
+uint64_t ena_netdev_rx_refill_err(struct uk_netdev *dev, uint16_t qid)
+{
+	struct ena_adapter *adapter;
+
+	if (!dev)
+		return 0;
+
+#ifdef __Unikraft__
+	adapter = &to_enadevice(dev)->adapter;
+#else
+	adapter = dev->adapter;
+#endif
+
+	if (!adapter || !adapter->rx_rings)
+		return 0;
+	if (qid >= adapter->num_rx_rings || !adapter->rx_rings[qid])
+		return 0;
+
+	return adapter->rx_rings[qid]->rx_refill_err;
+}
+
 unsigned long ena_netdev_rxq_pkts(struct uk_netdev *dev, uint16_t qid)
 {
 	struct ena_adapter *adapter;
@@ -1776,6 +2073,93 @@ unsigned long ena_netdev_rxq_pkts(struct uk_netdev *dev, uint16_t qid)
 		return 0;
 
 	return (unsigned long)adapter->rx_rings[qid]->rx_packets;
+}
+
+/*
+ * The CQ interrupt unmask register offset reported by CREATE_CQ
+ * for the given RX queue. Zero means the device reported no
+ * unmask register, so the driver never armed the queue interrupt.
+ */
+uint32_t ena_netdev_cq_unmask_off(struct uk_netdev *dev, uint16_t qid)
+{
+	struct ena_adapter *adapter;
+
+	if (!dev)
+		return 0xFFFFFFFFu;
+
+#ifdef __Unikraft__
+	adapter = &to_enadevice(dev)->adapter;
+#else
+	adapter = dev->adapter;
+#endif
+
+	if (!adapter || !adapter->rx_rings)
+		return 0xFFFFFFFFu;
+	if (qid >= adapter->num_rx_rings || !adapter->rx_rings[qid])
+		return 0xFFFFFFFFu;
+
+	return adapter->rx_rings[qid]->cq_unmask_db_offset;
+}
+
+/*
+ * Re-arm the CQ interrupt for the given RX queue (vector qid + 1).
+ * The sample heartbeat calls this while no MSI has been observed,
+ * to test whether a later unmask write latches when the write at
+ * ring creation does not.
+ */
+void ena_netdev_rearm_cq_intr(struct uk_netdev *dev, uint16_t qid)
+{
+	struct ena_adapter *adapter;
+
+	if (!dev)
+		return;
+
+#ifdef __Unikraft__
+	adapter = &to_enadevice(dev)->adapter;
+#else
+	adapter = dev->adapter;
+#endif
+
+	if (!adapter || !adapter->irq_vectors)
+		return;
+	if ((uint32_t)qid + 1u >= adapter->num_irq_vectors)
+		return;
+
+	ena_intr_unmask_vector(adapter, (uint32_t)qid + 1u);
+}
+
+void ena_netdev_ring_stats(struct uk_netdev *dev, uint16_t qid,
+			   uint32_t *tx_free, uint32_t *rx_posted,
+			   uint32_t *bounce_free)
+{
+	struct ena_adapter *adapter;
+
+	if (tx_free)
+		*tx_free = 0;
+	if (rx_posted)
+		*rx_posted = 0;
+	if (bounce_free)
+		*bounce_free = 0;
+	if (!dev)
+		return;
+
+#ifdef __Unikraft__
+	adapter = &to_enadevice(dev)->adapter;
+#else
+	adapter = dev->adapter;
+#endif
+
+	if (!adapter)
+		return;
+	if (tx_free && adapter->tx_rings && qid < adapter->num_tx_rings &&
+	    adapter->tx_rings[qid])
+		*tx_free = adapter->tx_rings[qid]->free_req_count;
+	if (rx_posted && adapter->rx_rings && qid < adapter->num_rx_rings &&
+	    adapter->rx_rings[qid]) {
+		struct ena_ring *r = adapter->rx_rings[qid];
+
+		*rx_posted = (uint32_t)(r->sq_tail - r->cq_head);
+	}
 }
 
 unsigned long ena_netdev_txq_pkts(struct uk_netdev *dev, uint16_t qid)

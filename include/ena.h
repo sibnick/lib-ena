@@ -46,6 +46,12 @@ struct ena_adapter {
 	size_t bar2_size;               /* Size of BAR2 MMIO space */
 	
 	enum ena_state state;           /* Driver lifecycle state */
+
+	/* Last AEN keep-alive report from the device. [Ticket 1152cbcaca] */
+	uint32_t aen_keepalives;
+	uint64_t aen_rx_drops;
+	uint64_t aen_tx_drops;
+	uint32_t aenq_enabled_groups;   /* AENQ group bitmap enabled on the device */
 	uint32_t version;               /* Device version from ENA_REGS_VERSION_OFF */
 	uint32_t controller_version;    /* Controller version */
 	uint32_t caps;                  /* Hardware capabilities */

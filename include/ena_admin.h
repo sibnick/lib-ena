@@ -196,10 +196,70 @@ enum ena_admin_aq_completion_status {
 	ENA_ADMIN_BAD_OPCODE		= 2,
 	ENA_ADMIN_UNSUPPORTED_OPCODE	= 3,
 	ENA_ADMIN_MALFORMED_REQUEST	= 4,
-	/* Additional status is provided in the ACQ extended_status field. */
+	/* Additional status is provided in ACQ extended_status */
 	ENA_ADMIN_ILLEGAL_PARAMETER	= 5,
 	ENA_ADMIN_UNKNOWN_ERROR		= 6,
 	ENA_ADMIN_RESOURCE_BUSY		= 7,
+};
+
+/* Statistics type for GET_STATS (ena_admin_defs.h,
+ * enum ena_admin_get_stats_type). */
+enum ena_admin_get_stats_type {
+	ENA_ADMIN_GET_STATS_TYPE_BASIC		= 0,
+	ENA_ADMIN_GET_STATS_TYPE_EXTENDED	= 1,
+	ENA_ADMIN_GET_STATS_TYPE_ENI		= 2,
+};
+
+/* Statistics scope (enum ena_admin_get_stats_scope). */
+enum ena_admin_get_stats_scope {
+	ENA_ADMIN_SPECIFIC_QUEUE	= 0,
+	ENA_ADMIN_ETH_TRAFFIC		= 1,
+};
+
+/* GET_STATS request payload. It fills the inline data region of an
+ * AQ entry after the common descriptor: the control buffer words
+ * (unused for BASIC and ENI), then the command fields. Modeled on
+ * ena_admin_defs.h struct ena_admin_aq_get_stats_cmd. */
+struct ena_admin_aq_get_stats_cmd {
+	struct ena_admin_ctrl_buff_info control_buffer;
+	uint8_t type;            /* enum ena_admin_get_stats_type */
+	uint8_t scope;           /* enum ena_admin_get_stats_scope */
+	uint16_t reserved3;
+	uint16_t queue_idx;
+	uint16_t device_id;      /* 0xFFFF = this device */
+	uint32_t requested_metrics_low;
+	uint32_t requested_metrics_high;
+};
+
+/* GET_STATS device id meaning "this device". */
+#define ENA_ADMIN_GET_STATS_DEVICE_ID_SELF	0xFFFFu
+
+/* Basic device statistics, returned inline in the ACQ entry
+ * (ena_admin_defs.h, struct ena_admin_basic_stats). */
+struct ena_admin_basic_stats {
+	uint32_t tx_bytes_low;
+	uint32_t tx_bytes_high;
+	uint32_t tx_pkts_low;
+	uint32_t tx_pkts_high;
+	uint32_t rx_bytes_low;
+	uint32_t rx_bytes_high;
+	uint32_t rx_pkts_low;
+	uint32_t rx_pkts_high;
+	uint32_t rx_drops_low;
+	uint32_t rx_drops_high;
+	uint32_t tx_drops_low;
+	uint32_t tx_drops_high;
+};
+
+/* ENI statistics, returned inline in the ACQ entry
+ * (ena_admin_defs.h, struct ena_admin_eni_stats). Packets shaped by
+ * the device because an allowance was exceeded. */
+struct ena_admin_eni_stats {
+	uint64_t bw_in_allowance_exceeded;
+	uint64_t bw_out_allowance_exceeded;
+	uint64_t pps_allowance_exceeded;
+	uint64_t conntrack_allowance_exceeded;
+	uint64_t linklocal_allowance_exceeded;
 };
 
 /* AENQ event groups. */
@@ -266,6 +326,28 @@ int ena_aenq_default_handler(void *arg, uint16_t group, uint16_t syndrome,
  */
 int ena_admin_get_device_attr(struct ena_adapter *adapter,
 			      struct ena_admin_device_attr_feature_desc *attr);
+
+/**
+ * Read the device basic statistics with the GET_STATS admin command.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param stats Structure where the device counters are stored.
+ * @return 0 on success, or a negative errno value on error.
+ */
+int ena_admin_get_basic_stats(struct ena_adapter *adapter,
+			      struct ena_admin_basic_stats *stats);
+
+/**
+ * Read the ENI statistics (allowance-exceeded packet counts) with the
+ * GET_STATS admin command. The device must advertise the ENI_STATS
+ * capability in the device attributes.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @param stats Structure where the ENI counters are stored.
+ * @return 0 on success, or a negative errno value on error.
+ */
+int ena_admin_get_eni_stats(struct ena_adapter *adapter,
+			    struct ena_admin_eni_stats *stats);
 
 #ifndef __Unikraft__
 /* Host test hook: the mock registers a callback to emulate the device

@@ -25,8 +25,17 @@ enum ena_admin_aq_feature_id {
 	ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG	= 12,
 	ENA_ADMIN_MTU				= 14,
 	ENA_ADMIN_RSS_HASH_INPUT		= 18,
+	ENA_ADMIN_AENQ_CONFIG			= 26,
 	ENA_ADMIN_HOST_ATTR_CONFIG		= 28,
 };
+
+/* AENQ group bits (reference/ena_admin_defs.h, enum ena_admin_aenq_group). */
+#define ENA_ADMIN_AENQ_GROUP_LINK_CHANGE	(1u << 0)
+#define ENA_ADMIN_AENQ_GROUP_FATAL_ERROR	(1u << 1)
+#define ENA_ADMIN_AENQ_GROUP_WARNING		(1u << 2)
+#define ENA_ADMIN_AENQ_GROUP_NOTIFICATION	(1u << 3)
+#define ENA_ADMIN_AENQ_GROUP_KEEP_ALIVE		(1u << 4)
+#define ENA_ADMIN_AENQ_GROUPS_ALL		0x1Fu
 
 /* OS types (reference/ena_admin_defs.h, enum ena_admin_os_type). */
 enum ena_admin_os_type {
@@ -114,6 +123,15 @@ struct ena_admin_set_feature_host_attr_desc {
 	uint32_t debug_area_size;
 };
 
+/* GET/SET_FEATURE payload for ENA_ADMIN_AENQ_CONFIG.
+ * (reference/ena_admin_defs.h, struct ena_admin_feature_aenq_desc.) */
+struct ena_admin_feature_aenq_desc {
+	/* bitmask of AENQ groups the device can report */
+	uint32_t supported_groups;
+	/* bitmask of AENQ groups the driver enables */
+	uint32_t enabled_groups;
+};
+
 /* 4KB host info buffer (reference/ena_admin_defs.h, ena_admin_host_info). */
 struct ena_admin_host_info {
 	uint32_t os_type;
@@ -149,6 +167,12 @@ struct ena_admin_set_feat_host_inline {
 	struct ena_admin_ctrl_buff_info control_buffer;
 	struct ena_admin_get_set_feature_common_desc feat_common;
 	struct ena_admin_set_feature_host_attr_desc host_attr;
+};
+
+struct ena_admin_set_feat_aenq_inline {
+	struct ena_admin_ctrl_buff_info control_buffer;
+	struct ena_admin_get_set_feature_common_desc feat_common;
+	struct ena_admin_feature_aenq_desc aenq;
 };
 
 /* Phase 3: device initialization and capability negotiation. */
@@ -194,6 +218,20 @@ int ena_init_set_mtu(struct ena_adapter *adapter, uint32_t mtu);
  * @return 0 on success, or a negative errno value on error.
  */
 int ena_init_get_mac_addr(struct ena_adapter *adapter, uint8_t mac[6]);
+
+/**
+ * Configure the Asynchronous Event Notification Queue (AENQ) groups.
+ *
+ * The driver reads the groups the device supports and enables all of
+ * them, including KEEP_ALIVE. Keep-alive events carry the device-side
+ * RX and TX drop counters and confirm device liveness. The call is
+ * best-effort: a device without AENQ support returns 0 with events
+ * left disabled.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @return 0 always (best-effort), or a negative errno on bad arguments.
+ */
+int ena_init_config_aenq(struct ena_adapter *adapter);
 
 /**
  * Run full Phase 3 initialization sequence and negotiate device settings.

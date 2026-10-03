@@ -308,6 +308,45 @@ void ena_netdev_dump_queue(struct uk_netdev *dev, uint16_t qid);
  * @return Cumulative packet count, or 0 if the queue does not exist.
  */
 unsigned long ena_netdev_rxq_pkts(struct uk_netdev *dev, uint16_t qid);
+uint32_t ena_netdev_rx_posted(struct uk_netdev *dev, uint16_t qid);
+void ena_netdev_aen_report(struct uk_netdev *dev, uint32_t *count,
+			   uint64_t *rx_drops, uint64_t *tx_drops);
+
+/**
+ * Read the device-side counters with the GET_STATS admin command.
+ * Basic counters (device RX/TX drops and packet totals) are always
+ * read. ENI counters (packets shaped because an allowance was
+ * exceeded: bw_in, bw_out, pps, conntrack, linklocal) are read only
+ * when the device advertises the ENI_STATS capability; *eni_valid is
+ * set to 1 when eni[0..4] hold values.
+ * [Ticket 1152cbcaca]
+ *
+ * @param dev Pointer to the network device.
+ * @param rx_drops Device-side RX drop count (may be NULL).
+ * @param tx_drops Device-side TX drop count (may be NULL).
+ * @param rx_pkts Device-side RX packet count (may be NULL).
+ * @param tx_pkts Device-side TX packet count (may be NULL).
+ * @param eni Five ENI allowance-exceeded counters (may be NULL).
+ * @param eni_valid Set to 1 when eni holds values (may be NULL).
+ * @return 0 on success, or a negative errno value on error.
+ */
+int ena_netdev_dev_stats(struct uk_netdev *dev,
+			 uint64_t *rx_drops, uint64_t *tx_drops,
+			 uint64_t *rx_pkts, uint64_t *tx_pkts,
+			 uint64_t *eni, int *eni_valid);
+
+uint64_t ena_netdev_rx_refill_err(struct uk_netdev *dev, uint16_t qid);
+uint64_t ena_netdev_rx_dropped(struct uk_netdev *dev, uint16_t qid);
+void ena_netdev_rx_kick(struct uk_netdev *dev, uint16_t qid);
+void ena_netdev_tx_ring_state(struct uk_netdev *dev, uint16_t qid,
+			      uint32_t *free_reqs, uint32_t *inflight,
+			      uint32_t *sq_tail, uint32_t *cq_head);
+void ena_netdev_rx_ring_state(struct uk_netdev *dev, uint16_t qid,
+			      uint32_t *free_reqs, uint32_t *inflight,
+			      uint32_t *sq_tail, uint32_t *sq_head,
+			      uint32_t *cq_head);
+uint32_t ena_netdev_cq_unmask_off(struct uk_netdev *dev, uint16_t qid);
+void ena_netdev_rearm_cq_intr(struct uk_netdev *dev, uint16_t qid);
 
 /**
  * Return the cumulative transmit packet count for queue qid.

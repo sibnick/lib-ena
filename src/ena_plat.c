@@ -204,11 +204,11 @@ int ena_plat_msix_probe(void *pci_dev, uint32_t *num_vectors)
 		uint32_t msg_ctrl = (dw >> 16) & 0xFFFFu;
 
 		if (cap_id == ENA_PLAT_PCI_CAP_ID_MSIX) {
-			/* The count field encodes vectors minus one. */
-			uint32_t count = (msg_ctrl >> 1) & 0x7FFFu;
+			/* Table Size field (bits 10:0) encodes vectors minus one. */
+			uint32_t count = msg_ctrl & 0x7FFu;
 
-			if (msg_ctrl & 0x0001u)
-				ena_info("msix: capability is masked at reset and the arm path will unmask it");
+			if (!(msg_ctrl & 0x8000u))
+				ena_info("msix: capability is disabled at reset and the arm path will enable it");
 
 			*num_vectors = count + 1u;
 			ena_info("msix: device exposes %u vectors", (unsigned)(count + 1u));
@@ -268,7 +268,13 @@ static int msix_find(const struct pci_address *addr, struct ena_msix_loc *loc)
 			uint32_t bar;
 
 			loc->msgctl_off = cap + 2;
-			loc->count = ((msg_ctrl >> 1) & 0x7FFFu) + 1;
+			loc->count = (msg_ctrl & 0x7FFu) + 1u;
+
+			ena_info("msix: raw table_off=0x%08x (bir=%u off=0x%x) pba_off=0x%08x (bir=%u off=0x%x)",
+				 table_off, (unsigned)(table_off & 0x7u),
+				 (unsigned)(table_off & ~0x7u),
+				 pba_off, (unsigned)(pba_off & 0x7u),
+				 (unsigned)(pba_off & ~0x7u));
 
 			/*
 			 * The KVM and QEMU platforms map guest physical
@@ -276,7 +282,8 @@ static int msix_find(const struct pci_address *addr, struct ena_msix_loc *loc)
 			 * in ena_pci.c uses. The BAR value read from config
 			 * space is directly usable as a virtual address.
 			 */
-			bar = table_off & 0xFu;
+			/* BIR is bits 2:0; the table offset is bits 31:3. */
+			bar = table_off & 0x7u;
 			bar_reg = 0x10 + 4 * bar;
 			bar_lo = plat_pci_cfg_read(addr, bar_reg) & ~0x0Fu;
 			if ((plat_pci_cfg_read(addr, bar_reg) & 0x06u) == 0x04u) {
@@ -290,8 +297,8 @@ static int msix_find(const struct pci_address *addr, struct ena_msix_loc *loc)
 			if (bar_base == 0)
 				return -ENODEV;
 
-			loc->table = (void *)(bar_base + (table_off & ~0xFu));
-			loc->pba = (void *)(bar_base + (pba_off & ~0xFu));
+			loc->table = (void *)(bar_base + (table_off & ~0x7u));
+			loc->pba = (void *)(bar_base + (pba_off & ~0x7u));
 			return 0;
 		}
 
@@ -337,6 +344,14 @@ static int msix_tramp(void *arg)
 	return 0;
 }
 
+/* Per-vector delivered-MSI count, for diagnostics. */
+uint32_t ena_plat_msix_vector_count(uint32_t vector)
+{
+	if (vector >= ENA_PLAT_MSIX_MAX_VECTORS)
+		return 0;
+	return s_msix.count[vector];
+}
+
 /*
  * Arm the device MSI-X: allocate one unikernel interrupt vector
  * per entry, program the 16-byte table entries and clear the PBA
@@ -345,7 +360,6 @@ static int msix_tramp(void *arg)
 int ena_plat_msix_arm(const struct ena_msix_req *req)
 {
 	volatile uint32_t *table;
-	volatile uint32_t *pba;
 	int nvec;
 	int i;
 	int ret;
@@ -363,7 +377,6 @@ int ena_plat_msix_arm(const struct ena_msix_req *req)
 	}
 
 	table = (volatile uint32_t *)s_msix.loc.table;
-	pba = (volatile uint32_t *)s_msix.loc.pba;
 
 	nvec = (int)req->nvec;
 	if (nvec > (int)s_msix.loc.count)
@@ -397,9 +410,6 @@ int ena_plat_msix_arm(const struct ena_msix_req *req)
 		table[4 * i + 2] = mdata;
 		table[4 * i + 3] = 0;
 
-		/* Unmask the vector: clear its PBA bit. */
-		pba[i / 32] &= ~(1u << (i % 32));
-
 		ret = uk_intctlr_irq_register(s_msix.irqs[i], msix_tramp,
 					&s_msix.ctx[i]);
 		if (ret) {
@@ -410,17 +420,26 @@ int ena_plat_msix_arm(const struct ena_msix_req *req)
 	}
 
 	{
-		uint32_t msg_ctrl = plat_pci_cfg_read(s_msix.loc.pci_dev,
-						    s_msix.loc.msgctl_off);
+		/*
+		 * msgctl is the high word of the dword at the capability
+		 * base. The config accessor is dword-only, so read the
+		 * dword, change the high word, and write it back.
+		 */
+		uint32_t base = s_msix.loc.msgctl_off & ~3u;
+		uint32_t dw = plat_pci_cfg_read(s_msix.loc.pci_dev, base);
+		uint32_t msg_ctrl = (dw >> 16) & 0xFFFFu;
+		uint32_t new_ctrl;
 
-		/* Enable the capability: clear the masked bit. */
-		plat_pci_cfg_write(s_msix.loc.pci_dev, s_msix.loc.msgctl_off,
-			       msg_ctrl & ~0x1u);
+		/* Enable MSI-X (bit 15) and clear the function mask (bit 14). */
+		new_ctrl = (msg_ctrl & ~0x4000u) | 0x8000u;
+		plat_pci_cfg_write(s_msix.loc.pci_dev, base,
+			       (dw & 0xFFFFu) | (new_ctrl << 16));
 
-		ena_info("msix: msgctl before=0x%04x bit15=%u after=0x%04x bit15=%u",
+		ena_info("msix: msgctl before=0x%04x en=%u mask=%u after=0x%04x en=%u mask=%u",
 			 (unsigned)msg_ctrl, (unsigned)((msg_ctrl >> 15) & 0x1u),
-			 (unsigned)(msg_ctrl & ~0x1u),
-			 (unsigned)(((msg_ctrl & ~0x1u) >> 15) & 0x1u));
+			 (unsigned)((msg_ctrl >> 14) & 0x1u),
+			 (unsigned)new_ctrl, (unsigned)((new_ctrl >> 15) & 0x1u),
+			 (unsigned)((new_ctrl >> 14) & 0x1u));
 	}
 
 	s_msix.armed = 1;
@@ -445,24 +464,24 @@ void ena_plat_msix_disarm(void)
 {
 	volatile uint32_t *pba;
 	uint32_t i;
-	uint32_t msg_ctrl;
 
 	if (!s_msix.armed)
 		return;
 
 	pba = (volatile uint32_t *)s_msix.loc.pba;
 	for (i = 0; i < s_msix.nvec; i++) {
-		/* Re-mask the vector in the PBA, then release it. */
-		pba[i / 32] |= 1u << (i % 32);
 		uk_intctlr_irq_unregister(s_msix.irqs[i], msix_tramp);
 		uk_intctlr_msix_free(s_msix.irqs[i]);
 	}
 
-	msg_ctrl = plat_pci_cfg_read(s_msix.loc.pci_dev,
-				    s_msix.loc.msgctl_off);
-	msg_ctrl |= 0x1u; /* Disable the capability: set the masked bit. */
-	plat_pci_cfg_write(s_msix.loc.pci_dev, s_msix.loc.msgctl_off,
-		       msg_ctrl);
+	{
+		/* Disable MSI-X: clear bit 15 of the message control. */
+		uint32_t base = s_msix.loc.msgctl_off & ~3u;
+		uint32_t dw = plat_pci_cfg_read(s_msix.loc.pci_dev, base);
+
+		plat_pci_cfg_write(s_msix.loc.pci_dev, base,
+			       (dw & 0xFFFFu) | ((dw >> 16) & ~0x8000u) << 16);
+	}
 	s_msix.armed = 0;
 	s_msix.nvec = 0;
 	ena_info("msix: disarmed");
@@ -486,6 +505,59 @@ uint32_t ena_plat_msix_count_get(void)
 uint32_t ena_plat_msix_state(void)
 {
 	return s_msix.armed ? s_msix.nvec : 0;
+}
+
+/*
+ * Live readback of the MSI-X state: message control, the vector 1
+ * table entry (address low, data, vector control), and the first
+ * PBA dword. The heartbeat prints these so the boot-time arm log
+ * does not have to survive the console capture limit.
+ */
+void ena_plat_msix_diag(uint32_t *msgctl, uint32_t *t1_addr,
+		       uint32_t *t1_data, uint32_t *t1_ctrl, uint32_t *pba0,
+		       uint32_t *irr, uint32_t *isr)
+{
+	volatile uint32_t *table;
+	volatile uint32_t *pba;
+	uint32_t base;
+	uint32_t dw;
+
+	*irr = 0;
+	*isr = 0;
+	if (!s_msix.armed) {
+		*msgctl = 0;
+		*t1_addr = 0;
+		*t1_data = 0;
+		*t1_ctrl = 0;
+		*pba0 = 0;
+		return;
+	}
+
+	base = s_msix.loc.msgctl_off & ~3u;
+	dw = plat_pci_cfg_read(s_msix.loc.pci_dev, base);
+	*msgctl = (dw >> 16) & 0xFFFFu;
+
+	table = (volatile uint32_t *)s_msix.loc.table;
+	pba = (volatile uint32_t *)s_msix.loc.pba;
+	*t1_addr = table[4 * 1 + 0];
+	*t1_data = table[4 * 1 + 2];
+	*t1_ctrl = table[4 * 1 + 3];
+	*pba0 = pba[0];
+
+	/*
+	 * LAPIC IRR/ISR bit for the vector in the table entry.
+	 * Vector 0x35 is in the 32..63 range: IRR word at 0x210,
+	 * ISR word at 0x110, bit (vector - 32).
+	 */
+	{
+		volatile uint32_t *lapic = (volatile uint32_t *)0xfee00000UL;
+		uint32_t vec = *t1_data & 0xFFu;
+
+		if (vec >= 32 && vec < 64) {
+			*irr = lapic[0x210 / 4] & (1u << (vec - 32));
+			*isr = lapic[0x110 / 4] & (1u << (vec - 32));
+		}
+	}
 }
 
 void *ena_dma_alloc(size_t size, uint64_t *phys_out)
