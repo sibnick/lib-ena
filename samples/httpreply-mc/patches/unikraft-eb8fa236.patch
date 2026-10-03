@@ -51,27 +51,30 @@ index 9ce531b..2673c44 100644
 +uk_intctlr_msix_alloc
 +uk_intctlr_msix_free
 diff --git a/drivers/ukintctlr/xpic/include/uk/intctlr/limits.h b/drivers/ukintctlr/xpic/include/uk/intctlr/limits.h
-index 6e748f0..dfcd550 100644
+index 6e748f0..9d52f8c 100644
 --- a/drivers/ukintctlr/xpic/include/uk/intctlr/limits.h
 +++ b/drivers/ukintctlr/xpic/include/uk/intctlr/limits.h
-@@ -6,11 +6,21 @@
+@@ -6,11 +6,24 @@
  #ifndef __UK_INTCTLR_XPIC_LIMITS_H__
  #define __UK_INTCTLR_XPIC_LIMITS_H__
  
 -#define UK_INTCTLR_FIRST_ALLOCABLE_IRQ			16
 -#define UK_INTCTLR_LAST_ALLOCABLE_IRQ			224
 +/*
-+ * Vectors 48..51 (irq 16..19) stay outside the allocatable pool.
-+ * IPIs use this band. The interim wake scheme posts IPIs with
-+ * vector 0x30 (irq 16). The per-vCPU LAPIC one-shot scheme may
-+ * use the rest of the band. MSI-X allocation starts at vector 52
-+ * and never collides with an IPI vector.
-+ *
-+ * The allocatable pool spans irq 20..222, that is vectors 52..254.
-+ * The spurious vector 255 stays outside the pool.
-+ */
++*
++ * The wake IPI uses irq 208 (vector 0xF0), and the per-vCPU LAPIC
++ * one-shot timer keeps vector 0x30 (irq 16). Both bands stay
++ * outside the allocatable pool, so an allocated MSI-X or device
++ * vector can never collide with either. The IPI band no longer
++ * shares a vector with the one-shot band, so a pending IPI can
++ * no longer drop a one-shot tick in the KVM xAPIC. [Ticket 1152cbcaca]
++*
++ * The allocatable pool spans irq 20..207, that is vectors 52..239.
++ * Vectors 240..254 stay outside the pool. The spurious vector 255
++ * stays outside the pool.
++*/
 +#define UK_INTCTLR_FIRST_ALLOCABLE_IRQ			20
-+#define UK_INTCTLR_LAST_ALLOCABLE_IRQ			222
++#define UK_INTCTLR_LAST_ALLOCABLE_IRQ			207
  #define UK_INTCTLR_MAX_IRQ				(256 - 32)
  
  #define UK_INTCTLR_ALLOCABLE_IRQ_COUNT			\
@@ -143,10 +146,10 @@ index 0000000..a2675ac
 +#endif /* __UK_INTCTLR_MSIX_H__ */
 diff --git a/drivers/ukintctlr/xpic/msix.c b/drivers/ukintctlr/xpic/msix.c
 new file mode 100644
-index 0000000..5192c89
+index 0000000..5855972
 --- /dev/null
 +++ b/drivers/ukintctlr/xpic/msix.c
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,117 @@
 +/* SPDX-License-Identifier: BSD-3-Clause */
 +/*
 + * MSI-X vector allocation and message construction for the x86_64
@@ -167,16 +170,17 @@ index 0000000..5192c89
 +
 +/*
 + * xAPIC physical destination mode: the low 32 bits of the 64-bit
-+ * MSI address are the APIC MMIO base (0xFEE00000). The top byte
-+ * (bits 55:48) holds the destination APIC ID.
++ * MSI address are the APIC MMIO base (0xFEE00000) with the
++ * destination APIC ID in bits 31:24. The high 32 bits are zero.
 + */
 +#define UK_MSIX_XAPIC_ADDR_BASE		0xFEE00000ULL
 +
 +/*
-+ * The first vectors of the allocatable pool stay reserved for IPIs:
-+ * the interim core-0 wake posts vector 0x30 (irq 16). With the pool
-+ * start moved to irq 20 (see limits.h) an allocated MSI-X vector can
-+ * never collide with a vector in the 48..51 range.
++ * Two bands stay outside the allocatable pool: the wake IPI (irq
++ * 208, vector 0xF0) and the per-vCPU LAPIC one-shot (irq 16,
++ * vector 0x30). With the pool spanning irq 20..207 (see limits.h)
++ * an allocated MSI-X vector can never collide with either band,
++ * and the IPI band no longer shares a vector with the one-shot.
 + */
 +#define UK_MSIX_FIRST_VECTOR		(32 + UK_INTCTLR_FIRST_ALLOCABLE_IRQ)
 +
@@ -223,8 +227,16 @@ index 0000000..5192c89
 +
 +	*irq = nirq;
 +	*data = vector;
++
++	/*
++	 * xAPIC physical destination mode: the destination APIC ID
++	 * goes into bits 19:12 of the MSI address. Bits 31:20 are
++	 * the fixed 0xFEE prefix. A destination written to bits
++	 * 31:24 breaks that prefix, names a non-LAPIC address, and
++	 * the message is lost.
++	 */
 +	*addr = UK_MSIX_XAPIC_ADDR_BASE |
-+	       ((__u64)apic_id_of_lcpu(lcpu) << 56);
++		((__u64)apic_id_of_lcpu(lcpu) << 12);
 +
 +	return 0;
 +}
@@ -290,10 +302,17 @@ index 7e8b51a..26094d2 100644
  	uk_arch_x86_64_outb(port, uk_arch_x86_64_inb(port) & ~(1 << IRQ_OFFSET(irq)));
  }
 diff --git a/drivers/ukintctlr/xpic/ukintctlr.c b/drivers/ukintctlr/xpic/ukintctlr.c
-index 6a04e3b..b083661 100644
+index 6a04e3b..2674d98 100644
 --- a/drivers/ukintctlr/xpic/ukintctlr.c
 +++ b/drivers/ukintctlr/xpic/ukintctlr.c
-@@ -16,51 +16,51 @@
+@@ -11,56 +11,58 @@
+ #include <uk/config.h>
+ #include <uk/intctlr.h>
+ #include <uk/lcpu.h>
++#include <uk/pcpuvar.h>
++#include <uk/plat/time.h>
+ 
+ #if CONFIG_LIBUKINTCTLR_APIC
  #include <uk/arch/x86_64.h>
  #include <uk/arch/util.h>
  
@@ -771,6 +790,75 @@ index 8e78944..591ae7b 100644
  #ifdef __cplusplus
  }
  #endif
+diff --git a/lib/ukintctlr/exportsyms.uk b/lib/ukintctlr/exportsyms.uk
+index 4aea478..741ef72 100644
+--- a/lib/ukintctlr/exportsyms.uk
++++ b/lib/ukintctlr/exportsyms.uk
+@@ -8,4 +8,5 @@ uk_intctlr_irq_handle
+ uk_intctlr_irq_register
+ uk_intctlr_irq_unregister
+ uk_intctlr_register
+-uk_intctlr_plat_probe
+\ No newline at end of file
++uk_intctlr_plat_probe
++uk_intctlr_pending_events
+diff --git a/lib/ukintctlr/ukintctlr.c b/lib/ukintctlr/ukintctlr.c
+index e51a50e..54c09a1 100644
+--- a/lib/ukintctlr/ukintctlr.c
++++ b/lib/ukintctlr/ukintctlr.c
+@@ -30,6 +30,7 @@
+ #include <uk/atomic.h>
+ #include <uk/bitops/bitmap.h>
+ #include <uk/lcpu.h>
++#include <uk/pcpuvar.h>
+ #include <uk/plat/time.h>
+ #include <uk/intctlr.h>
+ #include <uk/intctlr/limits.h>
+@@ -56,6 +57,14 @@
+ 
+ struct uk_intctlr_desc *uk_intctlr;
+ 
++/*
++ * Per-vCPU early-wake flags. Set by uk_intctlr_irq_handle() for any
++ * non-timer interrupt and consumed by the per-CPU halting loop
++ * (time_block_until), so a device interrupt always cuts short the
++ * sleep of the core it targets.
++ */
++unsigned long uk_intctlr_pending_events[16];
++
+ UK_TRACEPOINT(trace_uk_intctlr_unhandled_irq, "Unhandled irq=%lu\n",
+ 	      unsigned long);
+ 
+@@ -162,7 +171,9 @@ void uk_intctlr_irq_handle(struct uk_lcpu_except_irq_ctx *ctx)
+ 		if (irq_handlers[irq][i].func == NULL)
+ 			break;
+ 		h = &irq_handlers[irq][i];
+-		if (irq != ukplat_time_get_irq())
++		if (irq != ukplat_time_get_irq()) {
++			unsigned int id;
++
+ 			/* ukplat_time_get_irq() gives the IRQ reserved for a timer,
+ 			 * responsible to wake up cpu from halt, so it can check if
+ 			 * it has something to do. Effectively it is OS ticks.
+@@ -175,6 +186,18 @@ void uk_intctlr_irq_handle(struct uk_lcpu_except_irq_ctx *ctx)
+ 			 */
+ 			uk_or_relax(&sched_have_pending_events, 1);
+ 
++			/*
++			 * Also flag the current CPU. The shared flag
++			 * above is one slot for all CPUs, so another
++			 * core's halting loop can consume it before
++			 * this core wakes. The per-CPU flag cuts
++			 * short only this core's sleep.
++			 */
++			id = uk_pcpuvar_current_get(uk_pcpuvar_cpu_id);
++			if (id < 16)
++				uk_intctlr_pending_events[id] = 1;
++		}
++
+ 		if (h->func(h->arg) == 1)
+ 			return;
+ 	}
 diff --git a/lib/uknetdev/include/uk/netdev.h b/lib/uknetdev/include/uk/netdev.h
 index 03bfe4a..5b3c46e 100644
 --- a/lib/uknetdev/include/uk/netdev.h
@@ -1288,6 +1376,60 @@ index fc156a0..5ad621f 100644
  	stack PT_GNU_STACK FLAGS(PHDRS_PF_RW);
  }
  
+diff --git a/plat/kvm/x86/tscclock.c b/plat/kvm/x86/tscclock.c
+index eb89f76..8278c41 100644
+--- a/plat/kvm/x86/tscclock.c
++++ b/plat/kvm/x86/tscclock.c
+@@ -56,6 +56,7 @@
+ 
+ #include <uk/arch/util.h>
+ #include <uk/lcpu.h>
++#include <uk/pcpuvar.h>
+ #include <uk/plat/time.h>
+ #include <uk/timeconv.h>
+ #include <uk/print.h>
+@@ -388,12 +389,41 @@ static void tscclock_cpu_block(__u64 until)
+ 
+ unsigned long sched_have_pending_events;
+ 
++/*
++ * Per-vCPU early-wake flags set by the xpic IRQ dispatch for any
++ * non-timer interrupt. The shared sched_have_pending_events flag is
++ * one slot for all CPUs, so another core's halting loop can consume
++ * it before the core that the interrupt targeted wakes. The per-CPU
++ * flag fixes that: a device interrupt cuts short only the sleep of
++ * the core it targets.
++ */
++extern unsigned long uk_intctlr_pending_events[16];
++
+ void time_block_until(__snsec until)
+ {
++	unsigned int id = uk_pcpuvar_current_get(uk_pcpuvar_cpu_id);
++
++	if (id >= 16)
++		id = 0;
++
+ 	while ((__snsec) ukplat_monotonic_clock() < until) {
++		/*
++		 * Check for pending events before halting. An event
++		 * that arrived after the caller's last poll but
++		 * before this point would otherwise be missed: the
++		 * flag is already set, no new interrupt will come,
++		 * and the halt would run to the timer.
++		 */
++		if (uk_and_relax(&sched_have_pending_events, 0))
++			break;
++		if (uk_and_relax(&uk_intctlr_pending_events[id], 0))
++			break;
++
+ 		tscclock_cpu_block(until);
+ 
+ 		if (uk_and_relax(&sched_have_pending_events, 0))
+ 			break;
++		if (uk_and_relax(&uk_intctlr_pending_events[id], 0))
++			break;
+ 	}
+ }
 diff --git a/plat/native/arch/x86_64/except.c b/plat/native/arch/x86_64/except.c
 index 133b4e1..f539f27 100644
 --- a/plat/native/arch/x86_64/except.c

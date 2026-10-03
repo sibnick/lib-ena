@@ -219,7 +219,11 @@ int ena_admin_init(struct ena_adapter *adapter, uint16_t aq_depth,
 	ena_reg_write32(adapter->bar0_base + ENA_REGS_AENQ_BASE_HI_OFF,
 			(uint32_t)(aenq_phys >> 32));
 	ena_reg_write32(adapter->bar0_base + ENA_REGS_AENQ_CAPS_OFF, aenq_caps);
-	ena_reg_write32(adapter->bar0_base + ENA_REGS_AENQ_HEAD_DB_OFF, 0);
+	/* The head doorbell starts at the depth, as upstream does.
+	 * Writing 0 leaves the AENQ ring looking full to the device,
+	 * and the device never posts events. */
+	ena_reg_write32(adapter->bar0_base + ENA_REGS_AENQ_HEAD_DB_OFF,
+			aenq_depth);
 	ena_mb();
 
 	adapter->state = ENA_STATE_ADMIN_READY;
@@ -386,6 +390,11 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 			uint16_t acq_d = adapter->acq_depth ? adapter->acq_depth : 32;
 			uint16_t aenq_d = adapter->aenq_depth ? adapter->aenq_depth : 32;
 			ena_admin_init(adapter, aq_d, acq_d, aenq_d);
+			/* The reset cleared the AENQ configuration.
+			 * Restore it so keep-alive events resume.
+			 * [Ticket 1152cbcaca] */
+			if (adapter->aenq_enabled_groups)
+				ena_init_config_aenq(adapter);
 		}
 		return -ETIMEDOUT;
 	}
@@ -569,6 +578,11 @@ int ena_aenq_default_handler(void *arg, uint16_t group, uint16_t syndrome,
 			if (iret == 0 && handler)
 				ena_admin_aenq_register(adapter, handler,
 							handler_arg);
+			/* The reset cleared the AENQ configuration.
+			 * Restore it so keep-alive events resume.
+			 * [Ticket 1152cbcaca] */
+			if (iret == 0 && adapter->aenq_enabled_groups)
+				ena_init_config_aenq(adapter);
 		}
 		ena_admin_lock_drop(&adapter->admin_lock);
 
@@ -597,11 +611,28 @@ int ena_aenq_default_handler(void *arg, uint16_t group, uint16_t syndrome,
 		ena_info("aenq: notification (syndrome %u)", (unsigned)syndrome);
 		return 0;
 
-	case ENA_ADMIN_KEEP_ALIVE:
-		ena_debug("aenq: keep alive (rx_drops 0x%x, tx_drops 0x%x)",
-			  entry ? entry->inline_data_w4[0] : 0,
-			  entry ? entry->inline_data_w4[1] : 0);
+	case ENA_ADMIN_KEEP_ALIVE: {
+		/* Keep-alive payload (ena_admin_defs.h,
+		 * struct ena_admin_aenq_keep_alive_desc): the device
+		 * RX and TX drop counters as 64-bit low/high words.
+		 * [Ticket 1152cbcaca] */
+		uint32_t rx_lo = entry ? entry->inline_data_w4[0] : 0;
+		uint32_t rx_hi = entry ? entry->inline_data_w4[1] : 0;
+		uint32_t tx_lo = entry ? entry->inline_data_w4[2] : 0;
+		uint32_t tx_hi = entry ? entry->inline_data_w4[3] : 0;
+
+		adapter->aen_keepalives++;
+		adapter->aen_rx_drops =
+			((uint64_t)rx_hi << 32) | rx_lo;
+		adapter->aen_tx_drops =
+			((uint64_t)tx_hi << 32) | tx_lo;
+		if ((adapter->aen_keepalives & 0x7) == 1)
+			ena_info("aenq: keep alive #%u (rx_drops %llu, tx_drops %llu)",
+				 adapter->aen_keepalives,
+				 (unsigned long long)adapter->aen_rx_drops,
+				 (unsigned long long)adapter->aen_tx_drops);
 		return 0;
+	}
 
 	default:
 		ena_debug("aenq: unknown group %u (syndrome %u)",
@@ -643,5 +674,61 @@ int ena_admin_get_device_attr(struct ena_adapter *adapter,
 		return ret;
 
 	memcpy(attr, resp, sizeof(*attr));
+	return 0;
+}
+
+/* Run one GET_STATS command and return the inline response words. */
+static int ena_admin_exec_get_stats(struct ena_adapter *adapter, uint8_t type,
+				    uint32_t *resp, size_t resp_cap)
+{
+	struct ena_admin_aq_get_stats_cmd req;
+
+	if (!adapter || !resp)
+		return -EINVAL;
+
+	memset(&req, 0, sizeof(req));
+	req.type = type;
+	req.scope = ENA_ADMIN_ETH_TRAFFIC;
+	req.device_id = ENA_ADMIN_GET_STATS_DEVICE_ID_SELF;
+
+	return ena_admin_exec_cmd(adapter, ENA_ADMIN_GET_STATS, &req,
+				  sizeof(req), resp, resp_cap, NULL, 100);
+}
+
+int ena_admin_get_basic_stats(struct ena_adapter *adapter,
+			      struct ena_admin_basic_stats *stats)
+{
+	uint32_t resp[14];
+	int ret;
+
+	if (!adapter || !stats)
+		return -EINVAL;
+
+	memset(resp, 0, sizeof(resp));
+	ret = ena_admin_exec_get_stats(adapter, ENA_ADMIN_GET_STATS_TYPE_BASIC,
+				       resp, sizeof(resp));
+	if (ret)
+		return ret;
+
+	memcpy(stats, resp, sizeof(*stats));
+	return 0;
+}
+
+int ena_admin_get_eni_stats(struct ena_adapter *adapter,
+			    struct ena_admin_eni_stats *stats)
+{
+	uint32_t resp[14];
+	int ret;
+
+	if (!adapter || !stats)
+		return -EINVAL;
+
+	memset(resp, 0, sizeof(resp));
+	ret = ena_admin_exec_get_stats(adapter, ENA_ADMIN_GET_STATS_TYPE_ENI,
+				       resp, sizeof(resp));
+	if (ret)
+		return ret;
+
+	memcpy(stats, resp, sizeof(*stats));
 	return 0;
 }

@@ -1,6 +1,6 @@
 concurrency,target,requests_sec,latency_avg_ms,latency_stdev_ms,latency_max_ms,transfer_kb_sec,total_requests,socket_errors,p50_ms,p75_ms,p90_ms,p99_ms
-10,Unikraft Multi-Core (httpreply-mc) [verified],30826.86,10.52,38.02,515.42,4608.0,924911,0,0.269,0.297,30.14,181.2
-25,Unikraft Multi-Core (httpreply-mc) [verified],58819.78,15.66,58.4,697.54,8785.92,1764768,0,0.304,0.345,47.53,310.3
-50,Unikraft Multi-Core (httpreply-mc) [verified],88447.06,21.09,69.9,943.59,13219.84,2653600,0,0.372,3.31,60.22,344.48
-100,Unikraft Multi-Core (httpreply-mc) [verified],115843.93,25.65,66.97,887.15,17305.6,3476034,0,0.458,24.85,83.31,281.31
-200,Unikraft Multi-Core (httpreply-mc) [verified],123620.16,36.32,114.89,1390.0,18472.96,3710415,0,0.811,30.54,94.19,681.18
+10,Unikraft Multi-Core (httpreply-mc) [verified],25179.16,13.62,40.05,266.75,3758.08,755469,0,0.325,0.352,46.71,194.37
+25,Unikraft Multi-Core (httpreply-mc) [verified],26724.79,8.74,49.19,1610.0,3993.6,801883,1,0.336,0.354,2.17,170.06
+50,Unikraft Multi-Core (httpreply-mc) [verified],45887.1,7.82,26.16,259.03,6860.8,1377167,0,0.39,0.421,22.51,155.5
+100,Unikraft Multi-Core (httpreply-mc) [verified],66753.57,9.19,27.9,257.28,9973.76,2003652,0,0.441,0.486,32.94,162.09
+200,Unikraft Multi-Core (httpreply-mc) [verified],75536.4,9.6,27.7,260.26,11284.48,2267607,0,0.688,0.738,35.18,160.6

@@ -27,6 +27,15 @@ config LIBENA_RSS
 	  using Toeplitz hash on TCP/IPv4 headers. When disabled, all
 	  packets arrive on RX Queue 0.
 
+config LIBENA_MSIX
+	bool "Arm the MSI-X capability (hardware interrupts)"
+	default y
+	help
+	  Arm the device MSI-X capability so the unikernel gets
+	  hardware interrupts. When off, the driver skips arming and
+	  runs in software polling mode. Bisect toggle for interrupt
+	  bring-up.
+
 config LIBENA_VERBOSE_STATS
 	bool "ena: periodic per-queue datapath stats print"
 	default n

@@ -21,8 +21,20 @@ static void msix_on_fire(void *arg, uint32_t vector_id)
 {
 	struct ena_adapter *adapter = arg;
 
-	if (vector_id < adapter->num_irq_vectors)
-		adapter->irq_vectors[vector_id].intr_count++;
+	if (vector_id >= adapter->num_irq_vectors)
+		return;
+
+	adapter->irq_vectors[vector_id].intr_count++;
+
+	/*
+	 * The device masks a queue interrupt after delivery. Write
+	 * the queue unmask register here so the next completion
+	 * fires again. The polling core handles the packets after
+	 * the wake; re-arming in the handler keeps the device
+	 * interrupt-driven.
+	 */
+	if (!adapter->irq_vectors[vector_id].is_admin)
+		ena_intr_unmask_vector(adapter, vector_id);
 }
 
 /*
@@ -153,6 +165,7 @@ int ena_intr_setup(struct ena_adapter *adapter, void *pci_dev)
 	ena_intr_unmask_vector(adapter, 0);
 
 #ifdef __Unikraft__
+#if defined(CONFIG_LIBENA_MSIX)
 /*
  * Arm the real MSI-X capability (table, PBA, unmask). The
  * platform pci_dev handle is the PCI bus/device/function. On
@@ -168,6 +181,10 @@ int ena_intr_setup(struct ena_adapter *adapter, void *pci_dev)
 			return ret;
 		}
 }
+#else
+	/* Arming is off in this bisect build: software polling mode. */
+	ena_info("msix: arming disabled (bisect build); software polling mode");
+#endif
 #endif
 
 	ena_info("msix: %u vectors active (admin vector enabled)", (unsigned)nvec);

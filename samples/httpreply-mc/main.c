@@ -396,24 +396,18 @@ static void configure_socket_options(int fd)
 	ioctl(fd, FIONBIO, &opt);
 }
 
-/*
- * Update the interest set of an fd registered with worker epoll instance.
- */
-static int set_epoll_events(int epfd, int fd, uint32_t events)
-{
-	struct epoll_event ev;
-
-	ev.events = events;
-	ev.data.fd = fd;
-
-	return epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &ev);
-}
-
 void ena_netdev_dump_queue(struct uk_netdev *dev, uint16_t qid);
 unsigned long ena_netdev_rxq_pkts(struct uk_netdev *dev, uint16_t qid);
+uint32_t ena_netdev_rx_posted(struct uk_netdev *dev, uint16_t qid);
+void ena_netdev_aen_report(struct uk_netdev *dev, uint32_t *count,
+			   uint64_t *rx_drops, uint64_t *tx_drops);
+uint64_t ena_netdev_rx_refill_err(struct uk_netdev *dev, uint16_t qid);
+uint64_t ena_netdev_rx_dropped(struct uk_netdev *dev, uint16_t qid);
+void ena_netdev_rearm_cq_intr(struct uk_netdev *dev, uint16_t qid);
 unsigned long ena_netdev_txq_pkts(struct uk_netdev *dev, uint16_t qid);
 /* Armed MSI-X vector count. Zero means software polling. */
 uint32_t ena_plat_msix_state(void);
+uint32_t ena_plat_msix_count_get(void);
 
 static unsigned int mc_count_memp_free(void *head)
 {
@@ -461,11 +455,39 @@ static void drive_core_stack(int core_id)
 		if (dev) {
 			rxpkts = ena_netdev_rxq_pkts(dev, (uint16_t)core_id);
 			txpkts = ena_netdev_txq_pkts(dev, (uint16_t)core_id);
+
+			/*
+			 * Safety net: while MSI-X is armed but no MSI
+			 * has ever been observed, rewrite the queue
+			 * unmask registers. If the write at ring
+			 * creation was not latched, this one will be.
+			 */
+			if (core_id == 0 && ena_plat_msix_state() != 0 &&
+			    ena_plat_msix_count_get() == 0) {
+				ena_netdev_rearm_cq_intr(dev, 0);
+				ena_netdev_rearm_cq_intr(dev, 1);
+			}
 		}
 
-		printf("httpreply-mc: core %d heartbeat (polls=%lu, rx=%lu, tx=%lu, active=%u, msix=%u, free: pbuf=%u pcb=%u seg=%u)\n",
-		       core_id, poll_cnt[core_id], rxpkts, txpkts,
-		       active_pcbs, ena_plat_msix_state(), m_pbuf, m_pcb, m_seg);
+		{
+			uint32_t aen_n = 0;
+			uint64_t aen_rx = 0, aen_tx = 0;
+
+			if (dev)
+				ena_netdev_aen_report(dev, &aen_n, &aen_rx, &aen_tx);
+			printf("httpreply-mc: core %d heartbeat (polls=%lu, rx=%lu, tx=%lu, active=%u, rxpost=%u refill=%llu rxdrop=%llu, aen=%u rxdrop=%llu txdrop=%llu, free: pbuf=%u pcb=%u seg=%u)\n",
+			       core_id, poll_cnt[core_id], rxpkts, txpkts,
+			       active_pcbs,
+			       dev ? ena_netdev_rx_posted(dev, (uint16_t)core_id) : 0xFFFFFFFFu,
+			       dev ? (unsigned long long)ena_netdev_rx_refill_err(dev, (uint16_t)core_id) : 0ULL,
+			       dev ? (unsigned long long)ena_netdev_rx_dropped(dev, (uint16_t)core_id) : 0ULL,
+			       aen_n,
+			       (unsigned long long)aen_rx,
+			       (unsigned long long)aen_tx,
+			       m_pbuf, m_pcb, m_seg);
+
+
+		}
 
 		/*
 		 * pbuf pool exhaustion warning. When the free pbuf count falls
@@ -477,6 +499,36 @@ static void drive_core_stack(int core_id)
 			printf("httpreply-mc: [WARN] core %d pbuf pool near-empty "
 			       "(free=%u) — send() will fail with ENOBUFS\n",
 			       core_id, m_pbuf);
+
+		/*
+		 * Stall probe: this core has open connections but its RX
+		 * counter did not move in the last interval. Dump every
+		 * active TCP control block to find why they are stuck.
+		 * [Ticket 1152cbcaca]
+		 */
+		{
+			if (active_pcbs > 0) {
+				for (p = cs->tcp_active_pcbs; p != NULL;
+				     p = p->next) {
+					unsigned int qlen;
+
+					if (p->nrtx == 0 && p->rtime == 0)
+						continue;
+					qlen = p->snd_queuelen;
+					printf("httpreply-mc: core %d STALL pcb %u->%u state=%d nrtx=%u rtime=%d snd.wnd=%u rcv.wnd=%u snd.qlen=%u flags=%04x\n",
+					       core_id,
+					       (unsigned int)p->local_port,
+					       (unsigned int)p->remote_port,
+					       (int)p->state,
+					       (unsigned int)p->nrtx,
+					       (int)p->rtime,
+					       (unsigned int)p->snd_wnd,
+					       (unsigned int)p->rcv_wnd,
+					       qlen,
+					       (unsigned int)p->flags);
+				}
+			}
+		}
 	}
 	uknetdev_poll_rxqueue((uint16_t)core_id);
 	sys_check_timeouts();
@@ -490,6 +542,46 @@ static void drive_core_stack(int core_id)
 		mc_arp_publish();
 	else
 		mc_arp_adopt((unsigned int)core_id);
+}
+
+static int send_pending_response(struct worker_ctx *w, int fd,
+				 uint32_t base_events);
+
+/*
+ * Read one request from a connection and queue the response.
+ * Returns -1 when the connection must be dropped.
+ */
+static int handle_readable(struct worker_ctx *w, int fd)
+{
+	ssize_t r = recv(fd, w->recv_buf, MC_RECVBUF_SIZE - 1, 0);
+
+	if (r > 0) {
+		w->recv_buf[r] = '\0';
+		w->req_count++;
+		w->byte_count += http_resp_len;
+		if ((w->req_count % MC_STATS_INTERVAL) == 0)
+			printf("httpreply-mc: [stats] core %d: req=%lu bytes=%lu\n",
+			       w->worker_id,
+			       (unsigned long)w->req_count,
+			       (unsigned long)w->byte_count);
+
+		if (fd < MAX_TRACKED_FDS) {
+			w->resp_pending[fd] = (uint32_t)http_resp_len;
+			if (send_pending_response(w, fd, EPOLLIN | EPOLLRDHUP) < 0)
+				return -1;
+		} else {
+			send(fd, http_response, http_resp_len, 0);
+		}
+
+		if (strstr(w->recv_buf, "Connection: close") != NULL ||
+		    strstr(w->recv_buf, "connection: close") != NULL)
+			return -1;
+		return 0;
+	}
+
+	if (r == 0 || (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK))
+		return -1;
+	return 0;
 }
 
 /*
@@ -528,30 +620,53 @@ static int send_pending_response(struct worker_ctx *w, int fd, uint32_t base_eve
 
 	w->resp_pending[fd] = pending;
 
-	if (pending > 0) {
-		if (set_epoll_events(w->epoll_fd, fd, base_events | EPOLLOUT) < 0)
-			return -1;
-		return 1;
-	}
-
-	if (set_epoll_events(w->epoll_fd, fd, base_events) < 0)
-		return -1;
-
-	return 0;
+	/*
+	 * Do not toggle EPOLLOUT here. Under load the epoll poll-chain
+	 * update re-enters itself and trips the pollq _tag assert on
+	 * UK 0.21. The worker loop retries pending responses every
+	 * iteration instead.
+	 */
+	(void)base_events;
+	return pending > 0 ? 1 : 0;
 }
 
 /*
  * Drop a connection: clear its pending bytes, remove it from epoll,
  * and close the socket descriptor.
  */
+/*
+ * The POSIX fd table is shared by all cores and has no internal
+ * lock. Concurrent accept (fd alloc) and close (fd free) corrupt
+ * the table and the file objects behind it. Serialize every fd
+ * lifecycle operation with this lock. Data-path calls (recv,
+ * send, epoll_wait) stay outside the lock.
+ */
+static volatile int mc_fd_lock;
+
+static void mc_fd_lock_acquire(void)
+{
+	while (__atomic_exchange_n(&mc_fd_lock, 1, __ATOMIC_ACQUIRE))
+		uk_sched_yield();
+}
+
+static void mc_fd_lock_release(void)
+{
+	__atomic_store_n(&mc_fd_lock, 0, __ATOMIC_RELEASE);
+}
+
 static void drop_connection(struct worker_ctx *w, int fd)
 {
+	if (w->conn_count > 0)
+		w->conn_count--;
+
 	if (fd >= 0 && fd < MAX_TRACKED_FDS)
 		w->resp_pending[fd] = 0;
 
 	if (fd >= 0) {
+		mc_fd_lock_acquire();
 		epoll_ctl(w->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
 		close(fd);
+		mc_fd_lock_release();
 	}
 }
 
@@ -570,21 +685,25 @@ static int create_core_listener(int core_id)
 	       core_id, lwip_current_core_id(),
 	       (unsigned long)uk_pcpuvar_current_get(uk_pcpuvar_cpu_idx));
 
+	mc_fd_lock_acquire();
 	fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
 	if (fd < 0) {
 		printf("httpreply-mc: [ERR] socket failed: errno %d\n", errno);
+		mc_fd_lock_release();
 		return -1;
 	}
 
 	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
 		printf("httpreply-mc: [ERR] SO_REUSEADDR failed: errno %d\n", errno);
 		close(fd);
+		mc_fd_lock_release();
 		return -1;
 	}
 
 	if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
 		printf("httpreply-mc: [ERR] SO_REUSEPORT failed: errno %d\n", errno);
 		close(fd);
+		mc_fd_lock_release();
 		return -1;
 	}
 
@@ -598,12 +717,14 @@ static int create_core_listener(int core_id)
 	if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
 		printf("httpreply-mc: [ERR] bind failed: errno %d\n", errno);
 		close(fd);
+		mc_fd_lock_release();
 		return -1;
 	}
 
 	if (listen(fd, BACKLOG) < 0) {
 		printf("httpreply-mc: [ERR] listen failed: errno %d\n", errno);
 		close(fd);
+		mc_fd_lock_release();
 		return -1;
 	}
 
@@ -611,6 +732,7 @@ static int create_core_listener(int core_id)
 	printf("httpreply-mc: core %d listener fd=%d (lwip_core %u, listen_pcb=%p)\n",
 	       core_id, fd, lwip_current_core_id(), (void *)l);
 
+	mc_fd_lock_release();
 	return fd;
 }
 
@@ -623,15 +745,6 @@ static int create_core_listener(int core_id)
  * that at most one line prints per 2 s, so the serial load stays
  * negligible.
  */
-struct idle_halt_trace {
-	uint64_t last_log;	/* monotonic ns of last line printed */
-	unsigned long halts;	/* halt entries on this core		*/
-};
-
-static struct idle_halt_trace ib_trace[8];
-
-static void mc_diag_apic_mode(int core_id);
-static void mc_lapic_oneshot(int core_id, uint64_t ns);
 
 /*
  * Per-core state for the posted-IPI idle wake.
@@ -658,77 +771,48 @@ static volatile unsigned mc_halted[8];
  * The KVM platform implements this with a real halt: it arms a
  * one-shot timer interrupt for the wake, then executes sti; hlt. The
  * vCPU leaves the run queue for the whole sleep, so an idle core
- * uses no host CPU. The wake is the timer interrupt or any earlier
- * interrupt.
- * [Ticket 597c1b9731]
+ * uses no host CPU. The wake is the timer interrupt, a device MSI,
+ * or core 0's poke IPI, whichever comes first.
+ * [Ticket 597c1b9731, Ticket 1152cbcaca]
  */
 static inline void
 mc_idle_sleep(int core_id, uint64_t ns)
 {
 	unsigned long flags;
 	__nsec now;
-	int trace;
-	struct idle_halt_trace *t = &ib_trace[core_id];
-
-	now = ukplat_monotonic_clock();
-	t->halts++;
-	trace = (t->halts <= 2) || (now - t->last_log >= 2000000ULL);
-	if (trace) {
-		t->last_log = now;
-		printf("httpreply-mc: idle-trace core %d pre-halt #%lu ns=%llu\n",
-		       core_id, (unsigned long)t->halts,
-		       (unsigned long long)ns);
-	}
 
 	mc_halted[core_id] = 1;
 
-	if (core_id == 0) {
-		/*
-		 * vCPU 0 is woken by the shared i8254 one-shot, wired to this core.
-		 */
-		flags = uk_lcpu_save_irqf();
-		uk_lcpu_disable_irq();
-		now = ukplat_monotonic_clock();
-		uk_lcpu_halt_irq_until((uint64_t)(now + ns));
-		uk_lcpu_irqs_handle_pending();
-		uk_lcpu_restore_irqf(flags);
+	/*
+	 * Re-arm this core's queue interrupt before halting. A
+	 * completion that posted while the queue was masked does not
+	 * fire an MSI later. Writing the unmask register here makes
+	 * the device signal any pending completion now, so the halt
+	 * below either does not happen or ends immediately.
+	 */
+	{
+		struct uk_netdev *dev = uk_netdev_get(0);
 
-	} else {
-		uint64_t arm_ns = ns;
-
-		/*
-		 * A secondary core is woken only by its own per-vCPU LAPIC
-		 * one-shot (vector 0x30). It must not use uk_lcpu_halt_irq_until:
-		 * that arms the shared i8254 (wired to core 0 only) and re-halts in
-		 * a loop, which leaves this core halted with no wake source once the
-		 * one-shot is consumed. A single halt below is correct: the armed
-		 * one-shot (or any earlier interrupt) ends it. [Ticket 6f89cf874e]
-		 */
-		mc_lapic_oneshot(core_id, arm_ns);
-
-		{
-			__nsec t_in = ukplat_monotonic_clock();
-
-			flags = uk_lcpu_save_irqf();
-			uk_lcpu_disable_irq();
-			uk_lcpu_halt_irq();
-			uk_lcpu_irqs_handle_pending();
-			uk_lcpu_restore_irqf(flags);
-
-				if (t->halts <= 4)
-					printf("httpreply-mc: idle-wake core %d asked %llu ns, woke after %lld ns\n",
-					       core_id, (unsigned long long)arm_ns,
-					       (long long)(ukplat_monotonic_clock() - t_in));
-		}
+		if (dev)
+			ena_netdev_rearm_cq_intr(dev, (uint16_t)core_id);
 	}
+
+	/*
+	 * vCPU 0 is woken by the shared i8254 one-shot, wired to this
+	 * core. Peer cores rely on the same i8254 path plus core 0's
+	 * 0xF0 poke IPI, and on their own queue MSI vectors. No
+	 * per-core LAPIC one-shot: on hosts where the KVM xAPIC
+	 * distorts or drops it, a spent one-shot strands the core
+	 * with no wake source.
+	 */
+	flags = uk_lcpu_save_irqf();
+	uk_lcpu_disable_irq();
+	now = ukplat_monotonic_clock();
+	uk_lcpu_halt_irq_until((uint64_t)(now + ns));
+	uk_lcpu_irqs_handle_pending();
+	uk_lcpu_restore_irqf(flags);
 
 	mc_halted[core_id] = 0;
-
-	if (trace) {
-		printf("httpreply-mc: idle-trace core %d post-halt #%lu\n",
-		       core_id, (unsigned long)t->halts);
-		mc_diag_apic_mode(core_id);
-	}
 }
 
 /*
@@ -749,9 +833,7 @@ static void
 mc_poke_halted_peers(void)
 {
 	static uint64_t last_poke;
-	static uint64_t last_log;
 	uint64_t now = (uint64_t)ukplat_monotonic_clock();
-	uint64_t poked = 0;
 	int c;
 
 	if (now - last_poke < 2000000ULL)
@@ -761,39 +843,10 @@ mc_poke_halted_peers(void)
 	for (c = 1; c < mc_nworkers && c < 8; c++) {
 		if (mc_halted[c]) {
 			mc_ipi_wake[c] = 1;
-			uk_plat_native_except_send_ipi((uint32_t)c, 16);
-			poked++;
+			uk_plat_native_except_send_ipi((uint32_t)c, 208);
 		}
 	}
 
-	if (poked && now - last_log >= 2000000000ULL) {
-		last_log = now;
-		printf("httpreply-mc: [poke] core 0 posted IPI to %llu halted peer(s)\n",
-		       (unsigned long long)poked);
-	}
-}
-
-/*
- * APIC mode diagnostic [Ticket a5b91e7993].
- *
- * Each core reads and prints the APIC base MSR (0x01B) of its own
- * local APIC. Bit 11 is the xAPIC enable, bit 10 is the x2APIC
- * enable. We need xAPIC enabled and x2APIC clear, so the KVM
- * in-kernel xAPIC (MMIO) emulation, including the one-shot timer
- * used as the per-vCPU wake source, applies. The read cannot fault,
- * so this probe is safe.
- */
-static void mc_diag_apic_mode(int core_id)
-{
-	__u32 lo = 0, hi = 0;
-
-	uk_arch_x86_64_rdmsr(0x01B, &lo, &hi);
-
-	printf("httpreply-mc: [diag] core %d APIC base MSR=0x%08x "
-	       "xapic_en=%d x2apic_en=%d mmio_base=0x%08x\n",
-	       core_id, (unsigned)lo,
-	       (int)((lo >> 11) & 1u), (int)((lo >> 10) & 1u),
-	       (unsigned)(lo & 0xFFFFF000UL));
 }
 
 /*
@@ -807,21 +860,6 @@ static void mc_diag_apic_mode(int core_id)
 
 static uint64_t mc_lapic_rate[8];
 static __u64 mc_lapic_base[8];
-static uint64_t mc_lapic_arm_ns[8];
-
-/*
- * Give this vCPU a unique in-kernel APIC ID.
- *
- * KVM matches a physical IPI destination against the vCPU APIC ID that
- * KVM derives from the x2APIC ID MSR (0x10). Every vCPU defaults to 0,
- * so a posted peer IPI cannot address one vCPU alone. Write this
- * core's index into the x2APIC ID fields to fix that.
- */
-static void
-mc_set_x2apic_id(int core_id)
-{
-	uk_arch_x86_64_wrmsr(0x010, (__u32)(core_id << 24), (__u32)core_id);
-}
 
 static void
 mc_lapic_timer_prepare(int core_id)
@@ -841,19 +879,16 @@ mc_lapic_timer_prepare(int core_id)
 	ticr = b + 0x380;
 	tccr = b + 0x390;
 
-	/* Publish this core's APIC ID (ID register 0x020, low byte) so other
+	/* Publish this core's APIC ID (ID register 0x000, low byte) so other
 	 * cores can address it as the ICR2 destination of a posted IPI. */
-	mc_apic_id[core_id] = *(volatile __u32 *)(b + 0x020) & 0xFFu;
+	mc_apic_id[core_id] = *(volatile __u32 *)(b + 0x000) & 0xFFu;
 
-	/*
-	 * Timer divider select /4 (TDCR = 0xB). LVTT (0x320) carries
-	 * vector 0x30 with fixed delivery. It is unmasked with a large
-	 * initial count, so the counter runs across the sampling window
-	 * and cannot expire inside it.
-	 */
-	*(volatile __u32 *)(b + 0x3E0) = 0xB;
-	*lvt = 0x30u;
+	/* Divider /1: finest tick. A large count never expires in the window. */
+	*(volatile __u32 *)(b + 0x3E0) = 0x4;
+	*lvt = (*lvt) & ~(1u << 16);
+	*lvt = (*lvt) | (0x30u << 8);
 	*ticr = 0x10000000u;
+	*lvt = (*lvt) & ~(1u << 16);
 
 	t0 = ukplat_monotonic_clock();
 	c0 = *tccr;
@@ -862,13 +897,12 @@ mc_lapic_timer_prepare(int core_id)
 	c1 = *tccr;
 	t1 = ukplat_monotonic_clock();
 
-	/* Ticks per nanosecond, scaled by 2^32 for the one-shot math. */
 	if (c0 > c1 && t1 > t0)
-		mc_lapic_rate[core_id] = ((uint64_t)(c0 - c1) << 32) / (uint64_t)(t1 - t0);
+		mc_lapic_rate[core_id] = ((t1 - t0) << 32) / (uint64_t)(c0 - c1);
 	else
 		mc_lapic_rate[core_id] = ((uint64_t)1 << 32) / 2;
 
-	*lvt = 0x30u | (1u << 16);
+	*lvt = (*lvt) | (1u << 16);
 
 	uk_pr_info("httpreply-mc: LAPIC core %d prepared, base=0x%lx apic_id=%u\n",
 		   core_id, (unsigned long)mc_lapic_base[core_id],
@@ -876,75 +910,31 @@ mc_lapic_timer_prepare(int core_id)
 }
 
 /*
- * Arm the one-shot timer of this core to fire at most ns
- * nanoseconds from now, then unmask the LVT.
+ * Register the per-core timer interrupt (once; the handler table
+ * is shared) and prepare this core's timer.
  */
-static void
-mc_lapic_oneshot(int core_id, uint64_t ns)
-{
-	volatile __u32 *lvt = (volatile __u32 *)(mc_lapic_base[core_id] + 0x320);
-	volatile __u32 *ticr = (volatile __u32 *)(mc_lapic_base[core_id] + 0x380);
-	uint64_t ticks;
-
-	ticks = (ns * mc_lapic_rate[core_id]) >> 32;
-	if (ticks < 1)
-		ticks = 1;
-	if (ticks > 0xFFFFFFFF)
-		ticks = 0xFFFFFFFF;
-
-	/*
-	 * Mask LVTT, set the one-shot configuration (vector 0x30, fixed
-	 * delivery, edge trigger, one-shot mode: bit 17), load the tick
-	 * count, then unmask. The timer fires exactly once, after ticks.
-	 * It does not reload, so no tick follows while this core idles.
-	 */
-	*lvt = 0x30u | (1u << 17) | (1u << 16);
-	*ticr = (uint32_t)ticks;
-	*lvt = 0x30u | (1u << 17);
-
-	mc_lapic_arm_ns[core_id] = ukplat_monotonic_clock();
-}
-
 /*
- * Interrupt handler for the LAPIC timer (vector 0x30, IRQ 16):
- * write the EOI register and stop the dispatch.
+ * Interrupt handler for the wake IPI (vector 0xF0, IRQ 208):
+ * clear the wake marker, write the EOI register, stop the dispatch.
+ * The IPI vector sits outside the allocatable pool, clear of the
+ * 0x20 i8254 vector and the (no longer used) 0x30 timer band.
+ * [Ticket 1152cbcaca]
  */
 static int
-mc_lapic_timer_irq(void *arg)
+mc_ipi_wake_irq(void *arg)
 {
-	static int fires[8];
 	__u64 idx = uk_lcpu_get_current_idx_in_except();
-	__u64 b;
 
 	(void)arg;
 	if (idx >= 8)
 		return 1;
 
-	b = mc_lapic_base[idx];
-	*(volatile __u32 *)(b + 0x0B0) = 0;
+	mc_ipi_wake[idx] = 0;
+	*(volatile __u32 *)(mc_lapic_base[idx] + 0x0B0) = 0;
 
-	if (mc_ipi_wake[idx]) {
-		/* A posted IPI woke this halted core. Clear the marker so a
-		 * later real timer expiry is not misreported as an IPI. */
-		mc_ipi_wake[idx] = 0;
-		printf("httpreply-mc: ipi-wake core %u (posted IPI from coordinator)\n",
-		       (unsigned)idx);
-	} else if (fires[idx] < 3) {
-		fires[idx]++;
-		printf("httpreply-mc: lapic-irq core %u fire %d: TMICT=%x TMCCT=%x LVT0=%x fire-after=%lld ns\n",
-		       (unsigned)idx, fires[idx],
-		       *(volatile __u32 *)(b + 0x380),
-		       *(volatile __u32 *)(b + 0x390),
-		       *(volatile __u32 *)(b + 0x320),
-		       (long long)(ukplat_monotonic_clock() - mc_lapic_arm_ns[idx]));
-	}
 	return 1;
 }
 
-/*
- * Register the per-core timer interrupt (once; the handler table
- * is shared) and prepare this core's timer.
- */
 static int mc_lapic_irq_registered;
 
 static void
@@ -953,11 +943,28 @@ mc_lapic_timer_init(int core_id)
 	mc_lapic_timer_prepare(core_id);
 
 	if (!mc_lapic_irq_registered) {
-		uk_intctlr_irq_register(16, mc_lapic_timer_irq, NULL);
+		uk_intctlr_irq_register(208, mc_ipi_wake_irq, NULL);
 		mc_lapic_irq_registered = 1;
 	}
 }
 
+
+/*
+ * Report whether this core's lwIP instance still owns an active TCP
+ * connection. A tracked fd can close (drop_connection) while its pcb
+ * stays in the retransmit queue waiting for an ACK. The fd count then
+ * reads zero but the flow is still live, so the core must keep
+ * polling its queue. [Ticket 1152cbcaca]
+ */
+static int mc_core_has_pcb(void)
+{
+	struct lwip_core_state *cs = lwip_get_core_state();
+
+	if (cs == NULL)
+		return 0;
+
+	return cs->tcp_active_pcbs != NULL;
+}
 
 /*
  * Run-to-completion worker engine. Bound to a single dedicated core
@@ -965,7 +972,6 @@ mc_lapic_timer_init(int core_id)
  */
 static __noreturn void run_to_completion_worker(int core_id)
 {
-	mc_diag_apic_mode(core_id);
 	/*
 	 * Defensive: if the APIC still runs in x2APIC mode the one-shot
 	 * timer below cannot be armed. Refuse to enter the main loop.
@@ -982,8 +988,6 @@ static __noreturn void run_to_completion_worker(int core_id)
 			}
 		}
 	}
-
-	mc_set_x2apic_id(core_id);
 
 	mc_lapic_timer_init(core_id);
 	mc_percore_alloc_selftest(core_id);
@@ -1008,14 +1012,17 @@ static __noreturn void run_to_completion_worker(int core_id)
 
 	ev.events = EPOLLIN;
 	ev.data.fd = server_fd;
+	mc_fd_lock_acquire();
 	if (epoll_ctl(w->epoll_fd, EPOLL_CTL_ADD, server_fd, &ev) < 0) {
 		printf("httpreply-mc: [ERR] core %d failed to add listener to epoll: errno %d\n",
 		       core_id, errno);
 		close(server_fd);
+		mc_fd_lock_release();
 		for (;;) {
 			uk_sched_yield();
 		}
 	}
+	mc_fd_lock_release();
 
 	printf("httpreply-mc: [INFO] core %d listening on port %d (queue pair %d)\n",
 	       core_id, LISTEN_PORT, core_id);
@@ -1067,31 +1074,13 @@ static __noreturn void run_to_completion_worker(int core_id)
 					socklen_t client_len = sizeof(client_addr);
 					int cfd;
 
+					mc_fd_lock_acquire();
 					cfd = accept4(server_fd,
 						      (struct sockaddr *)&client_addr,
 						      &client_len, SOCK_NONBLOCK);
-					if (cfd < 0)
+					if (cfd < 0) {
+						mc_fd_lock_release();
 						break;
-
-					/*
-					 * Log the cumulative RX queue packet counter alongside
-					 * the accept. This shows whether accepted connections
-					 * follow the RSS queue distribution. [Ticket ba82aec88b]
-					 * Rate-limited to prevent serial port blocking under load.
-					 */
-					if (cfd <= 10 || (cfd % 50) == 0) {
-						struct uk_netdev *_dev = uk_netdev_get(0);
-						unsigned long _rxpkts = 0;
-
-						if (_dev)
-							_rxpkts = ena_netdev_rxq_pkts(_dev,
-										      (uint16_t)core_id);
-						printf("httpreply-mc: core %d ACCEPTED fd=%d from %s:%d"
-						       " (rxq%d_pkts=%lu)\n",
-						       core_id, cfd,
-						       ip4addr_ntoa((const ip4_addr_t *)&client_addr.sin_addr),
-						       ntohs(client_addr.sin_port),
-						       core_id, _rxpkts);
 					}
 
 					configure_socket_options(cfd);
@@ -1101,8 +1090,10 @@ static __noreturn void run_to_completion_worker(int core_id)
 					if (epoll_ctl(w->epoll_fd, EPOLL_CTL_ADD,
 						      cfd, &ev) < 0) {
 						close(cfd);
+						mc_fd_lock_release();
 						break;
 					}
+					mc_fd_lock_release();
 					w->conn_count++;
 				}
 				continue;
@@ -1122,32 +1113,8 @@ static __noreturn void run_to_completion_worker(int core_id)
 			}
 
 			if (events[i].events & (EPOLLIN | EPOLLRDNORM)) {
-				ssize_t r = recv(fd, w->recv_buf, MC_RECVBUF_SIZE - 1, 0);
-
-				if (r > 0) {
-					w->recv_buf[r] = '\0';
-					w->req_count++;
-					w->byte_count += http_resp_len;
-					if ((w->req_count % MC_STATS_INTERVAL) == 0)
-						printf("httpreply-mc: [stats] core %d: req=%lu bytes=%lu\n",
-						       core_id,
-						       (unsigned long)w->req_count,
-						       (unsigned long)w->byte_count);
-
-					if (fd < MAX_TRACKED_FDS) {
-						w->resp_pending[fd] = (uint32_t)http_resp_len;
-						if (send_pending_response(w, fd, base_events) < 0)
-							drop_connection(w, fd);
-					} else {
-						send(fd, http_response, http_resp_len, 0);
-					}
-
-					if (strstr(w->recv_buf, "Connection: close") != NULL ||
-					    strstr(w->recv_buf, "connection: close") != NULL)
-						drop_connection(w, fd);
-				} else if (r == 0 || (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+				if (handle_readable(w, fd) < 0)
 					drop_connection(w, fd);
-				}
 			}
 		}
 
@@ -1158,6 +1125,55 @@ static __noreturn void run_to_completion_worker(int core_id)
 		 * and for how long. [Ticket 597c1b9731]
 		 */
 		work = (n > 0);
+
+		/*
+		 * Retry any response that a previous send() left
+		 * partial. The EPOLLOUT path is avoided (see
+		 * send_pending_response), so drive retries from the
+		 * loop directly.
+		 */
+		{
+			int fd2;
+
+			for (fd2 = 0; fd2 < MAX_TRACKED_FDS; fd2++) {
+				int rc;
+
+				if (w->resp_pending[fd2] > 0) {
+					rc = send_pending_response(w, fd2,
+								   EPOLLIN | EPOLLRDHUP);
+					if (rc < 0) {
+						drop_connection(w, fd2);
+					} else {
+						work = true;
+						/*
+						 * The response fully went out.
+						 * The EPOLLIN guard above skips
+						 * reads while a response is
+						 * pending, and the event for data
+						 * that arrived meanwhile may not
+						 * repeat. Drain the socket now.
+						 * [Ticket 1152cbcaca]
+						 */
+						if (rc == 0 &&
+						    handle_readable(w, fd2) < 0)
+							drop_connection(w, fd2);
+					}
+				}
+			}
+		}
+
+		/*
+		 * Keep the active (busy) backoff regime while this
+		 * core has open connections or a live pcb. The device
+		 * delays TX completion for a queue whose core sleeps,
+		 * so a connected flow must stay polled. A pcb can
+		 * outlive its tracked fd while it retransmits, so
+		 * check both. Idle cores with no flow still fall
+		 * through to deep sleep.
+		 */
+		work |= (w->conn_count > 0) || mc_core_has_pcb();
+
+
 
 		if (dev) {
 			unsigned long rx_now, tx_now;

@@ -50,7 +50,11 @@ struct ena_msix_req {
 int ena_plat_msix_arm(const struct ena_msix_req *req);
 void ena_plat_msix_disarm(void);
 uint32_t ena_plat_msix_count_get(void);
+uint32_t ena_plat_msix_vector_count(uint32_t vector);
 uint32_t ena_plat_msix_state(void);
+void ena_plat_msix_diag(uint32_t *msgctl, uint32_t *t1_addr,
+		       uint32_t *t1_data, uint32_t *t1_ctrl, uint32_t *pba0,
+		       uint32_t *irr, uint32_t *isr);
 
 #else
 #include <stdio.h>
