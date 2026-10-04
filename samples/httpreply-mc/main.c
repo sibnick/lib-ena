@@ -207,7 +207,12 @@ static int mc_core_has_percore_alloc(unsigned int core)
  *
  * Core 0 publishes all resolved ARP entries (both gateway and local
  * subnet clients) in mc_arp_pub. Each secondary core checks the
- * version counter in its stack drive loop. When the version advances,
+ * version counter in its stack drive loop at a bounded 20 ms
+ * interval. The worker loop runs at over 1 M iterations/s, but the
+ * ARP tables change only at connect time. A per-iteration sync is
+ * pure waste, so both cores run the sync at most every 20 ms.
+ * [Ticket 06e687fe99]
+ * When the version advances,
  * the core copies the resolved IP/MAC pairs into its own per-core ARP
  * table as static entries. This immediately flushes any queued SYN-ACKs,
  * allowing connections across all cores to establish.
@@ -239,6 +244,15 @@ static struct mc_arp_req mc_arp_req;
 static uint32_t mc_arp_seen[LWIP_CORE_MAX < MC_MAX_WORKERS ?
 			      MC_MAX_WORKERS : LWIP_CORE_MAX];
 static uint32_t mc_arp_req_served;
+
+/*
+ * Bounded interval for the cross-core ARP sync. The worker loop
+ * runs at over 1 M iterations/s. The sync only needs to react to
+ * ARP changes, which happen at connect time. 20 ms adds far less
+ * delay than one TCP retransmission. [Ticket 06e687fe99]
+ */
+#define MC_ARP_SYNC_INTERVAL_NS ukarch_time_msec_to_nsec(20)
+static __nsec mc_arp_sync_last[MC_MAX_WORKERS];
 
 /*
  * Numeric mirror of enum etharp_state from lwIP etharp.c. The
@@ -305,7 +319,7 @@ static void mc_arp_publish(void)
 	}
 }
 
-static void mc_arp_adopt(unsigned int core_id)
+static void mc_arp_adopt(unsigned int core_id, __nsec now)
 {
 	struct lwip_core_state *cs;
 	uint32_t count, i;
@@ -316,7 +330,6 @@ static void mc_arp_adopt(unsigned int core_id)
 
 	/* Check if any entry in our local ARP table is PENDING */
 	static __nsec last_arp_req;
-	__nsec now = ukplat_monotonic_clock();
 
 	cs = lwip_get_core_state();
 	for (i = 0; i < ARP_TABLE_SIZE; i++) {
@@ -537,11 +550,19 @@ static void drive_core_stack(int core_id)
 	 * Synchronize ARP entries across cores. Core 0 receives ARP replies
 	 * from the network and publishes resolved MACs. The other cores
 	 * adopt the MACs in their own ARP tables.
+	 *
+	 * Run the sync at most every MC_ARP_SYNC_INTERVAL_NS. The loop
+	 * rate is over 1 M iterations/s; the ARP tables change only at
+	 * connect time. Reuse the timestamp from the top of this function
+	 * so the check costs no extra clock read. [Ticket 06e687fe99]
 	 */
-	if (core_id == 0)
-		mc_arp_publish();
-	else
-		mc_arp_adopt((unsigned int)core_id);
+	if (now - mc_arp_sync_last[core_id] >= MC_ARP_SYNC_INTERVAL_NS) {
+		mc_arp_sync_last[core_id] = now;
+		if (core_id == 0)
+			mc_arp_publish();
+		else
+			mc_arp_adopt((unsigned int)core_id, now);
+	}
 }
 
 static int send_pending_response(struct worker_ctx *w, int fd,
