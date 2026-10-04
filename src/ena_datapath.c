@@ -162,25 +162,6 @@ int ena_ring_alloc(struct ena_adapter *adapter, uint16_t qid,
 			return -ENOMEM;
 		}
 		memset(ring->sq_head_wb_virt, 0, 64);
-
-		/* TX only: record the request ID placed at each SQ slot so the
-		 * completion path can validate completion order and drop stale
-		 * completions. tx_comp_sq tracks the next expected completion.
-		 * [Ticket a9c6945c21] */
-		ring->sq_reqid = calloc(sq_depth, sizeof(uint16_t));
-		if (!ring->sq_reqid) {
-			ena_err("ring alloc: failed to allocate sq_reqid array");
-			ena_dma_free(ring->sq_head_wb_virt, ring->sq_head_wb_phys);
-			ring->sq_head_wb_virt = NULL;
-			free(ring->req_in_flight);
-			free(ring->buffers.raw_bufs);
-			free(ring->free_req_ids);
-			ena_dma_free(ring->cq_virt, ring->cq_phys);
-			ena_dma_free(ring->sq_virt, ring->sq_phys);
-			free(ring);
-			return -ENOMEM;
-		}
-		ring->tx_comp_sq = 0;
 	}
 
 	*out_ring = ring;
@@ -205,11 +186,6 @@ void ena_ring_free(struct ena_ring *ring)
 	if (ring->req_allocated) {
 		free(ring->req_allocated);
 		ring->req_allocated = NULL;
-	}
-
-	if (ring->sq_reqid) {
-		free(ring->sq_reqid);
-		ring->sq_reqid = NULL;
 	}
 
 	if (ring->buffers.raw_bufs) {
