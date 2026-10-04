@@ -422,6 +422,7 @@ unsigned long ena_netdev_txq_pkts(struct uk_netdev *dev, uint16_t qid);
 uint32_t ena_plat_msix_state(void);
 uint32_t ena_plat_msix_count_get(void);
 
+#if CONFIG_APPHTTPREPLYMC_CONSOLE_STATS
 static unsigned int mc_count_memp_free(void *head)
 {
 	unsigned int count = 0;
@@ -433,6 +434,7 @@ static unsigned int mc_count_memp_free(void *head)
 	}
 	return count;
 }
+#endif
 
 /*
  * Drive the local core network stack: receive packets from dedicated
@@ -448,6 +450,23 @@ static void drive_core_stack(int core_id)
 	if (now - last_hb[core_id] >= ukarch_time_sec_to_nsec(2)) {
 		last_hb[core_id] = now;
 
+		/*
+		 * MSI-X safety net: while the device is armed but no MSI
+		 * has ever been observed, rewrite the completion-queue
+		 * unmask registers. This is functional, not diagnostic, so
+		 * it runs even when console stats are off.
+		 */
+		if (core_id == 0) {
+			struct uk_netdev *dev = uk_netdev_get(0);
+
+			if (dev && ena_plat_msix_state() != 0 &&
+			    ena_plat_msix_count_get() == 0) {
+				ena_netdev_rearm_cq_intr(dev, 0);
+				ena_netdev_rearm_cq_intr(dev, 1);
+			}
+		}
+
+#if CONFIG_APPHTTPREPLYMC_CONSOLE_STATS
 		struct lwip_core_state *cs = lwip_get_core_state();
 		unsigned int active_pcbs = 0;
 		struct tcp_pcb *p;
@@ -468,18 +487,6 @@ static void drive_core_stack(int core_id)
 		if (dev) {
 			rxpkts = ena_netdev_rxq_pkts(dev, (uint16_t)core_id);
 			txpkts = ena_netdev_txq_pkts(dev, (uint16_t)core_id);
-
-			/*
-			 * Safety net: while MSI-X is armed but no MSI
-			 * has ever been observed, rewrite the queue
-			 * unmask registers. If the write at ring
-			 * creation was not latched, this one will be.
-			 */
-			if (core_id == 0 && ena_plat_msix_state() != 0 &&
-			    ena_plat_msix_count_get() == 0) {
-				ena_netdev_rearm_cq_intr(dev, 0);
-				ena_netdev_rearm_cq_intr(dev, 1);
-			}
 		}
 
 		{
@@ -542,6 +549,7 @@ static void drive_core_stack(int core_id)
 				}
 			}
 		}
+#endif
 	}
 	uknetdev_poll_rxqueue((uint16_t)core_id);
 	sys_check_timeouts();
@@ -580,11 +588,13 @@ static int handle_readable(struct worker_ctx *w, int fd)
 		w->recv_buf[r] = '\0';
 		w->req_count++;
 		w->byte_count += http_resp_len;
+#if CONFIG_APPHTTPREPLYMC_CONSOLE_STATS
 		if ((w->req_count % MC_STATS_INTERVAL) == 0)
 			printf("httpreply-mc: [stats] core %d: req=%lu bytes=%lu\n",
 			       w->worker_id,
 			       (unsigned long)w->req_count,
 			       (unsigned long)w->byte_count);
+#endif
 
 		if (fd < MAX_TRACKED_FDS) {
 			w->resp_pending[fd] = (uint32_t)http_resp_len;

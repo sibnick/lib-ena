@@ -31,3 +31,15 @@ menuconfig APPHTTPREPLYMC
 	bool "Unikraft HTTP Reply Multi-Core Benchmark Server"
 	default n
 	select APPHTTPREPLYMC_DEPENDENCIES
+
+config APPHTTPREPLYMC_CONSOLE_STATS
+	bool "Print periodic heartbeat and stats to the console"
+	depends on APPHTTPREPLYMC
+	default n
+	help
+	  Print the 2 s per-core heartbeat, the per-request stats line, and
+	  the lwIP stall probe to the console. Each write blocks the
+	  run-to-completion worker loop, so the whole core stops and every
+	  open connection waits. This inflates tail latency. Keep this off
+	  for latency benchmarks. Turn it on only for bring-up and
+	  debugging.
