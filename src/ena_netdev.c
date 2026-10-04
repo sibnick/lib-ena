@@ -391,37 +391,6 @@ static void ena_netdev_reclaim_tx_bounce(struct ena_ring *ring,
 	txq->bounce_in_use = (txq->bounce_free_count < txq->nb_desc);
 }
 
-/* Release the oldest in-flight TX bounce slot whose completion never arrived */
-static void ena_netdev_release_stuck_tx_bounce(struct ena_ring *ring,
-					       struct uk_netdev_tx_queue *txq)
-{
-	uint16_t req_id;
-
-	ena_ring_lock(ring);
-
-	if (ring->req_in_flight && txq->bounce_map) {
-		for (req_id = 0; req_id < txq->nb_desc; req_id++) {
-			int16_t slot = txq->bounce_map[req_id];
-			if (slot >= 0 && ring->req_in_flight[req_id]) {
-				ring->req_in_flight[req_id] = 0;
-				ena_ring_req_id_free(ring, req_id);
-				txq->bounce_map[req_id] = -1;
-				if (txq->bounce_free_ids && txq->nb_desc > 0) {
-					txq->bounce_free_ids[txq->bounce_free_tail] = (uint16_t)slot;
-					txq->bounce_free_tail = (uint16_t)((txq->bounce_free_tail + 1) & (txq->nb_desc - 1));
-					txq->bounce_free_count++;
-				}
-				break;
-			}
-		}
-	}
-
-	ena_ring_unlock(ring);
-
-	txq->bounce_in_use = (txq->bounce_free_count < txq->nb_desc);
-	txq->bounce_wait_polls = 0;
-}
-
 /* Return a dropped RX netbuf bounce slot to the queue pool and free the netbuf */
 static void ena_netdev_rxq_drop_netbuf(void *arg, void *netbuf)
 {
@@ -1024,9 +993,15 @@ int ena_netdev_tx_one(struct uk_netdev *dev __attribute__((unused)),
 	/* Check for bounce stall if pool is exhausted */
 	if (queue->bounce_free_count == 0 && queue->nb_desc > 0) {
 		if (queue->bounce_wait_polls >= ENA_TX_BOUNCE_STALL_LIMIT) {
-			ena_err("tx q%u: bounce pool exhausted after %u polls; releasing stuck bounce",
+			/* The pool is full because completions are slow, not
+			 * lost. Do NOT force-release a request: that frees a
+			 * req_id whose completion is still outstanding, the ID
+			 * gets reused, and the late completion then frees the
+			 * wrong netbuf (a double free that corrupts the heap).
+			 * Apply backpressure instead; reclaim_tx_bounce frees
+			 * slots as real completions arrive. [Ticket a9c6945c21] */
+			ena_err("tx q%u: bounce pool full after %u polls; backpressure",
 				queue->queue_id, (unsigned)queue->bounce_wait_polls);
-			ena_netdev_release_stuck_tx_bounce(ring, queue);
 		} else {
 			queue->bounce_wait_polls++;
 		}
@@ -1572,9 +1547,12 @@ static int ena_netdev_txq_xmit(struct uk_netdev *dev, uint16_t queue_id,
 	/* Check for bounce stall if pool is exhausted */
 	if (txq->bounce_free_count == 0 && txq->nb_desc > 0) {
 		if (txq->bounce_wait_polls >= ENA_TX_BOUNCE_STALL_LIMIT) {
-			ena_err("tx q%u: bounce pool exhausted after %u polls; releasing stuck bounce",
+			/* Pool full because completions are slow, not lost.
+			 * Do not force-release: that reuses a req_id whose
+			 * completion is outstanding and corrupts the heap.
+			 * Backpressure instead. [Ticket a9c6945c21] */
+			ena_err("tx q%u: bounce pool full after %u polls; backpressure",
 				queue_id, (unsigned)txq->bounce_wait_polls);
-			ena_netdev_release_stuck_tx_bounce(ring, txq);
 		} else {
 			txq->bounce_wait_polls++;
 		}

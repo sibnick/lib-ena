@@ -224,6 +224,13 @@ struct ena_ring {
 	                            * idempotent: a second release of the same
 	                            * ID is a no-op instead of a double push.
 	                            * [Ticket a9c6945c21] */
+	uint16_t *sq_reqid;        /* TX only: request ID placed at each SQ slot.
+	                            * Used to validate completion order. */
+	uint32_t tx_comp_sq;       /* TX only: SQ index of the oldest submission
+	                            * awaiting completion (next expected). A
+	                            * completion whose req_id does not match
+	                            * sq_reqid[tx_comp_sq] is stale and is
+	                            * dropped. [Ticket a9c6945c21] */
 	uint32_t ring_lock;        /* Atomic spinlock for ring access */
 
 	/* RX drop callback: return a dropped netbuf bounce slot to the pool

@@ -368,7 +368,7 @@ static void test_netdev_txq_xmit(void)
 	ena_netdev_free(netdev);
 }
 
-static void test_netdev_tx_stuck_bounce_releases(void)
+static void test_netdev_tx_bounce_backpressure(void)
 {
 	struct uk_netdev *netdev;
 	struct uk_netdev_conf conf;
@@ -419,31 +419,32 @@ static void test_netdev_tx_stuck_bounce_releases(void)
 	}
 	assert(txq->bounce_free_count == 0);
 
-	/* Later low-memory transmits fail until the bounded stall limit is
-	 * reached, then the stuck bounce is released and the transmit
-	 * succeeds. */
+	/* The pool is full and the mock never completes these requests.
+	 * The driver must NOT force-release a request: that frees a req_id
+	 * whose completion is still outstanding, the ID is reused, and the
+	 * late completion then frees the wrong netbuf (a double free that
+	 * corrupts the heap). It must apply backpressure instead: every
+	 * further low-memory transmit returns -EBUSY. [Ticket a9c6945c21] */
 	for (i = 0; i < ENA_TX_BOUNCE_STALL_LIMIT + 1; i++) {
 		ret = netdev->ops->txq_xmit(netdev, 0, nb);
-		if (ret == -EBUSY)
-			busy++;
-		else
-			break;
+		assert(ret == -EBUSY);
+		busy++;
 	}
-	assert(ret == 0);
-	assert(busy == ENA_TX_BOUNCE_STALL_LIMIT);
+	assert(busy == ENA_TX_BOUNCE_STALL_LIMIT + 1);
 
-	/* The stuck request id was returned to the pool, the new request is
-	 * in flight, and the wait counter was restarted. */
-	assert(txq->bounce_in_use == true);
-	assert(txq->bounce_wait_polls == 0);
+	/* No request was force-released: the pool stays full and the last
+	 * submitted request is still in flight. */
+	assert(txq->bounce_free_count == 0);
 	assert(ring->req_in_flight[txq->bounce_req_id] == 1);
 
-	/* Complete all in-flight requests */
+	/* Real completions arrive in order and free the request IDs. The
+	 * next transmit reclaims the bounce slots internally. */
 	mock_ena_hw_emulate_tx(&g_hw, ring, 8);
 	ena_tx_poll_completions(ring, 8, NULL);
 
 	nb->phys_addr = 0x50001000;
 	assert(netdev->ops->txq_xmit(netdev, 0, nb) == 0);
+	assert(txq->bounce_free_count == 8);
 	assert(txq->bounce_in_use == false);
 
 	assert(netdev->ops->dev_stop(netdev) == 0);
@@ -1267,7 +1268,7 @@ int main(void)
 	RUN_TEST(test_netdev_configure_and_lifecycle);
 	RUN_TEST(test_netdev_multi_queue_msix_mapping);
 	RUN_TEST(test_netdev_txq_xmit);
-	RUN_TEST(test_netdev_tx_stuck_bounce_releases);
+	RUN_TEST(test_netdev_tx_bounce_backpressure);
 	RUN_TEST(test_netdev_rxq_recv);
 	RUN_TEST(test_netdev_rx_csum_and_lro_chaining);
 	RUN_TEST(test_netdev_tx_csum_offload);
