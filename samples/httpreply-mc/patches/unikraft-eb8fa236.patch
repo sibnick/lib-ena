@@ -1834,8 +1834,9 @@ index 6705173..b70ed4b 100644
  	sc = (struct uk_plat_native_sysctx *)auxspcb->uksysctx;
  	sc->gsbase = rdgsbasefn();
 
+
 diff --git a/lib/ukallocbbuddy/bbuddy.c b/lib/ukallocbbuddy/bbuddy.c
-index 3e39480..c0e5379 100644
+index 3e39480..bd79c24 100644
 --- a/lib/ukallocbbuddy/bbuddy.c
 +++ b/lib/ukallocbbuddy/bbuddy.c
 @@ -117,11 +117,11 @@ do {									\
@@ -1851,4 +1852,33 @@ index 3e39480..c0e5379 100644
 +				  c->link.pprev ? *c->link.pprev : NULL, &c->link);	\
  	}								\
  } while (0)
+ 
+@@ -473,6 +473,28 @@ static void bbuddy_pfree(struct uk_alloc *a, void *obj, unsigned long num_pages)
+ 	UK_ASSERT(num_pages);
+ 	UK_ASSERT(IS_ALIGNED((uintptr_t)obj, __PAGE_SIZE));
+ 
++#if CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY
++	/* Free-path guard. Catch a double free or a bad-size free before it
++	 * corrupts the allocator, and name the object and size. A bad size
++	 * here means the caller's size bookkeeping, or the pointer itself,
++	 * was corrupted by an earlier write. This is the fault that shows up
++	 * later as a map_free region-overrun assert. [Ticket a9c6945c21] */
++	{
++		struct uk_bbpalloc_memr *gm = map_get_memr(b, (uintptr_t)obj);
++		unsigned long end = (uintptr_t)obj + (num_pages << __PAGE_SHIFT);
++		unsigned long rend = gm ? gm->first_page +
++			(gm->nr_pages << __PAGE_SHIFT) : 0;
++
++		if (!allocated_in_map(b, (uintptr_t)obj))
++			uk_pr_err("bbuddy guard: free of unallocated or wild obj=%p num_pages=%lu\n",
++				  obj, num_pages);
++		else if (!gm || end > rend)
++			uk_pr_err("bbuddy guard: bad-size free obj=%p num_pages=%lu region=[%p,%p)\n",
++				  obj, num_pages,
++				  (void *)(gm ? gm->first_page : 0), (void *)rend);
++	}
++#endif
++
+ 	uk_alloc_stats_count_pfree(a, obj, num_pages);
+ 	freelist_sanitycheck(b->free_head);
  
