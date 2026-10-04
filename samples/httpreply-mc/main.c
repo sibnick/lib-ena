@@ -56,6 +56,12 @@ int uk_percore_heap_get(unsigned int i, __uptr *base, __sz *len);
 #include "lwip_percore.h"
 #include "idlebackoff.h"
 
+#if CONFIG_APPHTTPREPLYMC_NETLOG
+#include <uk/console.h>
+#include <uk/console/driver.h>
+#include <uk/spinlock.h>
+#endif
+
 #define MC_MAX_WORKERS 2
 #define MC_RECVBUF_SIZE 4096
 
@@ -576,6 +582,101 @@ static void drive_core_stack(int core_id)
 static int send_pending_response(struct worker_ctx *w, int fd,
 				 uint32_t base_events);
 
+#if CONFIG_APPHTTPREPLYMC_NETLOG
+/*
+ * Network log sink. The EC2 serial console is lossy and lags, so it
+ * drops the bbuddy free-path guard and the fd-lock warnings that we
+ * need to localize the c=100 fault. Register a stdout console device
+ * that copies every log line into a ring, and answer GET /__log with
+ * the most recent bytes. The out callback runs under the ukconsole
+ * device lock, so it only does a bounded copy under our own leaf lock.
+ * The /__log handler must not print, or it would feed itself.
+ * [Ticket a9c6945c21]
+ */
+#define MC_NETLOG_SIZE   CONFIG_APPHTTPREPLYMC_NETLOG_SIZE
+#define MC_NETLOG_SEND   65536
+
+static char mc_netlog_buf[MC_NETLOG_SIZE];
+static size_t mc_netlog_w;
+static struct uk_spinlock mc_netlog_lock = UK_SPINLOCK_INITIALIZER();
+
+static __ssz mc_netlog_out(struct uk_console *dev, const char *buf, __sz len)
+{
+	__sz i;
+
+	(void)dev;
+	uk_spin_lock(&mc_netlog_lock);
+	for (i = 0; i < len; i++) {
+		mc_netlog_buf[mc_netlog_w & (MC_NETLOG_SIZE - 1)] = buf[i];
+		mc_netlog_w++;
+	}
+	uk_spin_unlock(&mc_netlog_lock);
+	return len;
+}
+
+static const struct uk_console_ops mc_netlog_ops = { .out = mc_netlog_out };
+static struct uk_console mc_netlog_dev;
+
+static void mc_netlog_init(void)
+{
+	uk_console_init(&mc_netlog_dev, "netlog", &mc_netlog_ops,
+			UK_CONSOLE_FLAG_STDOUT, UK_CONSOLE_CLASS_NONE);
+	uk_console_register(&mc_netlog_dev);
+}
+
+/* Copy the most recent up-to-cap bytes of the ring into out. */
+static size_t mc_netlog_snapshot(char *out, size_t cap)
+{
+	size_t w, have, n, s, i;
+
+	uk_spin_lock(&mc_netlog_lock);
+	w = mc_netlog_w;
+	have = w < (size_t)MC_NETLOG_SIZE ? w : (size_t)MC_NETLOG_SIZE;
+	n = have < cap ? have : cap;
+	s = w - n;
+	for (i = 0; i < n; i++)
+		out[i] = mc_netlog_buf[(s + i) & (MC_NETLOG_SIZE - 1)];
+	uk_spin_unlock(&mc_netlog_lock);
+	return n;
+}
+
+static char mc_netlog_body[MC_NETLOG_SEND];
+
+/* Serve the log ring on this diagnostic connection, then close it. */
+static void mc_netlog_send_response(struct worker_ctx *w, int fd)
+{
+	char hdr[128];
+	size_t blen, hlen;
+	size_t off;
+
+	blen = mc_netlog_snapshot(mc_netlog_body, sizeof(mc_netlog_body));
+	hlen = (size_t)snprintf(hdr, sizeof(hdr),
+		"HTTP/1.1 200 OK\r\n"
+		"Content-Type: text/plain; charset=utf-8\r\n"
+		"Content-Length: %u\r\n"
+		"Connection: close\r\n\r\n", (unsigned int)blen);
+
+	for (off = 0; off < hlen; ) {
+		ssize_t n = send(fd, hdr + off, hlen - off, 0);
+		if (n > 0) { off += (size_t)n; continue; }
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+			drive_core_stack(w->worker_id);
+			continue;
+		}
+		return;
+	}
+	for (off = 0; off < blen; ) {
+		ssize_t n = send(fd, mc_netlog_body + off, blen - off, 0);
+		if (n > 0) { off += (size_t)n; continue; }
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+			drive_core_stack(w->worker_id);
+			continue;
+		}
+		return;
+	}
+}
+#endif /* CONFIG_APPHTTPREPLYMC_NETLOG */
+
 /*
  * Read one request from a connection and queue the response.
  * Returns -1 when the connection must be dropped.
@@ -586,6 +687,12 @@ static int handle_readable(struct worker_ctx *w, int fd)
 
 	if (r > 0) {
 		w->recv_buf[r] = '\0';
+#if CONFIG_APPHTTPREPLYMC_NETLOG
+		if (strncmp(w->recv_buf, "GET /__log", 10) == 0) {
+			mc_netlog_send_response(w, fd);
+			return -1;
+		}
+#endif
 		w->req_count++;
 		w->byte_count += http_resp_len;
 #if CONFIG_APPHTTPREPLYMC_CONSOLE_STATS
@@ -1171,6 +1278,10 @@ int main(int argc, char **argv)
 
 	(void)argc;
 	(void)argv;
+
+#if CONFIG_APPHTTPREPLYMC_NETLOG
+	mc_netlog_init();
+#endif
 
 	printf("\n=============================================\n");
 	printf(" Unikraft HTTP Benchmark Server (lib-ena-mc)\n");
