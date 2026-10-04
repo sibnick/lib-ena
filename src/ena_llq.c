@@ -179,6 +179,11 @@ int ena_llq_tx_push(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 			dst64[i] = src64[i];
 	}
 
+	/* Record the request ID at this SQ slot so the completion path can
+	 * validate completion order. [Ticket a9c6945c21] */
+	if (ring->sq_reqid)
+		ring->sq_reqid[ring->sq_tail & (ring->sq_depth - 1)] = req_id;
+
 	/* Advance producer tail index (monotonic unmasked counter) */
 	ring->sq_tail++;
 	if ((ring->sq_tail & (ring->sq_depth - 1)) == 0)

@@ -106,6 +106,11 @@ int ena_tx_submit(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 	desc->buff_addr_lo = ena_cpu_to_le32((uint32_t)pkt->phys_addr);
 	desc->buff_addr_hi_hdr_sz = ena_cpu_to_le32((uint32_t)((pkt->phys_addr >> 32) & 0xFFFFu));
 
+	/* Record the request ID at this SQ slot so the completion path can
+	 * validate completion order. [Ticket a9c6945c21] */
+	if (ring->sq_reqid)
+		ring->sq_reqid[ring->sq_tail & (ring->sq_depth - 1)] = req_id;
+
 	/* Advance producer tail index (monotonic unmasked counter) */
 	ring->sq_tail++;
 	if ((ring->sq_tail & (ring->sq_depth - 1)) == 0)
@@ -171,6 +176,28 @@ int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 			break;
 		}
 
+		/* Completion-order validation. The next completion must carry
+		 * the request ID we placed at the oldest uncompleted SQ slot.
+		 * A mismatch is a stale or duplicate completion (for example
+		 * one for a request the stuck-bounce recovery already released
+		 * and whose ID was reused). Drop it: do not free any netbuf,
+		 * do not touch in-flight state, do not advance the expected
+		 * index. [Ticket a9c6945c21] */
+		if (ring->sq_reqid) {
+			uint16_t expected = ring->sq_reqid[ring->tx_comp_sq &
+					(ring->sq_depth - 1)];
+
+			if (req_id != expected) {
+				ena_err("tx poll: stale completion req_id %u, expected %u at sq %u",
+					req_id, expected,
+					(unsigned)(ring->tx_comp_sq & (ring->sq_depth - 1)));
+				ring->cq_head++;
+				if ((ring->cq_head & (ring->cq_depth - 1)) == 0)
+					ring->cq_phase ^= 1;
+				continue;
+			}
+		}
+
 		/* Validate in-flight request status */
 		if (!ring->req_in_flight || !ring->req_in_flight[req_id]) {
 			ena_err("tx poll: req_id %u not in-flight", req_id);
@@ -197,6 +224,10 @@ int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 
 		/* Return request ID to free pool */
 		ena_ring_req_id_free(ring, req_id);
+
+		/* This SQ slot is now completed; expect the next one. */
+		if (ring->sq_reqid)
+			ring->tx_comp_sq++;
 
 		/* Advance CQ consumer head index (monotonic unmasked counter) */
 		ring->cq_head++;
