@@ -219,6 +219,11 @@ struct ena_ring {
 	uint16_t free_req_tail;    /* Push index */
 	uint16_t free_req_count;   /* Count of free IDs */
 	uint8_t *req_in_flight;    /* In-flight flag for each request ID */
+	uint8_t *req_allocated;    /* 1 while a request ID is checked out of the
+	                            * free pool. Makes ena_ring_req_id_free
+	                            * idempotent: a second release of the same
+	                            * ID is a no-op instead of a double push.
+	                            * [Ticket a9c6945c21] */
 	uint32_t ring_lock;        /* Atomic spinlock for ring access */
 
 	/* RX drop callback: return a dropped netbuf bounce slot to the pool

@@ -671,17 +671,56 @@ static int send_pending_response(struct worker_ctx *w, int fd, uint32_t base_eve
  * the table and the file objects behind it. Serialize every fd
  * lifecycle operation with this lock. Data-path calls (recv,
  * send, epoll_wait) stay outside the lock.
+ *
+ * The lock stores the owning core id (0 means free). A waiter that
+ * finds the holder idle for longer than MC_FD_LOCK_STUCK_NS prints
+ * one warning naming both cores. Without this, a core that faults
+ * or spins inside a corrupted allocator while holding the lock
+ * leaves the other core spinning with no console output, which is
+ * the "hang with no banner" symptom. [Ticket a9c6945c21]
  */
-static volatile int mc_fd_lock;
+static volatile uint32_t mc_fd_lock;
+static volatile __nsec mc_fd_lock_acquired_at;
+
+#define MC_FD_LOCK_STUCK_NS ukarch_time_sec_to_nsec(2)
+
+static uint32_t mc_this_core(void)
+{
+	return (uint32_t)uk_pcpuvar_current_get(uk_pcpuvar_cpu_idx);
+}
 
 static void mc_fd_lock_acquire(void)
 {
-	while (__atomic_exchange_n(&mc_fd_lock, 1, __ATOMIC_ACQUIRE))
+	uint32_t want = mc_this_core() + 1;
+	uint32_t expected;
+	int warned = 0;
+
+	for (;;) {
+		expected = 0;
+		if (__atomic_compare_exchange_n(&mc_fd_lock, &expected, want,
+						false, __ATOMIC_ACQUIRE,
+						__ATOMIC_RELAXED)) {
+			mc_fd_lock_acquired_at = ukplat_monotonic_clock();
+			return;
+		}
+
+		__nsec now = ukplat_monotonic_clock();
+		__nsec held = now - mc_fd_lock_acquired_at;
+
+		if (!warned && held >= MC_FD_LOCK_STUCK_NS && expected >= 1) {
+			warned = 1;
+			printf("httpreply-mc: [WARN] core %u waiting on fd lock "
+			       "held by core %u for %lld ms (holder may be stuck)\n",
+			       (unsigned)(want - 1), (unsigned)(expected - 1),
+			       (long long)(held / 1000000LL));
+		}
 		uk_sched_yield();
+	}
 }
 
 static void mc_fd_lock_release(void)
 {
+	mc_fd_lock_acquired_at = 0;
 	__atomic_store_n(&mc_fd_lock, 0, __ATOMIC_RELEASE);
 }
 

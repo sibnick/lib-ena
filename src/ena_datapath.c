@@ -133,6 +133,22 @@ int ena_ring_alloc(struct ena_adapter *adapter, uint16_t qid,
 		return -ENOMEM;
 	}
 
+	/* Allocate request-ID ownership tracking array. All IDs start free
+	 * (allocated = 0), matching the fully populated free pool above.
+	 * [Ticket a9c6945c21] */
+	ring->req_allocated = calloc(sq_depth, sizeof(uint8_t));
+	if (!ring->req_allocated) {
+		ena_err("ring alloc: failed to allocate request-ID ownership array");
+		free(ring->req_in_flight);
+		ring->req_in_flight = NULL;
+		free(ring->buffers.raw_bufs);
+		free(ring->free_req_ids);
+		ena_dma_free(ring->cq_virt, ring->cq_phys);
+		ena_dma_free(ring->sq_virt, ring->sq_phys);
+		free(ring);
+		return -ENOMEM;
+	}
+
 	if (ring_type == ENA_RING_TYPE_TX) {
 		ring->sq_head_wb_virt = ena_dma_alloc(64, &ring->sq_head_wb_phys);
 		if (!ring->sq_head_wb_virt) {
@@ -165,6 +181,11 @@ void ena_ring_free(struct ena_ring *ring)
 	if (ring->req_in_flight) {
 		free(ring->req_in_flight);
 		ring->req_in_flight = NULL;
+	}
+
+	if (ring->req_allocated) {
+		free(ring->req_allocated);
+		ring->req_allocated = NULL;
 	}
 
 	if (ring->buffers.raw_bufs) {
@@ -205,6 +226,8 @@ int ena_ring_req_id_alloc(struct ena_ring *ring, uint16_t *out_req_id)
 	id = ring->free_req_ids[ring->free_req_head];
 	ring->free_req_head = (uint16_t)((ring->free_req_head + 1) & (ring->sq_depth - 1));
 	ring->free_req_count--;
+	if (ring->req_allocated)
+		ring->req_allocated[id] = 1;
 
 	*out_req_id = id;
 	return 0;
@@ -215,8 +238,20 @@ int ena_ring_req_id_free(struct ena_ring *ring, uint16_t req_id)
 	if (!ring || req_id >= ring->sq_depth)
 		return -EINVAL;
 
+	/* Idempotent release. A request ID is pushed to the free pool exactly
+	 * once per allocation. The TX "stuck bounce" recovery path can release
+	 * an ID that the device still completes later; without this guard the
+	 * late completion pushes the same ID a second time. The free pool then
+	 * hands one ID to two requests, and their completions double-free the
+	 * same netbuf, corrupting the per-core heap allocator. [Ticket a9c6945c21] */
+	if (ring->req_allocated && !ring->req_allocated[req_id])
+		return 0;
+
 	if (ring->free_req_count >= ring->sq_depth)
 		return -EINVAL;
+
+	if (ring->req_allocated)
+		ring->req_allocated[req_id] = 0;
 
 	ring->free_req_ids[ring->free_req_tail] = req_id;
 	ring->free_req_tail = (uint16_t)((ring->free_req_tail + 1) & (ring->sq_depth - 1));

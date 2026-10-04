@@ -175,11 +175,49 @@ static void test_req_id_pool(void)
 	assert(ena_ring_req_id_free(ring, ids[3]) == 0);
 	assert(ring->free_req_count == 8);
 
-	/* Extra free fails */
-	assert(ena_ring_req_id_free(ring, 0) == -EINVAL);
+	/* Extra free is a safe no-op. The ID is already back in the free
+	 * pool, so a second release must not push it a second time.
+	 * [Ticket a9c6945c21] */
+	assert(ena_ring_req_id_free(ring, 0) == 0);
+	assert(ring->free_req_count == 8);
 
 	ena_ring_free(ring);
 	printf("[PASS] test_req_id_pool passed\n");
+}
+
+/*
+ * Model the TX "stuck bounce" recovery path: a request ID is force-released
+ * while the device may still complete it later. A second release of the same
+ * ID must not push it into the free pool twice, otherwise one ID is handed to
+ * two requests and their completions double-free the same netbuf.
+ * [Ticket a9c6945c21]
+ */
+static void test_req_id_double_free(void)
+{
+	printf("[TEST] Running test_req_id_double_free...\n");
+
+	struct ena_adapter adapter;
+	struct ena_ring *ring = NULL;
+	uint16_t a, b, c;
+
+	memset(&adapter, 0, sizeof(adapter));
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8, &ring) == 0);
+
+	/* Check out one ID and release it twice. */
+	assert(ena_ring_req_id_alloc(ring, &a) == 0);
+	assert(ena_ring_req_id_free(ring, a) == 0);
+	assert(ring->free_req_count == 8);
+	assert(ena_ring_req_id_free(ring, a) == 0);   /* no-op */
+	assert(ring->free_req_count == 8);            /* not 9 */
+
+	/* The pool must still hand out each ID at most once. Two allocations
+	 * after the double free must return distinct IDs. */
+	assert(ena_ring_req_id_alloc(ring, &b) == 0);
+	assert(ena_ring_req_id_alloc(ring, &c) == 0);
+	assert(b != c);
+
+	ena_ring_free(ring);
+	printf("[PASS] test_req_id_double_free passed\n");
 }
 
 static void test_ring_create_destroy_hw(void)
@@ -312,12 +350,13 @@ int main(void)
 	test_ring_alloc_free_rx();
 	test_ring_alloc_bad_depth();
 	test_req_id_pool();
+	test_req_id_double_free();
 	test_ring_create_destroy_hw();
 	test_ring_create_hw_error_handling();
 	test_multiple_rings_allocation();
 
 	printf("========================================\n");
-	printf("ALL PHASE 4 DATAPATH TESTS PASSED (8/8) \n");
+	printf("ALL PHASE 4 DATAPATH TESTS PASSED (9/9) \n");
 	printf("========================================\n");
 	return 0;
 }
