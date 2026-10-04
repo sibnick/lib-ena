@@ -422,10 +422,10 @@ index 04bc0ed..1cbb4b6 100644
  
  	iolock = _SHOULD_LOCK(of->mode);
 diff --git a/lib/ukalloc/alloc.c b/lib/ukalloc/alloc.c
-index b7bf88f..121e5e4 100644
+index b7bf88f..e3eaf5f 100644
 --- a/lib/ukalloc/alloc.c
 +++ b/lib/ukalloc/alloc.c
-@@ -41,18 +41,32 @@
+@@ -41,18 +41,43 @@
  #include <uk/assert.h>
  #include <uk/arch/limits.h>
  #include <uk/lcpu.h>
@@ -439,6 +439,17 @@ index b7bf88f..121e5e4 100644
 +#if defined(CONFIG_LIBUKPCPUVAR) && CONFIG_LIBUKPCPUVAR
 +#include <uk/pcpuvar.h>
 +#endif /* CONFIG_LIBUKPCPUVAR */
++
++#if CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY
++#include <uk/print.h>
++/* Heap canary. Place a guard pattern after each allocation's user data
++ * and verify it on free. A clobbered canary names the allocation that
++ * overran into its neighbor. Reuses the bbuddy sanity flag so a single
++ * config turns on all allocator diagnostics. [Ticket a9c6945c21] */
++#define UKALLOC_CANARY_BYTES 16
++#define UKALLOC_CANARY_A 0xdeadbeefcafebabeULL
++#define UKALLOC_CANARY_B 0x0123456789abcdefULL
++#endif
 +
  #define size_to_num_pages(size) \
  	(UK_PAGING_PAGE_ALIGN_UP((unsigned long)(size)) / __PAGE_SIZE)
@@ -458,7 +469,58 @@ index b7bf88f..121e5e4 100644
  int uk_alloc_register(struct uk_alloc *a)
  {
  	struct uk_alloc *this = _uk_alloc_head;
-@@ -629,3 +643,22 @@ unsigned long uk_alloc_pavailmem_total(void)
+@@ -149,7 +174,12 @@ void *uk_malloc_ifpages(struct uk_alloc *a, __sz size)
+ #ifdef CONFIG_HAVE_MEMTAG
+ 	size = MEMTAG_ALIGN(size);
+ #endif /* CONFIG_HAVE_MEMTAG */
++#if CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY
++	__sz realsize = METADATA_IFPAGES_SIZE_POW2 + size +
++			UKALLOC_CANARY_BYTES;
++#else
+ 	__sz realsize = METADATA_IFPAGES_SIZE_POW2 + size;
++#endif
+ 
+ 	UK_ASSERT(a);
+ 	/* check for invalid size and overflow */
+@@ -167,6 +197,16 @@ void *uk_malloc_ifpages(struct uk_alloc *a, __sz size)
+ 	metadata->num_pages = num_pages;
+ 	metadata->base = (void *) intptr;
+ 
++#if CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY
++	{
++		unsigned long long *canary = (unsigned long long *)
++			((char *) intptr + METADATA_IFPAGES_SIZE_POW2 + size);
++
++		canary[0] = UKALLOC_CANARY_A;
++		canary[1] = UKALLOC_CANARY_B;
++	}
++#endif
++
+ #ifdef CONFIG_HAVE_MEMTAG
+ 	return ukarch_memtag_region(
+ 		(void *)(intptr + METADATA_IFPAGES_SIZE_POW2),
+@@ -197,6 +237,20 @@ void uk_free_ifpages(struct uk_alloc *a, void *ptr)
+ 
+ 	UK_ASSERT(metadata->base != __NULL);
+ 	UK_ASSERT(metadata->num_pages != 0);
++
++#if CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY
++	{
++		unsigned long long *canary = (unsigned long long *)
++			((char *) metadata->base +
++			 METADATA_IFPAGES_SIZE_POW2 + metadata->size);
++
++		if (canary[0] != UKALLOC_CANARY_A ||
++		    canary[1] != UKALLOC_CANARY_B)
++			uk_pr_err("ukalloc canary: heap overrun ptr=%p size=%zu\n",
++				  ptr, (size_t) metadata->size);
++	}
++#endif
++
+ 	uk_pfree(a, metadata->base, metadata->num_pages);
+ 
+ #ifdef CONFIG_HAVE_MEMTAG
+@@ -629,3 +683,22 @@ unsigned long uk_alloc_pavailmem_total(void)
  	}
  	return total;
  }
