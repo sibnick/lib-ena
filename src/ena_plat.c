@@ -111,7 +111,9 @@ void ena_debug(const char *fmt, ...)
 
 #include <uk/alloc.h>
 #include <uk/intctlr.h>
+#ifdef CONFIG_LIBENA_MSIX
 #include <uk/intctlr/msix.h>
+#endif
 #include <uk/plat/memory.h>
 #include <uk/plat/time.h>
 #include <uk/arch/util.h>
@@ -223,6 +225,14 @@ int ena_plat_msix_probe(void *pci_dev, uint32_t *num_vectors)
 	return 0;
 }
 
+
+/*
+ * The arm path needs the patched interrupt controller that provides
+ * uk_intctlr_msix_alloc(). That controller is not in released
+ * Unikraft, so this whole block is built only when CONFIG_LIBENA_MSIX
+ * is on. With the flag off the driver runs in software polling mode.
+ */
+#ifdef CONFIG_LIBENA_MSIX
 
 /*
  * MSI-X table and PBA location. The driver decodes the location
@@ -559,6 +569,54 @@ void ena_plat_msix_diag(uint32_t *msgctl, uint32_t *t1_addr,
 		}
 	}
 }
+
+#else /* !CONFIG_LIBENA_MSIX */
+
+/*
+ * Arming is off. The driver runs in software polling mode. These
+ * stubs keep the platform interface linkable without the patched
+ * interrupt controller.
+ */
+int ena_plat_msix_arm(const struct ena_msix_req *req)
+{
+	(void)req;
+	return -ENOTSUP;
+}
+
+void ena_plat_msix_disarm(void)
+{
+}
+
+uint32_t ena_plat_msix_vector_count(uint32_t vector)
+{
+	(void)vector;
+	return 0;
+}
+
+uint32_t ena_plat_msix_count_get(void)
+{
+	return 0;
+}
+
+uint32_t ena_plat_msix_state(void)
+{
+	return 0;
+}
+
+void ena_plat_msix_diag(uint32_t *msgctl, uint32_t *t1_addr,
+		       uint32_t *t1_data, uint32_t *t1_ctrl, uint32_t *pba0,
+		       uint32_t *irr, uint32_t *isr)
+{
+	*msgctl = 0;
+	*t1_addr = 0;
+	*t1_data = 0;
+	*t1_ctrl = 0;
+	*pba0 = 0;
+	*irr = 0;
+	*isr = 0;
+}
+
+#endif /* CONFIG_LIBENA_MSIX */
 
 void *ena_dma_alloc(size_t size, uint64_t *phys_out)
 {
