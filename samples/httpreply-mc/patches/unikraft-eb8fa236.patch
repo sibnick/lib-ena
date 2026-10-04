@@ -1833,3 +1833,22 @@ index 6705173..b70ed4b 100644
  	auxspcb = ukarch_auxsp_get_cb(auxsp);
  	sc = (struct uk_plat_native_sysctx *)auxspcb->uksysctx;
  	sc->gsbase = rdgsbasefn();
+
+diff --git a/lib/ukallocbbuddy/bbuddy.c b/lib/ukallocbbuddy/bbuddy.c
+index 3e39480..c0e5379 100644
+--- a/lib/ukallocbbuddy/bbuddy.c
++++ b/lib/ukallocbbuddy/bbuddy.c
+@@ -117,11 +117,11 @@ do {									\
+ 			uk_pr_err("Bad page level" _FREESAN_LOCFMT	\
+ 				  "got %u, expected %zu\n",		\
+ 				  c, (ord), (head), off, c->page_order, (ord));\
+-		if (c->link.pprev && (*c->link.pprev)->next != &c->link) \
++		if (!c->link.pprev || *c->link.pprev != &c->link) \
+ 			uk_pr_err("Bad backlink" _FREESAN_LOCFMT	\
+ 				  "got %p, expected %p\n",		\
+ 				  c, (ord), (head), off,		\
+-				  (*c->link.pprev)->next, &c->link);	\
++				  c->link.pprev ? *c->link.pprev : NULL, &c->link);	\
+ 	}								\
+ } while (0)
+ 
