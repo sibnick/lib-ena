@@ -160,7 +160,12 @@ static void test_llq_tx_path_bar2(void)
 	ret = ena_init_run(&adapter, 1500);
 	assert(ret == 0);
 
-	/* LLQ must be enabled during init when BAR2 is present */
+	/* The init path keeps LLQ off. On EC2 hosts the push path loses
+	 * TX after the queue idles, so init stays on the host SQ path. */
+	assert(adapter.llq_info.enabled == false);
+
+	/* Enable LLQ here to exercise the push path on its own. */
+	assert(ena_llq_negotiate(&adapter) == 0);
 	assert(adapter.llq_info.enabled == true);
 	assert(adapter.llq_info.entry_size == 128);
 	assert(adapter.llq_info.header_len == 96);
