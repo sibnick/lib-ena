@@ -36,25 +36,51 @@ of a second push. Unit test `test_req_id_double_free` covers it.
 
 ## Guarded rebuild (localization, if the crash persists)
 
-If a guarded run still faults, bbuddy can assert at the exact corrupting
-free instead of crashing later. Build with the freelist sanity check on:
+The first guarded run (2026-10-04) did not boot. The bbuddy freelist sanity
+check had an upstream bug at unikraft eb8fa236: its back-link test
+`(*c->link.pprev)->next != &c->link` is always true for a valid hlist, so
+it printed "Bad backlink" for every node of every freelist at boot. The
+serial flood stalled boot and the target never bound port 80. Fixed in
+`patches/unikraft-eb8fa236.patch`: the test is now
+`*c->link.pprev != &c->link`, the real hlist invariant.
+
+The check does not assert. It prints `uk_pr_err` lines on every allocation
+and free, the first of which names the corrupt freelist and chunk pointer:
+
+```
+ERR: [libukallocbbuddy] <bbuddy.c @ ...> Bad backlink @ <ptr> (free_head[<order>](<head>) + <off>): got <p>, expected <p>
+```
+
+Other strings it can print: "Invalid chunk pointer", "Unaligned chunk",
+"Bad page level", "Bad backlink". Read the FIRST one after the warm-up;
+it is close to the corrupting operation.
+
+Build with the check on. `defconfig` is a fragment, so expand it first,
+then set the flag, then expand again:
 
 ```bash
 cp defconfig .config
+make olddefconfig
 sed -i 's/^# CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY is not set/CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY=y/' .config
 make olddefconfig && make
 ```
 
-Then deploy and run the same sweep:
+Confirm the flag is on before building:
 
 ```bash
-wrk -t4 -c100 -d15s http://<target>/   # after a c=50 warm-up
+grep CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY=y .config
 ```
 
-With the check on, a corrupt freelist trips a `UK_ASSERT` inside
-`freelist_sanitycheck` at the call that caused it. That points at the
-freeing code path, not at a later victim. The check adds large overhead, so
-use it only to localize, not to measure throughput.
+Then deploy and run the repro after a c=50 warm-up:
+
+```bash
+wrk -t4 -c100 -d30s http://<target>/
+```
+
+Poll the console with `aws ec2 get-console-output`. The check adds large
+overhead, so throughput is low and the fault can take a while to appear.
+Use this build only to localize, not to measure.
+
 
 ## Reading the new fd-lock warning
 
