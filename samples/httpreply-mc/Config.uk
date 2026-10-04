@@ -43,3 +43,24 @@ config APPHTTPREPLYMC_CONSOLE_STATS
 	  open connection waits. This inflates tail latency. Keep this off
 	  for latency benchmarks. Turn it on only for bring-up and
 	  debugging.
+
+config APPHTTPREPLYMC_NETLOG
+	bool "Mirror all console output to a ring and serve it at /__log"
+	depends on APPHTTPREPLYMC
+	default n
+	help
+	  Register a stdout console device that copies every log line into
+	  an in-memory ring, and answer GET /__log on the listen port with
+	  the last bytes of that ring. The EC2 serial console is lossy and
+	  lags, so this gives a reliable way to read the bbuddy free-path
+	  guard and the fd-lock warnings during a run. Adds one compare per
+	  request and a copy per log line. Keep this off for clean latency
+	  numbers; use it only to localize faults. [Ticket a9c6945c21]
+
+config APPHTTPREPLYMC_NETLOG_SIZE
+	hex "Netlog ring size (power of two)"
+	depends on APPHTTPREPLYMC_NETLOG
+	default 0x40000
+	help
+	  Size in bytes of the in-memory log ring. Must be a power of two.
+	  The /__log endpoint returns the most recent bytes up to this size.

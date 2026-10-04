@@ -93,3 +93,25 @@ httpreply-mc: [WARN] core 1 waiting on fd lock held by core 0 for 2003 ms (holde
 
 That names the stuck core. A stuck holder points at a fault or an infinite
 loop on that core, which the guarded build then localizes.
+
+## Network log sink (/__log)
+
+The EC2 serial console is lossy and lags, so it drops the guard and
+fd-lock lines we need. The app can mirror every log line into an
+in-memory ring and serve the last bytes at GET /__log on the listen
+port. Enable it with CONFIG_APPHTTPREPLYMC_NETLOG=y. Read it during a
+run with:
+
+    curl -s http://<PUBLIC_IP>/__log
+
+The ring holds the most recent CONFIG_APPHTTPREPLYMC_NETLOG_SIZE bytes
+(default 0x40000). One fetch near the end of a run returns that run's
+guard and fd-lock lines. Keep the flag off for clean latency numbers.
+
+Guarded + netlog build:
+
+    cp defconfig .config
+    make olddefconfig
+    sed -i 's/^# CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY is not set/CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY=y/' .config
+    sed -i 's/^# CONFIG_APPHTTPREPLYMC_NETLOG is not set/CONFIG_APPHTTPREPLYMC_NETLOG=y/' .config
+    make olddefconfig && make
