@@ -170,9 +170,23 @@ void ena_delay_us(unsigned int us);
  */
 int ena_plat_msix_probe(void *pci_dev, uint32_t *num_vectors);
 
+/**
+ * Return the index of the CPU that runs the caller.
+ *
+ * The TX completion guard uses it to find a ring whose reaper is not
+ * the core that transmitted on it. A per-core heap is lock-free, so a
+ * queue pair must stay with one core.
+ *
+ * @return CPU index, or 0 when the platform does not expose one.
+ */
+uint32_t ena_plat_cpu_id(void);
+
 #ifndef __Unikraft__
 /* Host test hook: set the vector count reported by ena_plat_msix_probe. */
 void ena_plat_set_mock_msix_vectors(uint32_t num_vectors);
+
+/* Host test hook: set the CPU index reported by ena_plat_cpu_id. */
+void ena_plat_set_mock_cpu_id(uint32_t cpu_id);
 #endif
 
 #endif /* LIBENA_ENA_PLAT_H */

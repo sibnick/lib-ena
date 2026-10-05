@@ -63,6 +63,7 @@ int ena_ring_alloc(struct ena_adapter *adapter, uint16_t qid,
 	/* A fresh ring is valid. It becomes invalid on destroy or on a
 	 * device reset and is restored by a queue re-creation. */
 	ring->hw_valid = true;
+	ring->tx_owner_cpu = ENA_CPU_ID_NONE;
 	ring->sq_depth = sq_depth;
 	ring->cq_depth = cq_depth;
 	ring->cq_elem_size = (uint32_t)cq_elem_size;
