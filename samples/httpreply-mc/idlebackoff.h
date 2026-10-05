@@ -34,31 +34,30 @@
  * Consecutive no-work iterations before a sleep starts. Eight
  * iterations cost about 6 us, the measured no-work iteration time.
  */
-#define IB_IDLE_STREAK_LIMIT	8U
+#define IB_IDLE_STREAK_LIMIT 8U
 
 /* Work seen within this window keeps the core in the active regime. */
-#define IB_ACTIVE_WINDOW_NS	2000000ULL	/* 2 ms */
+#define IB_ACTIVE_WINDOW_NS 2000000ULL /* 2 ms */
 
 /*
  * Active-regime sleep. 20 us sits just above the KVM guest's PIT
  * one-shot floor (16 ticks, about 13.4 us), so it is a real halt,
  * not a spin.
  */
-#define IB_ACTIVE_SLEEP_NS	20000ULL
+#define IB_ACTIVE_SLEEP_NS 20000ULL
 
 /* Dormant-regime sleep: IB_LONG_BASE_NS << shift, capped at the max. */
-#define IB_LONG_BASE_NS		1000000ULL	/* 1 ms */
-#define IB_LONG_MAX_NS		8000000ULL	/* 8 ms */
-#define IB_LONG_MAX_SHIFT	3U	/* 1, 2, 4, 8 ms */
+#define IB_LONG_BASE_NS 1000000ULL /* 1 ms */
+#define IB_LONG_MAX_NS 8000000ULL  /* 8 ms */
+#define IB_LONG_MAX_SHIFT 3U	   /* 1, 2, 4, 8 ms */
 
 struct ib_state {
-	uint32_t streak;	/* consecutive no-work iterations	*/
-	uint32_t shift;	/* dormant-regime sleep exponent	*/
-	uint64_t last_work;	/* monotonic ns of the last work	*/
+	uint32_t streak;    /* consecutive no-work iterations	*/
+	uint32_t shift;	    /* dormant-regime sleep exponent	*/
+	uint64_t last_work; /* monotonic ns of the last work	*/
 };
 
-static inline void
-ib_init(struct ib_state *s, uint64_t now)
+static inline void ib_init(struct ib_state *s, uint64_t now)
 {
 	s->streak = 0;
 	s->shift = 0;
@@ -75,8 +74,7 @@ ib_init(struct ib_state *s, uint64_t now)
  *
  * Returns the sleep duration in ns. Zero means no sleep.
  */
-static inline uint64_t
-ib_tick(struct ib_state *s, uint64_t now, int work)
+static inline uint64_t ib_tick(struct ib_state *s, uint64_t now, int work)
 {
 	if (work) {
 		s->streak = 0;

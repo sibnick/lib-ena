@@ -59,7 +59,8 @@ static int pin_to_core(int core_id)
 	cpu_set_t cpuset;
 	CPU_ZERO(&cpuset);
 	CPU_SET(core_id, &cpuset);
-	return pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+	return pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t),
+				      &cpuset);
 }
 #endif
 
@@ -67,8 +68,10 @@ static int compare_u64(const void *a, const void *b)
 {
 	uint64_t arg1 = *(const uint64_t *)a;
 	uint64_t arg2 = *(const uint64_t *)b;
-	if (arg1 < arg2) return -1;
-	if (arg1 > arg2) return 1;
+	if (arg1 < arg2)
+		return -1;
+	if (arg1 > arg2)
+		return 1;
 	return 0;
 }
 
@@ -76,12 +79,20 @@ static void print_usage(const char *prog)
 {
 	printf("Usage: %s [options]\n", prog);
 	printf("Options:\n");
-	printf("  -s, --server <ip>        Server IP address (default: %s)\n", DEFAULT_SERVER_IP);
-	printf("  -p, --port <port>        Server UDP port (default: %d)\n", DEFAULT_PORT);
-	printf("  -n, --count <num>        Number of packets to probe (default: %d)\n", DEFAULT_COUNT);
-	printf("  -l, --len <bytes>        Packet length in bytes (default: %d)\n", DEFAULT_PKT_SIZE);
-	printf("  -r, --rate <pps>         Target send rate (pps, 0 = unthrottled)\n");
-	printf("  -c, --core <id>          Pin client process to CPU core ID\n");
+	printf("  -s, --server <ip>        Server IP address (default: %s)\n",
+	       DEFAULT_SERVER_IP);
+	printf("  -p, --port <port>        Server UDP port (default: %d)\n",
+	       DEFAULT_PORT);
+	printf("  -n, --count <num>        Number of packets to probe "
+	       "(default: %d)\n",
+	       DEFAULT_COUNT);
+	printf(
+	    "  -l, --len <bytes>        Packet length in bytes (default: %d)\n",
+	    DEFAULT_PKT_SIZE);
+	printf("  -r, --rate <pps>         Target send rate (pps, 0 = "
+	       "unthrottled)\n");
+	printf(
+	    "  -c, --core <id>          Pin client process to CPU core ID\n");
 	printf("  -h, --help               Show this help message\n");
 }
 
@@ -95,18 +106,18 @@ int main(int argc, char *argv[])
 	int pin_core = -1;
 
 	static struct option long_options[] = {
-		{"server", required_argument, 0, 's'},
-		{"port",   required_argument, 0, 'p'},
-		{"count",  required_argument, 0, 'n'},
-		{"len",    required_argument, 0, 'l'},
-		{"rate",   required_argument, 0, 'r'},
-		{"core",   required_argument, 0, 'c'},
-		{"help",   no_argument,       0, 'h'},
-		{0, 0, 0, 0}
-	};
+	    {"server", required_argument, 0, 's'},
+	    {"port", required_argument, 0, 'p'},
+	    {"count", required_argument, 0, 'n'},
+	    {"len", required_argument, 0, 'l'},
+	    {"rate", required_argument, 0, 'r'},
+	    {"core", required_argument, 0, 'c'},
+	    {"help", no_argument, 0, 'h'},
+	    {0, 0, 0, 0}};
 
 	int opt;
-	while ((opt = getopt_long(argc, argv, "s:p:n:l:r:c:h", long_options, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "s:p:n:l:r:c:h", long_options,
+				  NULL)) != -1) {
 		switch (opt) {
 		case 's':
 			server_ip = optarg;
@@ -114,7 +125,8 @@ int main(int argc, char *argv[])
 		case 'p':
 			port = atoi(optarg);
 			if (port <= 0 || port > 65535) {
-				fprintf(stderr, "Error: Invalid port %s\n", optarg);
+				fprintf(stderr, "Error: Invalid port %s\n",
+					optarg);
 				return EXIT_FAILURE;
 			}
 			break;
@@ -128,8 +140,10 @@ int main(int argc, char *argv[])
 		case 'l':
 			pkt_len = (size_t)strtoul(optarg, NULL, 10);
 			if (pkt_len < sizeof(struct probe_pkt)) {
-				fprintf(stderr, "Error: Minimum packet size is %zu bytes\n",
-					sizeof(struct probe_pkt));
+				fprintf(
+				    stderr,
+				    "Error: Minimum packet size is %zu bytes\n",
+				    sizeof(struct probe_pkt));
 				return EXIT_FAILURE;
 			}
 			break;
@@ -151,9 +165,12 @@ int main(int argc, char *argv[])
 #if defined(__linux__)
 	if (pin_core >= 0) {
 		if (pin_to_core(pin_core) == 0) {
-			printf("Pinned client process to CPU core %d\n", pin_core);
+			printf("Pinned client process to CPU core %d\n",
+			       pin_core);
 		} else {
-			fprintf(stderr, "Warning: Failed to pin to CPU core %d\n", pin_core);
+			fprintf(stderr,
+				"Warning: Failed to pin to CPU core %d\n",
+				pin_core);
 		}
 	}
 #endif
@@ -168,9 +185,8 @@ int main(int argc, char *argv[])
 	struct timeval tv;
 	tv.tv_sec = 0;
 	tv.tv_usec = RECV_TIMEOUT_MS * 1000;
-	if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+	if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0)
 		perror("setsockopt(SO_RCVTIMEO)");
-	}
 
 	int buf_size = 4 * 1024 * 1024;
 	setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size));
@@ -181,7 +197,8 @@ int main(int argc, char *argv[])
 	dest_addr.sin_family = AF_INET;
 	dest_addr.sin_port = htons((uint16_t)port);
 	if (inet_pton(AF_INET, server_ip, &dest_addr.sin_addr) <= 0) {
-		fprintf(stderr, "Error: Invalid server address '%s'\n", server_ip);
+		fprintf(stderr, "Error: Invalid server address '%s'\n",
+			server_ip);
 		close(fd);
 		return EXIT_FAILURE;
 	}
@@ -201,12 +218,12 @@ int main(int argc, char *argv[])
 	printf("========================================\n");
 	printf(" Low-Latency UDP Echo Benchmark Client\n");
 	printf(" Target: %s:%d\n", server_ip, port);
-	printf(" Probes: %lu packets, Size: %zu bytes\n", (unsigned long)count, pkt_len);
-	if (rate_pps > 0) {
+	printf(" Probes: %lu packets, Size: %zu bytes\n", (unsigned long)count,
+	       pkt_len);
+	if (rate_pps > 0)
 		printf(" Target Rate: %lu pps\n", (unsigned long)rate_pps);
-	} else {
+	else
 		printf(" Target Rate: Unthrottled (RTT synchronous)\n");
-	}
 	printf("========================================\n\n");
 
 	uint64_t interval_ns = rate_pps > 0 ? (1000000000ULL / rate_pps) : 0;
@@ -219,8 +236,9 @@ int main(int argc, char *argv[])
 		hdr->seq = seq;
 		hdr->send_ts_ns = get_time_ns();
 
-		ssize_t sent = sendto(fd, send_buf, pkt_len, 0,
-				      (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+		ssize_t sent =
+		    sendto(fd, send_buf, pkt_len, 0,
+			   (struct sockaddr *)&dest_addr, sizeof(dest_addr));
 		if (sent != (ssize_t)pkt_len) {
 			dropped_packets++;
 			continue;
@@ -228,12 +246,14 @@ int main(int argc, char *argv[])
 
 		struct sockaddr_in reply_addr;
 		socklen_t reply_len = sizeof(reply_addr);
-		ssize_t recvd = recvfrom(fd, recv_buf, pkt_len + 128, 0,
-					 (struct sockaddr *)&reply_addr, &reply_len);
+		ssize_t recvd =
+		    recvfrom(fd, recv_buf, pkt_len + 128, 0,
+			     (struct sockaddr *)&reply_addr, &reply_len);
 		uint64_t now = get_time_ns();
 
 		if (recvd > 0 && recvd >= (ssize_t)sizeof(struct probe_pkt)) {
-			struct probe_pkt *reply_hdr = (struct probe_pkt *)recv_buf;
+			struct probe_pkt *reply_hdr =
+			    (struct probe_pkt *)recv_buf;
 			if (reply_hdr->seq == seq) {
 				uint64_t rtt = now - reply_hdr->send_ts_ns;
 				latencies[valid_echoes++] = rtt;
@@ -266,7 +286,9 @@ int main(int argc, char *argv[])
 	free(recv_buf);
 
 	if (valid_echoes == 0) {
-		fprintf(stderr, "Failure: No valid echo responses received (%lu sent, %lu dropped).\n",
+		fprintf(stderr,
+			"Failure: No valid echo responses received (%lu sent, "
+			"%lu dropped).\n",
 			(unsigned long)count, (unsigned long)dropped_packets);
 		free(latencies);
 		return EXIT_FAILURE;
@@ -282,9 +304,8 @@ int main(int argc, char *argv[])
 	uint64_t p999_ns = latencies[(size_t)(valid_echoes * 0.999)];
 
 	uint64_t sum_ns = 0;
-	for (uint64_t i = 0; i < valid_echoes; i++) {
+	for (uint64_t i = 0; i < valid_echoes; i++)
 		sum_ns += latencies[i];
-	}
 	double mean_ns = (double)sum_ns / (double)valid_echoes;
 
 	double var_sum = 0.0;
@@ -301,17 +322,27 @@ int main(int argc, char *argv[])
 	printf("Sent:               %lu packets\n", (unsigned long)count);
 	printf("Received:           %lu packets (%.2f%% loss)\n",
 	       (unsigned long)valid_echoes, loss_pct);
-	printf("Duration:           %.3f seconds (%.0f pkts/sec)\n", total_sec, pps);
+	printf("Duration:           %.3f seconds (%.0f pkts/sec)\n", total_sec,
+	       pps);
 	printf("Round-Trip Latency (RTT):\n");
-	printf("  Min:              %7.2f µs (%lu ns)\n", min_ns / 1000.0, (unsigned long)min_ns);
-	printf("  p50 (Median):     %7.2f µs (%lu ns)\n", p50_ns / 1000.0, (unsigned long)p50_ns);
-	printf("  p90:              %7.2f µs (%lu ns)\n", p90_ns / 1000.0, (unsigned long)p90_ns);
-	printf("  p99:              %7.2f µs (%lu ns)\n", p99_ns / 1000.0, (unsigned long)p99_ns);
-	printf("  p99.9:            %7.2f µs (%lu ns)\n", p999_ns / 1000.0, (unsigned long)p999_ns);
-	printf("  Max:              %7.2f µs (%lu ns)\n", max_ns / 1000.0, (unsigned long)max_ns);
-	printf("  Mean ± StdDev:    %7.2f ± %.2f µs\n", mean_ns / 1000.0, stddev_ns / 1000.0);
+	printf("  Min:              %7.2f µs (%lu ns)\n", min_ns / 1000.0,
+	       (unsigned long)min_ns);
+	printf("  p50 (Median):     %7.2f µs (%lu ns)\n", p50_ns / 1000.0,
+	       (unsigned long)p50_ns);
+	printf("  p90:              %7.2f µs (%lu ns)\n", p90_ns / 1000.0,
+	       (unsigned long)p90_ns);
+	printf("  p99:              %7.2f µs (%lu ns)\n", p99_ns / 1000.0,
+	       (unsigned long)p99_ns);
+	printf("  p99.9:            %7.2f µs (%lu ns)\n", p999_ns / 1000.0,
+	       (unsigned long)p999_ns);
+	printf("  Max:              %7.2f µs (%lu ns)\n", max_ns / 1000.0,
+	       (unsigned long)max_ns);
+	printf("  Mean ± StdDev:    %7.2f ± %.2f µs\n", mean_ns / 1000.0,
+	       stddev_ns / 1000.0);
 	printf("-------------------------\n");
 
 	free(latencies);
-	return (dropped_packets > 0 && valid_echoes < count * 0.99) ? EXIT_FAILURE : EXIT_SUCCESS;
+	return (dropped_packets > 0 && valid_echoes < count * 0.99)
+		   ? EXIT_FAILURE
+		   : EXIT_SUCCESS;
 }
