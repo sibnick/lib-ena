@@ -112,17 +112,24 @@ static void test_ring_alloc_bad_depth(void)
 	memset(&adapter, 0, sizeof(adapter));
 
 	/* Null arguments */
-	assert(ena_ring_alloc(NULL, 0, ENA_RING_TYPE_TX, 32, 32, &ring) == -EINVAL);
-	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 32, 32, NULL) == -EINVAL);
+	assert(ena_ring_alloc(NULL, 0, ENA_RING_TYPE_TX, 32, 32, &ring) ==
+	       -EINVAL);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 32, 32, NULL) ==
+	       -EINVAL);
 
 	/* Non-power-of-two depths */
-	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 0, 32, &ring) == -EINVAL);
-	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 3, 32, &ring) == -EINVAL);
-	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 32, 5, &ring) == -EINVAL);
-	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 33, 32, &ring) == -EINVAL);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 0, 32, &ring) ==
+	       -EINVAL);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 3, 32, &ring) ==
+	       -EINVAL);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 32, 5, &ring) ==
+	       -EINVAL);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 33, 32, &ring) ==
+	       -EINVAL);
 
 	/* Invalid ring type */
-	assert(ena_ring_alloc(&adapter, 0, (enum ena_ring_type)99, 32, 32, &ring) == -EINVAL);
+	assert(ena_ring_alloc(&adapter, 0, (enum ena_ring_type)99, 32, 32,
+			      &ring) == -EINVAL);
 
 	printf("[PASS] test_ring_alloc_bad_depth passed\n");
 }
@@ -167,10 +174,9 @@ static void test_req_id_pool(void)
 	assert(ena_ring_req_id_free(ring, 100) == -EINVAL);
 
 	/* Free remaining */
-	for (i = 0; i < 8; i++) {
+	for (i = 0; i < 8; i++)
 		if (i != 0 && i != 3)
 			assert(ena_ring_req_id_free(ring, ids[i]) == 0);
-	}
 	assert(ena_ring_req_id_free(ring, ids[0]) == 0);
 	assert(ena_ring_req_id_free(ring, ids[3]) == 0);
 	assert(ring->free_req_count == 8);
@@ -207,8 +213,8 @@ static void test_req_id_double_free(void)
 	assert(ena_ring_req_id_alloc(ring, &a) == 0);
 	assert(ena_ring_req_id_free(ring, a) == 0);
 	assert(ring->free_req_count == 8);
-	assert(ena_ring_req_id_free(ring, a) == 0);   /* no-op */
-	assert(ring->free_req_count == 8);            /* not 9 */
+	assert(ena_ring_req_id_free(ring, a) == 0); /* no-op */
+	assert(ring->free_req_count == 8);	    /* not 9 */
 
 	/* The pool must still hand out each ID at most once. Two allocations
 	 * after the double free must return distinct IDs. */
@@ -232,7 +238,8 @@ static void test_ring_create_destroy_hw(void)
 	assert(setup_adapter(&hw, &adapter) == 0);
 
 	/* Allocate TX ring */
-	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 16, 16, &tx_ring) == 0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 16, 16,
+			      &tx_ring) == 0);
 	assert(ena_ring_create_hw(tx_ring, 0) == 0);
 
 	assert(hw.cq_created_count == 1);
@@ -244,7 +251,8 @@ static void test_ring_create_destroy_hw(void)
 	assert(tx_ring->cq_db != NULL);
 
 	/* Allocate RX ring */
-	assert(ena_ring_alloc(&adapter, 1, ENA_RING_TYPE_RX, 32, 32, &rx_ring) == 0);
+	assert(ena_ring_alloc(&adapter, 1, ENA_RING_TYPE_RX, 32, 32,
+			      &rx_ring) == 0);
 	assert(ena_ring_create_hw(rx_ring, 1) == 0);
 
 	assert(hw.cq_created_count == 2);
@@ -285,10 +293,12 @@ static void test_ring_create_hw_error_handling(void)
 	struct ena_ring *ring = NULL;
 
 	assert(setup_adapter(&hw, &adapter) == 0);
-	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 16, 16, &ring) == 0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 16, 16, &ring) ==
+	       0);
 
 	/* Inject error on admin command */
-	mock_ena_hw_set_admin_status(&hw, ENA_ADMIN_RESOURCE_ALLOCATION_FAILURE);
+	mock_ena_hw_set_admin_status(&hw,
+				     ENA_ADMIN_RESOURCE_ALLOCATION_FAILURE);
 	int ret = ena_ring_create_hw(ring, 0);
 	assert(ret != 0);
 
@@ -314,10 +324,10 @@ static void test_multiple_rings_allocation(void)
 	assert(setup_adapter(&hw, &adapter) == 0);
 
 	for (i = 0; i < 4; i++) {
-		assert(ena_ring_alloc(&adapter, (uint16_t)i, ENA_RING_TYPE_TX, 16, 16,
-				      &tx_rings[i]) == 0);
-		assert(ena_ring_alloc(&adapter, (uint16_t)i, ENA_RING_TYPE_RX, 16, 16,
-				      &rx_rings[i]) == 0);
+		assert(ena_ring_alloc(&adapter, (uint16_t)i, ENA_RING_TYPE_TX,
+				      16, 16, &tx_rings[i]) == 0);
+		assert(ena_ring_alloc(&adapter, (uint16_t)i, ENA_RING_TYPE_RX,
+				      16, 16, &rx_rings[i]) == 0);
 		assert(ena_ring_create_hw(tx_rings[i], (uint32_t)i) == 0);
 		assert(ena_ring_create_hw(rx_rings[i], (uint32_t)i) == 0);
 	}

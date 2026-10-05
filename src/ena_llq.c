@@ -36,8 +36,8 @@ int ena_llq_negotiate(struct ena_adapter *adapter)
 	req.feat_common.feature_id = ENA_ADMIN_LLQ;
 
 	memset(&resp, 0, sizeof(resp));
-	ret = ena_admin_exec_cmd(adapter, ENA_ADMIN_GET_FEATURE, &req, sizeof(req),
-				 &resp, sizeof(resp), NULL, 100);
+	ret = ena_admin_exec_cmd(adapter, ENA_ADMIN_GET_FEATURE, &req,
+				 sizeof(req), &resp, sizeof(resp), NULL, 100);
 	if (ret)
 		return 0;
 
@@ -77,18 +77,22 @@ int ena_llq_tx_push(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 		return -EINVAL;
 
 	entry_size = ring->llq_entry_size ? ring->llq_entry_size : 128;
-	header_cap = (uint32_t)(entry_size -
-				2 * (uint32_t)sizeof(struct ena_eth_io_tx_desc));
+	header_cap =
+	    (uint32_t)(entry_size -
+		       2 * (uint32_t)sizeof(struct ena_eth_io_tx_desc));
 
 	if (hdr_len > header_cap)
 		return -EINVAL;
 
-	/* Fall back to standard host-memory submission if LLQ is not enabled or push buffer is too small */
+	/* Fall back to standard host-memory submission if LLQ is not enabled or
+	 * push buffer is too small */
 	if (!ring->is_llq || !ring->push_buf_virt ||
-	    (ring->push_buf_size > 0 && (size_t)ring->sq_depth * entry_size > ring->push_buf_size)) {
+	    (ring->push_buf_size > 0 &&
+	     (size_t)ring->sq_depth * entry_size > ring->push_buf_size)) {
 		struct ena_tx_pkt fallback_pkt = *pkt;
 		if (hdr_data && hdr_len > 0 && fallback_pkt.netbuf) {
-			struct uk_netbuf *nb = (struct uk_netbuf *)fallback_pkt.netbuf;
+			struct uk_netbuf *nb =
+			    (struct uk_netbuf *)fallback_pkt.netbuf;
 			if (nb->data)
 				memcpy(nb->data, hdr_data, hdr_len);
 		}
@@ -135,8 +139,8 @@ int ena_llq_tx_push(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 	memset(&desc, 0, sizeof(desc));
 
 	len_ctrl = (pkt->len & ENA_ETH_IO_TX_DESC_LENGTH_MASK);
-	len_ctrl |= (((uint32_t)(req_id >> 10) & 0x3Fu) <<
-		     ENA_ETH_IO_TX_DESC_REQ_ID_HI_SHIFT);
+	len_ctrl |= (((uint32_t)(req_id >> 10) & 0x3Fu)
+		     << ENA_ETH_IO_TX_DESC_REQ_ID_HI_SHIFT);
 	if (ring->sq_phase)
 		len_ctrl |= ENA_ETH_IO_TX_DESC_PHASE_MASK;
 	len_ctrl |= ENA_ETH_IO_TX_DESC_FIRST_MASK |
@@ -144,11 +148,11 @@ int ena_llq_tx_push(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 		    ENA_ETH_IO_TX_DESC_COMP_REQ_MASK;
 	desc.len_ctrl = ena_cpu_to_le32(len_ctrl);
 
-	meta_ctrl = (((uint32_t)req_id & 0x03FFu) <<
-		     ENA_ETH_IO_TX_DESC_REQ_ID_LO_SHIFT);
+	meta_ctrl = (((uint32_t)req_id & 0x03FFu)
+		     << ENA_ETH_IO_TX_DESC_REQ_ID_LO_SHIFT);
 	meta_ctrl |= (pkt->l3_proto & ENA_ETH_IO_TX_DESC_L3_PROTO_IDX_MASK);
-	meta_ctrl |= (((uint32_t)pkt->l4_proto & 0x1Fu) <<
-		      ENA_ETH_IO_TX_DESC_L4_PROTO_IDX_SHIFT);
+	meta_ctrl |= (((uint32_t)pkt->l4_proto & 0x1Fu)
+		      << ENA_ETH_IO_TX_DESC_L4_PROTO_IDX_SHIFT);
 	if (pkt->l3_csum_en)
 		meta_ctrl |= ENA_ETH_IO_TX_DESC_L3_CSUM_EN_MASK;
 	if (pkt->l4_csum_en)
@@ -168,9 +172,11 @@ int ena_llq_tx_push(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 	if (hdr_data && hdr_len > 0)
 		memcpy(entry_buf + sizeof(desc), hdr_data, hdr_len);
 
-	push_dest = (uint8_t *)ring->push_buf_virt + slot_idx * (size_t)entry_size;
+	push_dest =
+	    (uint8_t *)ring->push_buf_virt + slot_idx * (size_t)entry_size;
 
-	/* Copy the entry to MMIO write-combining memory with 64-bit word writes */
+	/* Copy the entry to MMIO write-combining memory with 64-bit word writes
+	 */
 	{
 		volatile uint64_t *dst64 = (volatile uint64_t *)push_dest;
 		const uint64_t *src64 = (const uint64_t *)entry_buf;

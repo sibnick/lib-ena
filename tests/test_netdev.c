@@ -77,17 +77,17 @@ static void untrack_and_free_netbuf(struct uk_netbuf *nb)
 
 static void free_remaining_tracked_netbufs(void)
 {
-	for (unsigned int i = 0; i < g_tracked_nb_count; i++) {
+	for (unsigned int i = 0; i < g_tracked_nb_count; i++)
 		if (g_tracked_nb[i])
 			untrack_and_free_netbuf(g_tracked_nb[i]);
-	}
 	g_tracked_nb_count = 0;
 }
 
 /* RX alloc callback: small (64-byte) application buffer that takes a
  * bounce slot like the driver helper does. Offers the full 2048-byte
  * slot, so a hostile completion can exceed the application buffer. */
-static void *mock_rx_undersized_alloc_cb(void *arg, uint64_t *phys_out, uint32_t *len_out)
+static void *mock_rx_undersized_alloc_cb(void *arg, uint64_t *phys_out,
+					 uint32_t *len_out)
 {
 	struct uk_netdev_rx_queue *rxq = (struct uk_netdev_rx_queue *)arg;
 	struct uk_netbuf *nb;
@@ -111,7 +111,8 @@ static void *mock_rx_undersized_alloc_cb(void *arg, uint64_t *phys_out, uint32_t
 	}
 
 	slot = rxq->bounce_free_ids[rxq->bounce_free_head];
-	rxq->bounce_free_head = (uint16_t)((rxq->bounce_free_head + 1) & (rxq->nb_desc - 1));
+	rxq->bounce_free_head =
+	    (uint16_t)((rxq->bounce_free_head + 1) & (rxq->nb_desc - 1));
 	rxq->bounce_free_count--;
 	rxq->pending_slot = (int16_t)slot;
 
@@ -122,7 +123,8 @@ static void *mock_rx_undersized_alloc_cb(void *arg, uint64_t *phys_out, uint32_t
 	return nb;
 }
 
-static void *mock_rx_standard_alloc_cb(void *arg, uint64_t *phys_out, uint32_t *len_out)
+static void *mock_rx_standard_alloc_cb(void *arg, uint64_t *phys_out,
+				       uint32_t *len_out)
 {
 	struct uk_netdev_rx_queue *rxq = (struct uk_netdev_rx_queue *)arg;
 	struct uk_netbuf *nb;
@@ -146,7 +148,8 @@ static void *mock_rx_standard_alloc_cb(void *arg, uint64_t *phys_out, uint32_t *
 	}
 
 	slot = rxq->bounce_free_ids[rxq->bounce_free_head];
-	rxq->bounce_free_head = (uint16_t)((rxq->bounce_free_head + 1) & (rxq->nb_desc - 1));
+	rxq->bounce_free_head =
+	    (uint16_t)((rxq->bounce_free_head + 1) & (rxq->nb_desc - 1));
 	rxq->bounce_free_count--;
 	rxq->pending_slot = (int16_t)slot;
 
@@ -157,7 +160,8 @@ static void *mock_rx_standard_alloc_cb(void *arg, uint64_t *phys_out, uint32_t *
 	return nb;
 }
 
-static int setup_test_adapter(struct mock_ena_hw *hw, struct ena_adapter *adapter)
+static int setup_test_adapter(struct mock_ena_hw *hw,
+			      struct ena_adapter *adapter)
 {
 	mock_ena_hw_init(hw);
 	ena_admin_set_db_hook(mock_ena_hw_aq_doorbell_hook, hw);
@@ -174,27 +178,27 @@ static int setup_test_adapter(struct mock_ena_hw *hw, struct ena_adapter *adapte
 	if (ret)
 		return ret;
 
-	adapter->rx_rings = test_calloc(adapter->max_rx_queues, sizeof(struct ena_ring *));
-	adapter->tx_rings = test_calloc(adapter->max_tx_queues, sizeof(struct ena_ring *));
+	adapter->rx_rings =
+	    test_calloc(adapter->max_rx_queues, sizeof(struct ena_ring *));
+	adapter->tx_rings =
+	    test_calloc(adapter->max_tx_queues, sizeof(struct ena_ring *));
 	return 0;
 }
 
 static void teardown_test_adapter(struct ena_adapter *adapter)
 {
 	if (adapter->rx_rings) {
-		for (uint16_t i = 0; i < adapter->max_rx_queues; i++) {
+		for (uint16_t i = 0; i < adapter->max_rx_queues; i++)
 			if (adapter->rx_rings[i])
 				ena_ring_free(adapter->rx_rings[i]);
-		}
 		test_free(adapter->rx_rings);
 		adapter->rx_rings = NULL;
 	}
 
 	if (adapter->tx_rings) {
-		for (uint16_t i = 0; i < adapter->max_tx_queues; i++) {
+		for (uint16_t i = 0; i < adapter->max_tx_queues; i++)
 			if (adapter->tx_rings[i])
 				ena_ring_free(adapter->tx_rings[i]);
-		}
 		test_free(adapter->tx_rings);
 		adapter->tx_rings = NULL;
 	}
@@ -353,7 +357,8 @@ static void test_netdev_txq_xmit(void)
 	assert(netdev->ops->txq_xmit(netdev, 0, tx_buf) == 0);
 	assert(g_adapter.tx_rings[0]->sq_tail == 1);
 	assert(g_adapter.tx_rings[0]->tx_packets == 1);
-	assert(mock_ena_hw_get_reg32(&g_hw, g_adapter.tx_rings[0]->sq_db_offset) == 1);
+	assert(mock_ena_hw_get_reg32(&g_hw,
+				     g_adapter.tx_rings[0]->sq_db_offset) == 1);
 
 	/* Mock device completes packet */
 	mock_ena_hw_emulate_tx(&g_hw, g_adapter.tx_rings[0], 1);
@@ -414,9 +419,8 @@ static void test_netdev_tx_bounce_backpressure(void)
 	assert(txq->bounce_wait_polls == 0);
 
 	/* Fill remaining bounce ring pool slots */
-	for (i = 1; i < 8; i++) {
+	for (i = 1; i < 8; i++)
 		assert(netdev->ops->txq_xmit(netdev, 0, nb) == 0);
-	}
 	assert(txq->bounce_free_count == 0);
 
 	/* The pool is full and the mock never completes these requests.
@@ -475,7 +479,8 @@ static void test_netdev_rxq_recv(void)
 	assert(netdev->ops->dev_start(netdev) == 0);
 
 	/* Populate RX ring */
-	assert(ena_rx_refill(g_adapter.rx_rings[0], 4, mock_rx_alloc_cb, NULL, &refilled) == 4);
+	assert(ena_rx_refill(g_adapter.rx_rings[0], 4, mock_rx_alloc_cb, NULL,
+			     &refilled) == 4);
 
 	/* Receive before arrival returns 0 */
 	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 0);
@@ -496,7 +501,8 @@ static void test_netdev_rxq_recv(void)
 	assert(netdev->ops->dev_stop(netdev) == 0);
 	for (int i = 0; i < g_adapter.rx_rings[0]->sq_depth; i++) {
 		if (g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf) {
-			test_free(g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf);
+			test_free(
+			    g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf);
 			g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf = NULL;
 		}
 	}
@@ -537,7 +543,8 @@ static void test_netdev_rx_undersized_netbuf(void)
 	rxq = &netdev->rx_queues[0];
 
 	/* Populate 4 buffers, each taking one bounce slot */
-	assert(ena_rx_refill(rx_ring, 4, mock_rx_undersized_alloc_cb, rxq, &refilled) == 4);
+	assert(ena_rx_refill(rx_ring, 4, mock_rx_undersized_alloc_cb, rxq,
+			     &refilled) == 4);
 	assert(refilled == 4);
 	assert(rxq->bounce_free_count == 4);
 
@@ -551,7 +558,8 @@ static void test_netdev_rx_undersized_netbuf(void)
 	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 0);
 	assert(rx_buf == NULL);
 	assert(rxq->bounce_free_count == 5);
-	/* The ring counted the completion; the netdev layer dropped the packet */
+	/* The ring counted the completion; the netdev layer dropped the packet
+	 */
 	assert(rx_ring->rx_packets == 1);
 
 	/* The dropped netbuf is orphaned: the test frees it */
@@ -559,7 +567,8 @@ static void test_netdev_rx_undersized_netbuf(void)
 
 	/* A packet that fits the 64-byte buffer is delivered with its
 	 * payload copied from the bounce slot */
-	slot_virt = (uint8_t *)(uintptr_t)rxq->bounce_phys + (size_t)1 * ENA_RX_BUF_SIZE;
+	slot_virt = (uint8_t *)(uintptr_t)rxq->bounce_phys +
+		    (size_t)1 * ENA_RX_BUF_SIZE;
 	memset(slot_virt, 0x77, 64);
 	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 64, 0x12345678,
 			       ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK);
@@ -575,10 +584,13 @@ static void test_netdev_rx_undersized_netbuf(void)
 	untrack_and_free_netbuf(g_tracked_nb[1]);
 
 	/* The ring still refills and delivers after the drop */
-	assert(ena_rx_refill(rx_ring, 1, mock_rx_undersized_alloc_cb, rxq, &refilled) == 1);
+	assert(ena_rx_refill(rx_ring, 1, mock_rx_undersized_alloc_cb, rxq,
+			     &refilled) == 1);
 	assert(rxq->bounce_free_count == 5);
 	/* Pre-fill the bounce slot the next completion will land in */
-	next_slot = (uint16_t)rxq->bounce_map[rx_ring->sq_head & (rx_ring->sq_depth - 1)];
+	next_slot =
+	    (uint16_t)
+		rxq->bounce_map[rx_ring->sq_head & (rx_ring->sq_depth - 1)];
 	slot_virt = (uint8_t *)(uintptr_t)rxq->bounce_phys +
 		    (size_t)next_slot * ENA_RX_BUF_SIZE;
 	memset(slot_virt, 0x55, 64);
@@ -627,14 +639,16 @@ static void test_netdev_rx_bad_completion_bounce_pool(void)
 	rx_ring = g_adapter.rx_rings[0];
 	rxq = &netdev->rx_queues[0];
 
-	assert(ena_rx_refill(rx_ring, 4, mock_rx_undersized_alloc_cb, rxq, &refilled) == 4);
+	assert(ena_rx_refill(rx_ring, 4, mock_rx_undersized_alloc_cb, rxq,
+			     &refilled) == 4);
 	assert(rxq->bounce_free_count == 4);
 	assert(rx_ring->free_req_count == 4);
 
 	/* A faulty or hostile device repeats over-length completions.
 	 * Every drop must return its bounce slot to the free pool. */
 	for (i = 0; i < 4; i++) {
-		mock_pci_inject_fault(&g_hw, MOCK_PCI_FAULT_CORRUPT_LENGTH, 0xFFFF);
+		mock_pci_inject_fault(&g_hw, MOCK_PCI_FAULT_CORRUPT_LENGTH,
+				      0xFFFF);
 		mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 512, 0, 0);
 		mock_pci_clear_faults(&g_hw);
 
@@ -650,10 +664,13 @@ static void test_netdev_rx_bad_completion_bounce_pool(void)
 
 	/* The pool is intact: the ring refills and a good packet is
 	 * still delivered (receive did not deadlock) */
-	assert(ena_rx_refill(rx_ring, 1, mock_rx_undersized_alloc_cb, rxq, &refilled) == 1);
+	assert(ena_rx_refill(rx_ring, 1, mock_rx_undersized_alloc_cb, rxq,
+			     &refilled) == 1);
 	assert(rxq->bounce_free_count == 7);
 
-	uint16_t refill_slot = (uint16_t)rxq->bounce_map[rx_ring->sq_head & (rx_ring->sq_depth - 1)];
+	uint16_t refill_slot =
+	    (uint16_t)
+		rxq->bounce_map[rx_ring->sq_head & (rx_ring->sq_depth - 1)];
 	slot_virt = (uint8_t *)(uintptr_t)rxq->bounce_phys +
 		    (size_t)refill_slot * ENA_RX_BUF_SIZE;
 	memset(slot_virt, 0x44, 64);
@@ -719,7 +736,8 @@ static void test_netdev_invalid_ops(void)
 	ena_netdev_free(netdev);
 }
 
-static uint16_t mock_low_mem_rx_alloc(void *arg, struct uk_netbuf *pkts[], uint16_t count)
+static uint16_t mock_low_mem_rx_alloc(void *arg, struct uk_netbuf *pkts[],
+				      uint16_t count)
 {
 	(void)arg;
 	for (uint16_t i = 0; i < count; i++) {
@@ -779,16 +797,17 @@ static void test_netdev_bounce_buffers(void)
 	assert(netdev->ops->txq_xmit(netdev, 0, tx_buf1) == 0);
 	assert(netdev->tx_queues[0].bounce_in_use == true);
 
-	/* Second low-memory packet also transmits using next slot in bounce ring pool */
+	/* Second low-memory packet also transmits using next slot in bounce
+	 * ring pool */
 	assert(netdev->ops->txq_xmit(netdev, 0, tx_buf2) == 0);
 	assert(netdev->tx_queues[0].bounce_in_use == true);
 
 	/* Fill remaining slots until bounce buffer ring pool is exhausted */
-	for (k = 2; k < 8; k++) {
+	for (k = 2; k < 8; k++)
 		assert(netdev->ops->txq_xmit(netdev, 0, tx_buf2) == 0);
-	}
 
-	/* Next low-memory packet fails with -EBUSY when bounce pool is exhausted */
+	/* Next low-memory packet fails with -EBUSY when bounce pool is
+	 * exhausted */
 	assert(netdev->ops->txq_xmit(netdev, 0, tx_buf2) == -EBUSY);
 
 	/* Complete transmissions */
@@ -1049,8 +1068,10 @@ static void test_netdev_rx_csum_and_lro_chaining(void)
 	rxq = &netdev->rx_queues[0];
 
 	/* Test 1: Hardware RX checksum ok sets DATA_VALID */
-	assert(ena_rx_refill(rx_ring, 1, mock_rx_standard_alloc_cb, rxq, &refilled) == 1);
-	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 64, 0, ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK);
+	assert(ena_rx_refill(rx_ring, 1, mock_rx_standard_alloc_cb, rxq,
+			     &refilled) == 1);
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 64, 0,
+			       ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK);
 
 	rx_buf = NULL;
 	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 1);
@@ -1058,9 +1079,12 @@ static void test_netdev_rx_csum_and_lro_chaining(void)
 	assert(rx_buf->flags & UK_NETBUF_F_DATA_VALID);
 
 	/* Test 2: Multi-descriptor LRO chain reassembly */
-	assert(ena_rx_refill(rx_ring, 2, mock_rx_standard_alloc_cb, rxq, &refilled) == 2);
-	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 1400, 0, ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK);
-	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 600, 0, ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK);
+	assert(ena_rx_refill(rx_ring, 2, mock_rx_standard_alloc_cb, rxq,
+			     &refilled) == 2);
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 1400, 0,
+			       ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK);
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 600, 0,
+			       ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK);
 
 	rx_buf = NULL;
 	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 1);
@@ -1105,8 +1129,9 @@ static void test_netdev_tx_csum_offload(void)
 
 	/* Build IPv4 TCP frame template */
 	memset(dummy_tcp_pkt, 0, sizeof(dummy_tcp_pkt));
-	dummy_tcp_pkt[12] = 0x08; dummy_tcp_pkt[13] = 0x00; /* IPv4 */
-	dummy_tcp_pkt[14 + 9] = 6;                          /* TCP */
+	dummy_tcp_pkt[12] = 0x08;
+	dummy_tcp_pkt[13] = 0x00;  /* IPv4 */
+	dummy_tcp_pkt[14 + 9] = 6; /* TCP */
 
 	tx_buf = test_calloc(1, sizeof(*tx_buf));
 	assert(tx_buf != NULL);
@@ -1131,8 +1156,10 @@ static void test_netdev_tx_csum_offload(void)
 	assert(netdev->ops->txq_xmit(netdev, 0, tx_buf) == 0);
 
 	slot_desc = (const struct ena_eth_io_tx_desc *)tx_ring->sq_virt;
-	assert((slot_desc[1].meta_ctrl & ENA_ETH_IO_TX_DESC_L3_CSUM_EN_MASK) == 0);
-	assert((slot_desc[1].meta_ctrl & ENA_ETH_IO_TX_DESC_L4_CSUM_EN_MASK) == 0);
+	assert((slot_desc[1].meta_ctrl & ENA_ETH_IO_TX_DESC_L3_CSUM_EN_MASK) ==
+	       0);
+	assert((slot_desc[1].meta_ctrl & ENA_ETH_IO_TX_DESC_L4_CSUM_EN_MASK) ==
+	       0);
 
 	mock_ena_hw_emulate_tx(&g_hw, tx_ring, 1);
 	ena_tx_poll_completions(tx_ring, 8, NULL);
@@ -1145,7 +1172,8 @@ static void test_netdev_tx_csum_offload(void)
 
 static bool g_burst_alloc_fail = false;
 
-static uint16_t mock_rx_burst_alloc_pkts(void *argp, struct uk_netbuf *pkts[], uint16_t count)
+static uint16_t mock_rx_burst_alloc_pkts(void *argp, struct uk_netbuf *pkts[],
+					 uint16_t count)
 {
 	(void)argp;
 	if (g_burst_alloc_fail)
@@ -1164,7 +1192,8 @@ static uint16_t mock_rx_burst_alloc_pkts(void *argp, struct uk_netbuf *pkts[], u
 
 static void test_netdev_rx_burst_refill_and_state_dump(void)
 {
-	printf("[TEST] Running test_netdev_rx_burst_refill_and_state_dump...\n");
+	printf(
+	    "[TEST] Running test_netdev_rx_burst_refill_and_state_dump...\n");
 
 	struct uk_netdev *netdev;
 	struct uk_netdev_conf conf;
@@ -1195,14 +1224,16 @@ static void test_netdev_rx_burst_refill_and_state_dump(void)
 
 	/* Initially populate 4 descriptors */
 	g_burst_alloc_fail = false;
-	assert(ena_rx_refill(rx_ring, 4, mock_rx_alloc_cb, NULL, &refilled) == 4);
+	assert(ena_rx_refill(rx_ring, 4, mock_rx_alloc_cb, NULL, &refilled) ==
+	       4);
 	assert(rx_ring->free_req_count == 4);
 
 	/* Simulate memory exhaustion during burst */
 	g_burst_alloc_fail = true;
 	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 4, 128, 0, 0);
 
-	/* Consume all 4 packets. Because allocator fails, refill cannot succeed */
+	/* Consume all 4 packets. Because allocator fails, refill cannot succeed
+	 */
 	for (int i = 0; i < 4; i++) {
 		rx_buf = NULL;
 		ret = netdev->ops->rxq_recv(netdev, 0, &rx_buf);
@@ -1211,7 +1242,8 @@ static void test_netdev_rx_burst_refill_and_state_dump(void)
 		untrack_and_free_netbuf(rx_buf);
 	}
 
-	/* Ring is now depleted: all 8 slots are free, SQ has 0 descriptors in hardware */
+	/* Ring is now depleted: all 8 slots are free, SQ has 0 descriptors in
+	 * hardware */
 	assert(rx_ring->free_req_count == 8);
 	assert(rx_ring->rx_refill_err > 0);
 
@@ -1278,7 +1310,8 @@ static void test_netdev_rx_more_flag(void)
 	rx_ring = g_adapter.rx_rings[0];
 
 	/* Populate 4 buffers */
-	assert(ena_rx_refill(rx_ring, 4, mock_rx_alloc_cb, NULL, &refilled) == 4);
+	assert(ena_rx_refill(rx_ring, 4, mock_rx_alloc_cb, NULL, &refilled) ==
+	       4);
 
 	/* Emulate arrival of 2 packets in hardware completion queue */
 	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 2, 256, 0, 0);

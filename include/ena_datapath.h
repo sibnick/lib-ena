@@ -23,18 +23,19 @@ struct ena_adapter;
  * this size cannot be received. The driver drops such a completion
  * cleanly. Jumbo frame RX needs multi-descriptor RX reassembly
  * (roadmap Phase 12), which is not implemented. */
-#define ENA_RX_BUF_SIZE         2048
-#define ENA_TX_BOUNCE_SIZE      4096
+#define ENA_RX_BUF_SIZE 2048
+#define ENA_TX_BOUNCE_SIZE 4096
 /* Release a stuck TX bounce after this many transmit attempts without a
  * completion. Bounds the time a lost completion blocks low-memory transmit. */
 #define ENA_TX_BOUNCE_STALL_LIMIT 256
-#define ENA_DMA_LOW_MEM_LIMIT   0x100000ULL
-#define ENA_NETDEV_IOALIGN      64
+#define ENA_DMA_LOW_MEM_LIMIT 0x100000ULL
+#define ENA_NETDEV_IOALIGN 64
 #ifdef CONFIG_LIBENA_MAX_QUEUES
-#define ENA_NETDEV_MAX_QUEUES   CONFIG_LIBENA_MAX_QUEUES
+#define ENA_NETDEV_MAX_QUEUES CONFIG_LIBENA_MAX_QUEUES
 #else
-#define ENA_NETDEV_MAX_QUEUES   8
+#define ENA_NETDEV_MAX_QUEUES 8
 #endif
+// clang-format off
 #define ENA_MIN_RING_DESC       4
 #define ENA_DEFAULT_RING_DESC   256
 #define ENA_MAX_RING_DESC       4096
@@ -42,12 +43,10 @@ struct ena_adapter;
 #define ENA_MIN_MTU_LEN         68
 /* No CPU has claimed a TX ring yet. */
 #define ENA_CPU_ID_NONE         0xFFFFFFFFu
+// clang-format on
 
 /* Ring Types */
-enum ena_ring_type {
-	ENA_RING_TYPE_TX = 1,
-	ENA_RING_TYPE_RX = 2
-};
+enum ena_ring_type { ENA_RING_TYPE_TX = 1, ENA_RING_TYPE_RX = 2 };
 
 /* -------------------------------------------------------------------------
  * Hardware Descriptors (Matching reference/ena_eth_io_defs.h)
@@ -65,7 +64,7 @@ struct ena_eth_io_tx_desc {
 struct ena_eth_io_tx_cdesc {
 	uint16_t req_id;
 	uint8_t status;
-	uint8_t flags;         /* bit 0: phase */
+	uint8_t flags; /* bit 0: phase */
 	uint16_t sub_qid;
 	uint16_t sq_head_idx;
 };
@@ -74,7 +73,8 @@ struct ena_eth_io_tx_cdesc {
 struct ena_eth_io_rx_desc {
 	uint16_t length;
 	uint8_t reserved2;
-	uint8_t ctrl;          /* bit 0: phase, bit 2: first, bit 3: last, bit 4: comp_req */
+	uint8_t
+	    ctrl; /* bit 0: phase, bit 2: first, bit 3: last, bit 4: comp_req */
 	uint16_t req_id;
 	uint16_t reserved6;
 	uint32_t buff_addr_lo;
@@ -84,7 +84,7 @@ struct ena_eth_io_rx_desc {
 
 /* 16-byte Receive Completion Descriptor (4 words) */
 struct ena_eth_io_rx_cdesc_base {
-	uint32_t status;       /* bit 24: phase, bit 26: first, bit 27: last */
+	uint32_t status; /* bit 24: phase, bit 26: first, bit 27: last */
 	uint16_t length;
 	uint16_t req_id;
 	uint32_t hash;
@@ -108,6 +108,7 @@ struct ena_eth_io_rx_cdesc_ext {
  * ------------------------------------------------------------------------- */
 
 /* TX Submission Descriptor len_ctrl masks */
+// clang-format off
 #define ENA_ETH_IO_TX_DESC_LENGTH_MASK           0x0000FFFFu
 #define ENA_ETH_IO_TX_DESC_REQ_ID_HI_SHIFT       16
 #define ENA_ETH_IO_TX_DESC_REQ_ID_HI_MASK        0x003F0000u
@@ -119,8 +120,10 @@ struct ena_eth_io_rx_cdesc_ext {
 #define ENA_ETH_IO_TX_DESC_LAST_MASK             0x08000000u
 #define ENA_ETH_IO_TX_DESC_COMP_REQ_SHIFT        28
 #define ENA_ETH_IO_TX_DESC_COMP_REQ_MASK         0x10000000u
+// clang-format on
 
 /* TX Submission Descriptor meta_ctrl masks */
+// clang-format off
 #define ENA_ETH_IO_TX_DESC_L3_PROTO_IDX_MASK     0x0000000Fu
 #define ENA_ETH_IO_TX_DESC_DF_MASK               0x00000010u
 #define ENA_ETH_IO_TX_DESC_TSO_EN_MASK           0x00000080u
@@ -130,31 +133,36 @@ struct ena_eth_io_rx_cdesc_ext {
 #define ENA_ETH_IO_TX_DESC_L4_CSUM_EN_MASK       0x00004000u
 #define ENA_ETH_IO_TX_DESC_REQ_ID_LO_SHIFT       22
 #define ENA_ETH_IO_TX_DESC_REQ_ID_LO_MASK        0xFFC00000u
+// clang-format on
 
 /* TX Completion Descriptor flags */
-#define ENA_ETH_IO_TX_CDESC_PHASE_MASK           0x01u
+#define ENA_ETH_IO_TX_CDESC_PHASE_MASK 0x01u
 
 /* RX Submission Descriptor ctrl masks */
+// clang-format off
 #define ENA_ETH_IO_RX_DESC_PHASE_MASK            0x01u
 #define ENA_ETH_IO_RX_DESC_FIRST_MASK            0x04u
 #define ENA_ETH_IO_RX_DESC_LAST_MASK             0x08u
 #define ENA_ETH_IO_RX_DESC_COMP_REQ_MASK         0x10u
+// clang-format on
 
 /* RX Completion Descriptor status masks */
-#define ENA_ETH_IO_RX_CDESC_BASE_L3_CSUM_ERR_MASK    0x00002000u
-#define ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_ERR_MASK    0x00004000u
-#define ENA_ETH_IO_RX_CDESC_BASE_IPV4_FRAG_MASK      0x00008000u
+#define ENA_ETH_IO_RX_CDESC_BASE_L3_CSUM_ERR_MASK 0x00002000u
+#define ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_ERR_MASK 0x00004000u
+#define ENA_ETH_IO_RX_CDESC_BASE_IPV4_FRAG_MASK 0x00008000u
 #define ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK 0x00010000u
+// clang-format off
 #define ENA_ETH_IO_RX_CDESC_BASE_PHASE_SHIFT         24
 #define ENA_ETH_IO_RX_CDESC_BASE_PHASE_MASK          0x01000000u
 #define ENA_ETH_IO_RX_CDESC_BASE_FIRST_SHIFT         26
 #define ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK          0x04000000u
 #define ENA_ETH_IO_RX_CDESC_BASE_LAST_SHIFT          27
 #define ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK           0x08000000u
+// clang-format on
 
 /* Standard Completion Queue entry sizes in 32-bit words (reference driver). */
-#define ENA_TX_CQ_ENTRY_SIZE_WORDS	2
-#define ENA_RX_CQ_ENTRY_SIZE_WORDS	4
+#define ENA_TX_CQ_ENTRY_SIZE_WORDS 2
+#define ENA_RX_CQ_ENTRY_SIZE_WORDS 4
 
 /* -------------------------------------------------------------------------
  * Software Buffer Tracking Structures
@@ -162,25 +170,25 @@ struct ena_eth_io_rx_cdesc_ext {
 
 /* Per-packet tracking for Transmit buffers */
 struct ena_tx_buffer {
-	void *netbuf;              /* Pointer to struct uk_netbuf */
-	uint64_t phys_addr;        /* Physical DMA address of payload */
-	uint32_t data_len;         /* Length of packet buffer */
-	uint16_t num_descs;        /* Number of descriptors used */
-	uint16_t req_id;           /* Request ID */
+	void *netbuf;	    /* Pointer to struct uk_netbuf */
+	uint64_t phys_addr; /* Physical DMA address of payload */
+	uint32_t data_len;  /* Length of packet buffer */
+	uint16_t num_descs; /* Number of descriptors used */
+	uint16_t req_id;    /* Request ID */
 };
 
 /* Per-packet tracking for Receive buffers */
 struct ena_rx_buffer {
-	void *netbuf;              /* Pointer to struct uk_netbuf */
-	uint64_t phys_addr;        /* Physical DMA address of receive buffer */
-	uint32_t data_len;         /* Buffer capacity */
-	uint16_t req_id;           /* Request ID */
+	void *netbuf;	    /* Pointer to struct uk_netbuf */
+	uint64_t phys_addr; /* Physical DMA address of receive buffer */
+	uint32_t data_len;  /* Buffer capacity */
+	uint16_t req_id;    /* Request ID */
 };
 
 /* Circular Ring Abstraction (manages SQ, CQ, and buffer tracking) */
 struct ena_ring {
 	struct ena_adapter *adapter;
-	uint16_t qid;              /* Queue index */
+	uint16_t qid; /* Queue index */
 	enum ena_ring_type ring_type;
 
 	/* True while the hardware queues behind this ring are valid. Cleared
@@ -189,44 +197,44 @@ struct ena_ring {
 	bool hw_valid;
 
 	/* Submission Queue (SQ) */
-	void *sq_virt;             /* Virtual address of SQ DMA ring */
-	uint64_t sq_phys;          /* Physical address of SQ DMA ring */
-	void *sq_head_wb_virt;     /* Virtual address of SQ head writeback */
-	uint64_t sq_head_wb_phys;  /* Physical address of SQ head writeback */
-	uint16_t sq_depth;         /* SQ ring depth (must be power of 2) */
-	uint16_t sq_tail;          /* Producer tail index */
-	uint16_t sq_head;          /* Consumer head index */
-	uint8_t sq_phase;          /* Current SQ phase bit (1 or 0) */
-	uint16_t sq_idx;           /* Device-assigned SQ hardware ID */
-	uint32_t sq_db_offset;     /* Offset from BAR0 to SQ doorbell */
-	volatile uint32_t *sq_db;  /* Mapped SQ doorbell address */
+	void *sq_virt;		  /* Virtual address of SQ DMA ring */
+	uint64_t sq_phys;	  /* Physical address of SQ DMA ring */
+	void *sq_head_wb_virt;	  /* Virtual address of SQ head writeback */
+	uint64_t sq_head_wb_phys; /* Physical address of SQ head writeback */
+	uint16_t sq_depth;	  /* SQ ring depth (must be power of 2) */
+	uint16_t sq_tail;	  /* Producer tail index */
+	uint16_t sq_head;	  /* Consumer head index */
+	uint8_t sq_phase;	  /* Current SQ phase bit (1 or 0) */
+	uint16_t sq_idx;	  /* Device-assigned SQ hardware ID */
+	uint32_t sq_db_offset;	  /* Offset from BAR0 to SQ doorbell */
+	volatile uint32_t *sq_db; /* Mapped SQ doorbell address */
 
 	/* Completion Queue (CQ) */
-	void *cq_virt;             /* Virtual address of CQ DMA ring */
-	uint64_t cq_phys;          /* Physical address of CQ DMA ring */
-	uint16_t cq_depth;         /* CQ ring depth (must be power of 2) */
-	uint16_t cq_head;          /* Consumer head index */
-	uint8_t cq_phase;          /* Expected CQ phase bit (starts at 1) */
-	uint32_t cq_elem_size;     /* CQ entry stride in bytes (8 or 16) */
-	uint16_t cq_idx;           /* Device-assigned CQ hardware ID */
-	uint32_t cq_db_offset;     /* Offset from BAR0 to CQ doorbell / head DB */
-	volatile uint32_t *cq_db;  /* Mapped CQ doorbell address */
+	void *cq_virt;	       /* Virtual address of CQ DMA ring */
+	uint64_t cq_phys;      /* Physical address of CQ DMA ring */
+	uint16_t cq_depth;     /* CQ ring depth (must be power of 2) */
+	uint16_t cq_head;      /* Consumer head index */
+	uint8_t cq_phase;      /* Expected CQ phase bit (starts at 1) */
+	uint32_t cq_elem_size; /* CQ entry stride in bytes (8 or 16) */
+	uint16_t cq_idx;       /* Device-assigned CQ hardware ID */
+	uint32_t cq_db_offset; /* Offset from BAR0 to CQ doorbell / head DB */
+	volatile uint32_t *cq_db;     /* Mapped CQ doorbell address */
 	uint32_t cq_unmask_db_offset; /* BAR0 offset of the per-queue
-	                                interrupt unmask register from the
-	                                CREATE_CQ response */
+					interrupt unmask register from the
+					CREATE_CQ response */
 
 	/* Request ID Free Pool (FIFO) */
-	uint16_t *free_req_ids;    /* Array of available request IDs */
-	uint16_t free_req_head;    /* Pop index */
-	uint16_t free_req_tail;    /* Push index */
-	uint16_t free_req_count;   /* Count of free IDs */
-	uint8_t *req_in_flight;    /* In-flight flag for each request ID */
-	uint8_t *req_allocated;    /* 1 while a request ID is checked out of the
-	                            * free pool. Makes ena_ring_req_id_free
-	                            * idempotent: a second release of the same
-	                            * ID is a no-op instead of a double push.
-	                            * [Ticket a9c6945c21] */
-	uint32_t ring_lock;        /* Atomic spinlock for ring access */
+	uint16_t *free_req_ids;	 /* Array of available request IDs */
+	uint16_t free_req_head;	 /* Pop index */
+	uint16_t free_req_tail;	 /* Push index */
+	uint16_t free_req_count; /* Count of free IDs */
+	uint8_t *req_in_flight;	 /* In-flight flag for each request ID */
+	uint8_t *req_allocated;	 /* 1 while a request ID is checked out of the
+				  * free pool. Makes ena_ring_req_id_free
+				  * idempotent: a second release of the same
+				  * ID is a no-op instead of a double push.
+				  * [Ticket a9c6945c21] */
+	uint32_t ring_lock;	 /* Atomic spinlock for ring access */
 
 	/* CPU that last submitted on this TX ring, or ENA_CPU_ID_NONE
 	 * before the first submit. The completion path compares it with
@@ -238,7 +246,8 @@ struct ena_ring {
 	bool tx_owner_warned;
 
 	/* RX drop callback: return a dropped netbuf bounce slot to the pool
-	 * and free the buffer. Set by the netdev layer, called from ena_rx_poll */
+	 * and free the buffer. Set by the netdev layer, called from ena_rx_poll
+	 */
 	void (*drop_netbuf_cb)(void *arg, void *netbuf);
 	void *drop_netbuf_arg;
 
@@ -316,7 +325,8 @@ void ena_ring_free(struct ena_ring *ring);
  * Create hardware SQ and CQ instances on the device for this ring.
  *
  * @param ring Pointer to the initialized ring structure.
- * @param msix_vector MSI-X interrupt vector index to bind to the completion queue.
+ * @param msix_vector MSI-X interrupt vector index to bind to the completion
+ * queue.
  * @return 0 on success, or a negative errno value on error.
  */
 int ena_ring_create_hw(struct ena_ring *ring, uint32_t msix_vector);
@@ -343,14 +353,16 @@ int ena_ring_req_id_alloc(struct ena_ring *ring, uint16_t *out_req_id);
  *
  * @param ring Pointer to the ring structure.
  * @param req_id Request ID to release.
- * @return 0 on success, or -EINVAL if the request ID is invalid or not in-flight.
+ * @return 0 on success, or -EINVAL if the request ID is invalid or not
+ * in-flight.
  */
 int ena_ring_req_id_free(struct ena_ring *ring, uint16_t req_id);
 
 /* Admin command helpers for CQ and SQ */
 
 /**
- * Issue a CREATE_CQ admin command to register a Completion Queue with the device.
+ * Issue a CREATE_CQ admin command to register a Completion Queue with the
+ * device.
  *
  * @param adapter Pointer to the master ENA adapter structure.
  * @param cq_depth Completion queue depth in entries.
@@ -365,12 +377,12 @@ int ena_ring_req_id_free(struct ena_ring *ring, uint16_t req_id);
  */
 int ena_admin_create_cq(struct ena_adapter *adapter, uint16_t cq_depth,
 			uint64_t cq_phys, uint32_t msix_vector,
-			uint8_t entry_size_words,
-			uint16_t *out_cq_idx, uint32_t *out_db_offset,
-			uint32_t *out_unmask_off);
+			uint8_t entry_size_words, uint16_t *out_cq_idx,
+			uint32_t *out_db_offset, uint32_t *out_unmask_off);
 
 /**
- * Issue a DESTROY_CQ admin command to remove a Completion Queue from the device.
+ * Issue a DESTROY_CQ admin command to remove a Completion Queue from the
+ * device.
  *
  * @param adapter Pointer to the master ENA adapter structure.
  * @param cq_idx Device hardware index of the CQ to destroy.
@@ -379,7 +391,8 @@ int ena_admin_create_cq(struct ena_adapter *adapter, uint16_t cq_depth,
 int ena_admin_destroy_cq(struct ena_adapter *adapter, uint16_t cq_idx);
 
 /**
- * Issue a CREATE_SQ admin command to register a Submission Queue with the device.
+ * Issue a CREATE_SQ admin command to register a Submission Queue with the
+ * device.
  *
  * @param adapter Pointer to the master ENA adapter structure.
  * @param sq_depth Submission queue depth in entries.
@@ -397,7 +410,8 @@ int ena_admin_create_sq(struct ena_adapter *adapter, uint16_t sq_depth,
 			uint16_t *out_sq_idx, uint32_t *out_db_offset);
 
 /**
- * Issue a DESTROY_SQ admin command to remove a Submission Queue from the device.
+ * Issue a DESTROY_SQ admin command to remove a Submission Queue from the
+ * device.
  *
  * @param adapter Pointer to the master ENA adapter structure.
  * @param sq_idx Device hardware index of the SQ to destroy.
@@ -430,30 +444,30 @@ int ena_admin_create_sq_llq(struct ena_adapter *adapter, uint16_t sq_depth,
 /* Protocol Indexes (matching reference/ena_eth_io_defs.h) */
 enum ena_eth_io_l3_proto_index {
 	ENA_ETH_IO_L3_PROTO_UNKNOWN = 0,
-	ENA_ETH_IO_L3_PROTO_IPV4    = 8,
-	ENA_ETH_IO_L3_PROTO_IPV6    = 11,
-	ENA_ETH_IO_L3_PROTO_FCOE    = 21,
-	ENA_ETH_IO_L3_PROTO_ROCE    = 22,
+	ENA_ETH_IO_L3_PROTO_IPV4 = 8,
+	ENA_ETH_IO_L3_PROTO_IPV6 = 11,
+	ENA_ETH_IO_L3_PROTO_FCOE = 21,
+	ENA_ETH_IO_L3_PROTO_ROCE = 22,
 };
 
 enum ena_eth_io_l4_proto_index {
-	ENA_ETH_IO_L4_PROTO_UNKNOWN        = 0,
-	ENA_ETH_IO_L4_PROTO_TCP            = 12,
-	ENA_ETH_IO_L4_PROTO_UDP            = 13,
+	ENA_ETH_IO_L4_PROTO_UNKNOWN = 0,
+	ENA_ETH_IO_L4_PROTO_TCP = 12,
+	ENA_ETH_IO_L4_PROTO_UDP = 13,
 	ENA_ETH_IO_L4_PROTO_ROUTEABLE_ROCE = 23,
 };
 
 /* Transmit packet submission descriptor structure */
 struct ena_tx_pkt {
-	void *netbuf;              /* Pointer to struct uk_netbuf */
-	uint64_t phys_addr;        /* Physical DMA address of payload */
-	uint32_t len;              /* Length of packet payload in bytes */
-	uint8_t l3_proto;          /* enum ena_eth_io_l3_proto_index */
-	uint8_t l4_proto;          /* enum ena_eth_io_l4_proto_index */
-	bool l3_csum_en;           /* Enable IPv4 checksum offload */
-	bool l4_csum_en;           /* Enable TCP/UDP checksum offload */
-	bool df;                   /* Don't fragment flag for IPv4 */
-	bool tso_en;               /* TCP segmentation offload flag */
+	void *netbuf;	    /* Pointer to struct uk_netbuf */
+	uint64_t phys_addr; /* Physical DMA address of payload */
+	uint32_t len;	    /* Length of packet payload in bytes */
+	uint8_t l3_proto;   /* enum ena_eth_io_l3_proto_index */
+	uint8_t l4_proto;   /* enum ena_eth_io_l4_proto_index */
+	bool l3_csum_en;    /* Enable IPv4 checksum offload */
+	bool l4_csum_en;    /* Enable TCP/UDP checksum offload */
+	bool df;	    /* Don't fragment flag for IPv4 */
+	bool tso_en;	    /* TCP segmentation offload flag */
 };
 
 /* -------------------------------------------------------------------------
@@ -491,7 +505,8 @@ void ena_tx_doorbell(struct ena_ring *ring);
  *
  * @param ring Pointer to the TX ring structure.
  * @param budget Maximum number of completions to process in this call.
- * @param cleaned_count Output pointer storing the count of processed completions.
+ * @param cleaned_count Output pointer storing the count of processed
+ * completions.
  * @return 0 on success, or a negative errno value on error.
  */
 int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
@@ -499,16 +514,16 @@ int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 
 /* Received packet structure */
 struct ena_rx_pkt {
-	void *netbuf;              /* Pointer to struct uk_netbuf */
-	uint32_t len;              /* Received packet length in bytes */
-	uint32_t hash;             /* RSS packet hash */
-	bool l3_csum_err;          /* L3 checksum error detected */
-	bool l4_csum_err;          /* L4 checksum error detected */
-	bool l4_csum_checked;      /* L4 checksum was checked by hardware */
-	bool frag;                 /* IPv4 fragmented packet */
-	bool first;                /* First descriptor of a packet/LRO frame */
-	bool last;                 /* Last descriptor of a packet/LRO frame */
-	uint16_t req_id;           /* Request ID used for this buffer */
+	void *netbuf;	      /* Pointer to struct uk_netbuf */
+	uint32_t len;	      /* Received packet length in bytes */
+	uint32_t hash;	      /* RSS packet hash */
+	bool l3_csum_err;     /* L3 checksum error detected */
+	bool l4_csum_err;     /* L4 checksum error detected */
+	bool l4_csum_checked; /* L4 checksum was checked by hardware */
+	bool frag;	      /* IPv4 fragmented packet */
+	bool first;	      /* First descriptor of a packet/LRO frame */
+	bool last;	      /* Last descriptor of a packet/LRO frame */
+	uint16_t req_id;      /* Request ID used for this buffer */
 };
 
 /* -------------------------------------------------------------------------
@@ -524,7 +539,8 @@ struct ena_rx_pkt {
 uint16_t ena_rx_free_space(const struct ena_ring *ring);
 
 /**
- * Enqueue a single empty receive buffer descriptor into the RX Submission Queue.
+ * Enqueue a single empty receive buffer descriptor into the RX Submission
+ * Queue.
  *
  * @param ring Pointer to the RX ring structure.
  * @param netbuf Pointer to the allocated network buffer object.
@@ -547,7 +563,8 @@ int ena_rx_submit_one(struct ena_ring *ring, void *netbuf, uint64_t phys_addr,
  * @return 0 on success, or a negative errno value on error.
  */
 int ena_rx_refill(struct ena_ring *ring, unsigned int count,
-		  void *(*alloc_netbuf)(void *arg, uint64_t *phys_out, uint32_t *len_out),
+		  void *(*alloc_netbuf)(void *arg, uint64_t *phys_out,
+					uint32_t *len_out),
 		  void *alloc_arg, unsigned int *refilled_count);
 
 /**
@@ -576,4 +593,3 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 void ena_ring_dump_state(const struct ena_ring *ring);
 
 #endif /* LIBENA_ENA_DATAPATH_H */
-

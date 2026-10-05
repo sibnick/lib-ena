@@ -91,7 +91,8 @@ int ena_intr_msix_init(struct ena_adapter *adapter, uint32_t num_vectors)
 	if (!adapter || num_vectors == 0 || num_vectors > ENA_MAX_MSIX_VECTORS)
 		return -EINVAL;
 
-	adapter->irq_vectors = calloc(num_vectors, sizeof(*adapter->irq_vectors));
+	adapter->irq_vectors =
+	    calloc(num_vectors, sizeof(*adapter->irq_vectors));
 	if (!adapter->irq_vectors)
 		return -ENOMEM;
 
@@ -121,7 +122,7 @@ void ena_intr_msix_fini(struct ena_adapter *adapter)
 		return;
 
 #ifdef __Unikraft__
-/* Release any armed platform vectors before the table goes. */
+	/* Release any armed platform vectors before the table goes. */
 	ena_plat_msix_disarm();
 #endif
 
@@ -147,7 +148,8 @@ int ena_intr_setup(struct ena_adapter *adapter, void *pci_dev)
 		return ret;
 
 	if (nvec == 0) {
-		ena_info("msix: no vectors from platform, using software polling");
+		ena_info(
+		    "msix: no vectors from platform, using software polling");
 		return -ENOTSUP;
 	}
 
@@ -166,34 +168,39 @@ int ena_intr_setup(struct ena_adapter *adapter, void *pci_dev)
 
 #ifdef __Unikraft__
 #if defined(CONFIG_LIBENA_MSIX)
-/*
- * Arm the real MSI-X capability (table, PBA, unmask). The
- * platform pci_dev handle is the PCI bus/device/function. On
- * failure the driver stays in software polling mode.
- */
-{
-		const struct pci_address *bdf = (const struct pci_address *)pci_dev;
+	/*
+	 * Arm the real MSI-X capability (table, PBA, unmask). The
+	 * platform pci_dev handle is the PCI bus/device/function. On
+	 * failure the driver stays in software polling mode.
+	 */
+	{
+		const struct pci_address *bdf =
+		    (const struct pci_address *)pci_dev;
 
 		ret = msix_arm_device(adapter, bdf);
 		if (ret) {
-			ena_warn("msix: arm failed (%d), using software polling", ret);
+			ena_warn(
+			    "msix: arm failed (%d), using software polling",
+			    ret);
 			ena_intr_msix_fini(adapter);
 			return ret;
 		}
-}
+	}
 #else
 	/* Arming is off in this bisect build: software polling mode. */
 	ena_info("msix: arming disabled (bisect build); software polling mode");
 #endif
 #endif
 
-	ena_info("msix: %u vectors active (admin vector enabled)", (unsigned)nvec);
+	ena_info("msix: %u vectors active (admin vector enabled)",
+		 (unsigned)nvec);
 	return 0;
 }
 
 int ena_intr_mask_vector(struct ena_adapter *adapter, uint32_t vector_id)
 {
-	if (!adapter || !adapter->irq_vectors || vector_id >= adapter->num_irq_vectors)
+	if (!adapter || !adapter->irq_vectors ||
+	    vector_id >= adapter->num_irq_vectors)
 		return -EINVAL;
 
 	adapter->irq_vectors[vector_id].masked = true;
@@ -211,7 +218,8 @@ int ena_intr_unmask_vector(struct ena_adapter *adapter, uint32_t vector_id)
 	uint16_t num_rx;
 	uint16_t qid;
 
-	if (!adapter || !adapter->irq_vectors || vector_id >= adapter->num_irq_vectors)
+	if (!adapter || !adapter->irq_vectors ||
+	    vector_id >= adapter->num_irq_vectors)
 		return -EINVAL;
 
 	adapter->irq_vectors[vector_id].masked = false;
@@ -229,20 +237,20 @@ int ena_intr_unmask_vector(struct ena_adapter *adapter, uint32_t vector_id)
 	 * intr_control bit 30 to that register unmasks the queue.
 	 * The CQ head doorbell is not written. */
 	qid = adapter->irq_vectors[vector_id].queue_id;
-	num_tx = adapter->num_tx_rings ? adapter->num_tx_rings : adapter->max_tx_queues;
-	num_rx = adapter->num_rx_rings ? adapter->num_rx_rings : adapter->max_rx_queues;
-	if (adapter->rx_rings && qid < num_rx &&
-	    adapter->rx_rings[qid] &&
+	num_tx = adapter->num_tx_rings ? adapter->num_tx_rings
+				       : adapter->max_tx_queues;
+	num_rx = adapter->num_rx_rings ? adapter->num_rx_rings
+				       : adapter->max_rx_queues;
+	if (adapter->rx_rings && qid < num_rx && adapter->rx_rings[qid] &&
 	    adapter->rx_rings[qid]->cq_unmask_db_offset != 0) {
 		ena_reg_write32(adapter->bar0_base +
-				adapter->rx_rings[qid]->cq_unmask_db_offset,
+				    adapter->rx_rings[qid]->cq_unmask_db_offset,
 				ENA_ETH_IO_INTR_REG_INTR_UNMASK_MASK);
 	}
-	if (adapter->tx_rings && qid < num_tx &&
-	    adapter->tx_rings[qid] &&
+	if (adapter->tx_rings && qid < num_tx && adapter->tx_rings[qid] &&
 	    adapter->tx_rings[qid]->cq_unmask_db_offset != 0) {
 		ena_reg_write32(adapter->bar0_base +
-				adapter->tx_rings[qid]->cq_unmask_db_offset,
+				    adapter->tx_rings[qid]->cq_unmask_db_offset,
 				ENA_ETH_IO_INTR_REG_INTR_UNMASK_MASK);
 	}
 
@@ -274,7 +282,8 @@ void ena_intr_unmask_all(struct ena_adapter *adapter)
 int ena_intr_set_coalesce(struct ena_adapter *adapter, uint32_t vector_id,
 			  uint32_t usecs)
 {
-	if (!adapter || !adapter->irq_vectors || vector_id >= adapter->num_irq_vectors)
+	if (!adapter || !adapter->irq_vectors ||
+	    vector_id >= adapter->num_irq_vectors)
 		return -EINVAL;
 
 	adapter->irq_vectors[vector_id].moderation_interval_usec = usecs;
@@ -328,13 +337,14 @@ int ena_poll_step(struct ena_poll_ctx *ctx, unsigned int *work_done)
 			if (!ctx->adapter->rx_rings[q])
 				continue;
 
-			count = ena_rx_poll(ctx->adapter->rx_rings[q], rx_pkts,
-					    ctx->rx_budget > 32 ? 32 : ctx->rx_budget);
+			count = ena_rx_poll(
+			    ctx->adapter->rx_rings[q], rx_pkts,
+			    ctx->rx_budget > 32 ? 32 : ctx->rx_budget);
 			if (count > 0) {
-				for (i = 0; i < count; i++) {
+				for (i = 0; i < count; i++)
 					if (ctx->rx_handler)
-						ctx->rx_handler(ctx->rx_arg, q, &rx_pkts[i]);
-				}
+						ctx->rx_handler(ctx->rx_arg, q,
+								&rx_pkts[i]);
 				total += (unsigned int)count;
 				ctx->total_rx_received += (uint64_t)count;
 			}

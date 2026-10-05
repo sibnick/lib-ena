@@ -17,8 +17,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int setup_test_adapter_llq(struct mock_ena_hw *hw, struct ena_adapter *adapter,
-				  void *bar2_buf, size_t bar2_sz)
+static int setup_test_adapter_llq(struct mock_ena_hw *hw,
+				  struct ena_adapter *adapter, void *bar2_buf,
+				  size_t bar2_sz)
 {
 	mock_ena_hw_init(hw);
 	ena_admin_set_db_hook(mock_ena_hw_aq_doorbell_hook, hw);
@@ -82,14 +83,17 @@ static void test_llq_negotiation_no_bar2(void)
 
 	assert(netdev->ops->txq_xmit(netdev, 0, tx_buf) == 0);
 	assert(adapter.tx_rings[0]->sq_tail == 1);
-	assert(mock_ena_hw_get_reg32(&hw, adapter.tx_rings[0]->sq_db_offset) == 1);
+	assert(mock_ena_hw_get_reg32(&hw, adapter.tx_rings[0]->sq_db_offset) ==
+	       1);
 
 	/* The descriptor must be in the host SQ ring */
 	{
 		const struct ena_eth_io_tx_desc *desc =
-			(const struct ena_eth_io_tx_desc *)adapter.tx_rings[0]->sq_virt;
+		    (const struct ena_eth_io_tx_desc *)adapter.tx_rings[0]
+			->sq_virt;
 
-		assert((desc[0].len_ctrl & ENA_ETH_IO_TX_DESC_LENGTH_MASK) == 128);
+		assert((desc[0].len_ctrl & ENA_ETH_IO_TX_DESC_LENGTH_MASK) ==
+		       128);
 	}
 
 	mock_ena_hw_emulate_tx(&hw, adapter.tx_rings[0], 1);
@@ -112,7 +116,8 @@ static void test_llq_negotiation_with_bar2(void)
 	struct ena_adapter adapter;
 	uint8_t bar2_memory[4096];
 
-	assert(setup_test_adapter_llq(&hw, &adapter, bar2_memory, sizeof(bar2_memory)) == 0);
+	assert(setup_test_adapter_llq(&hw, &adapter, bar2_memory,
+				      sizeof(bar2_memory)) == 0);
 
 	assert(ena_llq_negotiate(&adapter) == 0);
 	assert(adapter.llq_info.supported == true);
@@ -202,7 +207,8 @@ static void test_llq_tx_path_bar2(void)
 
 	assert(netdev->ops->txq_xmit(netdev, 0, tx_buf) == 0);
 	assert(adapter.tx_rings[0]->sq_tail == 1);
-	assert(mock_ena_hw_get_reg32(&hw, adapter.tx_rings[0]->sq_db_offset) == 1);
+	assert(mock_ena_hw_get_reg32(&hw, adapter.tx_rings[0]->sq_db_offset) ==
+	       1);
 
 	/* The descriptor and the inline header must be in the BAR2 push
 	 * buffer, not in the host SQ ring */
@@ -216,7 +222,8 @@ static void test_llq_tx_path_bar2(void)
 	assert(push_hdr[0] == 0xAB && push_hdr[95] == 0xAB);
 	assert(bar2_memory[0x1000 + 112] == 0); /* Zero pad after header */
 
-	host_desc = (const struct ena_eth_io_tx_desc *)adapter.tx_rings[0]->sq_virt;
+	host_desc =
+	    (const struct ena_eth_io_tx_desc *)adapter.tx_rings[0]->sq_virt;
 	assert(host_desc[0].len_ctrl == 0);
 
 	mock_ena_hw_emulate_tx(&hw, adapter.tx_rings[0], 1);
@@ -248,8 +255,10 @@ static void test_llq_tx_push_direct(void)
 	memset(bar2_memory, 0, sizeof(bar2_memory));
 	memset(dummy_header, 0xAB, sizeof(dummy_header));
 
-	assert(setup_test_adapter_llq(&hw, &adapter, bar2_memory, sizeof(bar2_memory)) == 0);
-	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 16, 16, &ring) == 0);
+	assert(setup_test_adapter_llq(&hw, &adapter, bar2_memory,
+				      sizeof(bar2_memory)) == 0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 16, 16, &ring) ==
+	       0);
 	assert(ena_ring_create_hw(ring, 0) == 0);
 
 	/* Configure ring for LLQ push mode */
@@ -264,7 +273,8 @@ static void test_llq_tx_push_direct(void)
 	pkt.l3_csum_en = true;
 	pkt.l4_csum_en = true;
 
-	assert(ena_llq_tx_push(ring, &pkt, dummy_header, sizeof(dummy_header), &req_id) == 0);
+	assert(ena_llq_tx_push(ring, &pkt, dummy_header, sizeof(dummy_header),
+			       &req_id) == 0);
 	assert(req_id == 0);
 	assert(ring->sq_tail == 1);
 	assert(ring->tx_packets == 1);
@@ -274,7 +284,8 @@ static void test_llq_tx_push_direct(void)
 	desc = (const struct ena_eth_io_tx_desc *)bar2_memory;
 	assert((desc->len_ctrl & ENA_ETH_IO_TX_DESC_LENGTH_MASK) == 128);
 	assert(desc->len_ctrl & ENA_ETH_IO_TX_DESC_PHASE_MASK);
-	assert((desc->buff_addr_hi_hdr_sz >> 24) == 40); /* Header length encoded */
+	assert((desc->buff_addr_hi_hdr_sz >> 24) ==
+	       40); /* Header length encoded */
 
 	/* Verify header bytes in BAR2 memory */
 	pushed_hdr = bar2_memory + sizeof(*desc);
@@ -302,7 +313,8 @@ static void test_llq_tx_push_fallback_standard(void)
 	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8, &ring) == 0);
 	assert(ena_ring_create_hw(ring, 0) == 0);
 
-	/* LLQ is false -> should fall back to standard ring->sq_virt descriptor */
+	/* LLQ is false -> should fall back to standard ring->sq_virt descriptor
+	 */
 	ring->is_llq = false;
 
 	memset(&pkt, 0, sizeof(pkt));
@@ -355,7 +367,8 @@ static void test_llq_invalid_args(void)
 	assert(ena_llq_tx_push(&rx_ring, &pkt, NULL, 0, &req_id) == -EINVAL);
 
 	/* Header length > 96 */
-	assert(ena_llq_tx_push(&tx_ring, &pkt, dummy_header, 100, &req_id) == -EINVAL);
+	assert(ena_llq_tx_push(&tx_ring, &pkt, dummy_header, 100, &req_id) ==
+	       -EINVAL);
 
 	printf("[PASS] test_llq_invalid_args passed\n");
 }

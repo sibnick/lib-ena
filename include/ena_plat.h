@@ -17,14 +17,14 @@
 #include <uk/bus/pci.h>
 #include <uk/netdev.h>
 
-#define ena_info(fmt, ...)   uk_pr_info("ena: " fmt, ##__VA_ARGS__)
-#define ena_warn(fmt, ...)   uk_pr_warn("ena: " fmt, ##__VA_ARGS__)
-#define ena_err(fmt, ...)    uk_pr_err("ena: " fmt, ##__VA_ARGS__)
-#define ena_debug(fmt, ...)  uk_pr_debug("ena: " fmt, ##__VA_ARGS__)
+#define ena_info(fmt, ...) uk_pr_info("ena: " fmt, ##__VA_ARGS__)
+#define ena_warn(fmt, ...) uk_pr_warn("ena: " fmt, ##__VA_ARGS__)
+#define ena_err(fmt, ...) uk_pr_err("ena: " fmt, ##__VA_ARGS__)
+#define ena_debug(fmt, ...) uk_pr_debug("ena: " fmt, ##__VA_ARGS__)
 
 /* Max MSI-X vectors the platform arm path handles (matches
  * ENA_MAX_MSIX_VECTORS in ena_intr.h without a circular include). */
-#define ENA_PLAT_MSIX_MAX_VECTORS	32
+#define ENA_PLAT_MSIX_MAX_VECTORS 32
 
 /* One 16-byte entry of the device MSI-X table. */
 struct ena_msix_msg {
@@ -52,9 +52,9 @@ void ena_plat_msix_disarm(void);
 uint32_t ena_plat_msix_count_get(void);
 uint32_t ena_plat_msix_vector_count(uint32_t vector);
 uint32_t ena_plat_msix_state(void);
-void ena_plat_msix_diag(uint32_t *msgctl, uint32_t *t1_addr,
-		       uint32_t *t1_data, uint32_t *t1_ctrl, uint32_t *pba0,
-		       uint32_t *irr, uint32_t *isr);
+void ena_plat_msix_diag(uint32_t *msgctl, uint32_t *t1_addr, uint32_t *t1_data,
+			uint32_t *t1_ctrl, uint32_t *pba0, uint32_t *irr,
+			uint32_t *isr);
 
 #else
 #include <stdio.h>
@@ -71,26 +71,32 @@ void ena_debug(const char *fmt, ...);
 
 /* Memory barrier macros */
 #if defined(__x86_64__) || defined(_M_X64)
-#define ena_mb()    __asm__ __volatile__("mfence" ::: "memory")
-#define ena_rmb()   __asm__ __volatile__("lfence" ::: "memory")
-#define ena_wmb()   __asm__ __volatile__("sfence" ::: "memory")
+#define ena_mb() __asm__ __volatile__("mfence" ::: "memory")
+#define ena_rmb() __asm__ __volatile__("lfence" ::: "memory")
+#define ena_wmb() __asm__ __volatile__("sfence" ::: "memory")
 #elif defined(__aarch64__)
-#define ena_mb()    __asm__ __volatile__("dmb sy" ::: "memory")
-#define ena_rmb()   __asm__ __volatile__("dmb ld" ::: "memory")
-#define ena_wmb()   __asm__ __volatile__("dmb st" ::: "memory")
+#define ena_mb() __asm__ __volatile__("dmb sy" ::: "memory")
+#define ena_rmb() __asm__ __volatile__("dmb ld" ::: "memory")
+#define ena_wmb() __asm__ __volatile__("dmb st" ::: "memory")
 #else
-#define ena_mb()    __asm__ __volatile__("" ::: "memory")
-#define ena_rmb()   __asm__ __volatile__("" ::: "memory")
-#define ena_wmb()   __asm__ __volatile__("" ::: "memory")
+#define ena_mb() __asm__ __volatile__("" ::: "memory")
+#define ena_rmb() __asm__ __volatile__("" ::: "memory")
+#define ena_wmb() __asm__ __volatile__("" ::: "memory")
 #endif
 
-#define READ_ONCE32(var) \
-	({ _Static_assert(sizeof(var) == 4, "READ_ONCE32 requires a 32-bit variable"); \
-	   (*(const volatile uint32_t *)&(var)); })
+#define READ_ONCE32(var)                                                       \
+	({                                                                     \
+		_Static_assert(sizeof(var) == 4,                               \
+			       "READ_ONCE32 requires a 32-bit variable");      \
+		(*(const volatile uint32_t *)&(var));                          \
+	})
 
-#define WRITE_ONCE32(var, val) \
-	({ _Static_assert(sizeof(var) == 4, "WRITE_ONCE32 requires a 32-bit variable"); \
-	   (*(volatile uint32_t *)&(var) = (val)); })
+#define WRITE_ONCE32(var, val)                                                 \
+	({                                                                     \
+		_Static_assert(sizeof(var) == 4,                               \
+			       "WRITE_ONCE32 requires a 32-bit variable");     \
+		(*(volatile uint32_t *)&(var) = (val));                        \
+	})
 
 /* CPU pause helper for spinlock loops */
 static inline void ena_pause(void)
@@ -190,4 +196,3 @@ void ena_plat_set_mock_cpu_id(uint32_t cpu_id);
 #endif
 
 #endif /* LIBENA_ENA_PLAT_H */
-

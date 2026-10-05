@@ -62,7 +62,8 @@ static void test_device_status_and_reset(void)
 	uint32_t ctl_val = mock_ena_hw_get_reg32(&hw, ENA_REGS_DEV_CTL_OFF);
 	assert(ctl_val & ENA_DEV_CTL_DEV_RESET_MASK);
 
-	/* Device finishes the reset; the driver then confirms it (status at 0x58). */
+	/* Device finishes the reset; the driver then confirms it (status at
+	 * 0x58). */
 	mock_ena_hw_trigger_reset_completion(&hw);
 	ret = ena_device_wait_reset_complete(&adapter, 100);
 	assert(ret == 0);
@@ -79,7 +80,8 @@ static void test_reset_delay_polls(void)
 	mock_ena_hw_init(&hw);
 
 	struct ena_adapter adapter;
-	assert(ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0)) == 0);
+	assert(ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0)) ==
+	       0);
 
 	/* Model a reset that stays in progress for 50 polls, then finishes.
 	 * A loop that gives up early would time out before poll 50. */
@@ -105,20 +107,21 @@ static void test_reset_in_progress_bit(void)
 	mock_ena_hw_init(&hw);
 
 	struct ena_adapter adapter;
-	assert(ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0)) == 0);
+	assert(ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0)) ==
+	       0);
 
 	/* FINISHED is set but IN_PROGRESS is still set: not complete.
 	 * The loop must keep polling and time out. */
 	mock_ena_hw_set_reg32(&hw, ENA_REGS_DEV_STS_OFF,
 			      ENA_DEV_STS_RESET_FIN_MASK |
-			      ENA_DEV_STS_RESET_IN_PROG_MASK);
+				  ENA_DEV_STS_RESET_IN_PROG_MASK);
 	int ret = ena_device_wait_reset_complete(&adapter, 10);
 	assert(ret == -ETIMEDOUT);
 
 	/* Clear IN_PROGRESS: the reset is now complete. */
 	mock_ena_hw_set_reg32(&hw, ENA_REGS_DEV_STS_OFF,
 			      ENA_DEV_STS_RESET_FIN_MASK |
-			      ENA_DEV_STS_READY_MASK);
+				  ENA_DEV_STS_READY_MASK);
 	ret = ena_device_wait_reset_complete(&adapter, 10);
 	assert(ret == 0);
 
@@ -132,7 +135,8 @@ static void test_reset_fatal_error(void)
 	mock_ena_hw_init(&hw);
 
 	struct ena_adapter adapter;
-	assert(ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0)) == 0);
+	assert(ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0)) ==
+	       0);
 
 	/* A fatal error during reset returns -EIO and sets the error state. */
 	mock_ena_hw_set_reg32(&hw, ENA_REGS_DEV_STS_OFF,
@@ -175,7 +179,8 @@ static void test_scaffold_reprobe_after_remove(void)
 	mock_ena_hw_init(&hw);
 
 	/* First probe. */
-	assert(ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0)) == 0);
+	assert(ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0)) ==
+	       0);
 	assert(adapter.state == ENA_STATE_PCI_PROBED);
 	assert(adapter.version == ((2 << 8) | 0));
 
@@ -186,7 +191,8 @@ static void test_scaffold_reprobe_after_remove(void)
 
 	/* Re-probe the same device: initialization must start from a
 	 * clean state and succeed again. */
-	assert(ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0)) == 0);
+	assert(ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0)) ==
+	       0);
 	assert(adapter.state == ENA_STATE_PCI_PROBED);
 	assert(adapter.version == ((2 << 8) | 0));
 	assert(adapter.controller_version == 0x00020800);

@@ -21,9 +21,9 @@ struct ena_common_mem_addr {
 
 /* Common descriptor shared by all admin queue entries. */
 struct ena_admin_aq_common_desc {
-	uint16_t command_id;   /* bits 11:0, upper 4 bits reserved */
+	uint16_t command_id; /* bits 11:0, upper 4 bits reserved */
 	uint8_t opcode;
-	uint8_t flags;         /* bit 0: phase */
+	uint8_t flags; /* bit 0: phase */
 };
 
 /* Control buffer reference (used when flags bit 1 is set). */
@@ -46,9 +46,9 @@ struct ena_admin_aq_entry {
 
 /* Admin completion queue (response) common descriptor. */
 struct ena_admin_acq_common_desc {
-	uint16_t command;          /* matched command_id, bits 11:0 */
-	uint8_t status;            /* 0 = success */
-	uint8_t flags;             /* bit 0: phase */
+	uint16_t command; /* matched command_id, bits 11:0 */
+	uint8_t status;	  /* 0 = success */
+	uint8_t flags;	  /* bit 0: phase */
 	uint16_t extended_status;
 	uint16_t sq_head_indx;
 };
@@ -63,7 +63,7 @@ struct ena_admin_acq_entry {
 struct ena_admin_aenq_common_desc {
 	uint16_t group;
 	uint16_t syndrome;
-	uint8_t flags;             /* bit 0: phase */
+	uint8_t flags; /* bit 0: phase */
 	uint8_t reserved1[3];
 	uint32_t timestamp_low;
 	uint32_t timestamp_high;
@@ -76,27 +76,27 @@ struct ena_admin_aenq_entry {
 };
 
 /* Phase and control data bit masks in flags byte. */
-#define ENA_ADMIN_AQ_PHASE_MASK				0x01
-#define ENA_ADMIN_AQ_COMMON_DESC_CTRL_DATA_MASK		0x02
-#define ENA_ADMIN_AQ_COMMON_DESC_CTRL_DATA_INDIRECT_MASK	0x04
-#define ENA_ADMIN_ACQ_PHASE_MASK			0x01
-#define ENA_ADMIN_AENQ_PHASE_MASK			0x01
+#define ENA_ADMIN_AQ_PHASE_MASK 0x01
+#define ENA_ADMIN_AQ_COMMON_DESC_CTRL_DATA_MASK 0x02
+#define ENA_ADMIN_AQ_COMMON_DESC_CTRL_DATA_INDIRECT_MASK 0x04
+#define ENA_ADMIN_ACQ_PHASE_MASK 0x01
+#define ENA_ADMIN_AENQ_PHASE_MASK 0x01
 
 /* Command id field width (bits 11:0). */
-#define ENA_ADMIN_COMMAND_ID_MASK	0x0FFF
+#define ENA_ADMIN_COMMAND_ID_MASK 0x0FFF
 
 /* Inline data region of an AQ entry (64 bytes - 4 byte common desc). */
-#define ENA_ADMIN_AQ_INLINE_DATA_SIZE	60
+#define ENA_ADMIN_AQ_INLINE_DATA_SIZE 60
 
 /* Admin queue opcodes. */
 enum ena_admin_aq_opcode {
-	ENA_ADMIN_CREATE_SQ	= 1,
-	ENA_ADMIN_DESTROY_SQ	= 2,
-	ENA_ADMIN_CREATE_CQ	= 3,
-	ENA_ADMIN_DESTROY_CQ	= 4,
-	ENA_ADMIN_GET_FEATURE	= 8,
-	ENA_ADMIN_SET_FEATURE	= 9,
-	ENA_ADMIN_GET_STATS	= 11,
+	ENA_ADMIN_CREATE_SQ = 1,
+	ENA_ADMIN_DESTROY_SQ = 2,
+	ENA_ADMIN_CREATE_CQ = 3,
+	ENA_ADMIN_DESTROY_CQ = 4,
+	ENA_ADMIN_GET_FEATURE = 8,
+	ENA_ADMIN_SET_FEATURE = 9,
+	ENA_ADMIN_GET_STATS = 11,
 };
 
 /* Queue direction for CREATE_SQ */
@@ -108,7 +108,7 @@ enum ena_admin_sq_direction {
 /* Queue placement policy for CREATE_SQ */
 enum ena_admin_placement_policy_type {
 	ENA_ADMIN_PLACEMENT_POLICY_HOST = 1,
-	ENA_ADMIN_PLACEMENT_POLICY_DEV  = 3,
+	ENA_ADMIN_PLACEMENT_POLICY_DEV = 3,
 };
 
 /* Completion policy for CREATE_SQ */
@@ -123,9 +123,9 @@ enum ena_admin_completion_policy_type {
 /* CREATE_CQ command and response descriptors */
 struct ena_admin_aq_create_cq_cmd {
 	struct ena_admin_aq_common_desc aq_common_descriptor;
-	uint8_t cq_caps_1;       /* bit 5: interrupt_mode_enabled */
-	uint8_t cq_caps_2;       /* bits 4:0: cq_entry_size_words */
-	uint16_t cq_depth;       /* depth in entries, power of 2 */
+	uint8_t cq_caps_1; /* bit 5: interrupt_mode_enabled */
+	uint8_t cq_caps_2; /* bits 4:0: cq_entry_size_words */
+	uint16_t cq_depth; /* depth in entries, power of 2 */
 	uint32_t msix_vector;
 	struct ena_common_mem_addr cq_ba;
 };
@@ -153,10 +153,11 @@ struct ena_admin_acq_destroy_cq_resp_desc {
 /* CREATE_SQ command and response descriptors */
 struct ena_admin_aq_create_sq_cmd {
 	struct ena_admin_aq_common_desc aq_common_descriptor;
-	uint8_t sq_identity;     /* bits 7:5: direction (1=TX, 2=RX) */
+	uint8_t sq_identity; /* bits 7:5: direction (1=TX, 2=RX) */
 	uint8_t reserved8_w1;
-	uint8_t sq_caps_2;       /* bits 3:0: placement_policy, bits 6:4: completion_policy */
-	uint8_t sq_caps_3;       /* bit 0: is_physically_contiguous */
+	uint8_t sq_caps_2; /* bits 3:0: placement_policy, bits 6:4:
+			      completion_policy */
+	uint8_t sq_caps_3; /* bit 0: is_physically_contiguous */
 	uint16_t cq_idx;
 	uint16_t sq_depth;
 	struct ena_common_mem_addr sq_ba;
@@ -191,29 +192,29 @@ struct ena_admin_acq_destroy_sq_resp_desc {
 
 /* Completion status values (0 = success). */
 enum ena_admin_aq_completion_status {
-	ENA_ADMIN_SUCCESS			= 0,
+	ENA_ADMIN_SUCCESS = 0,
 	ENA_ADMIN_RESOURCE_ALLOCATION_FAILURE = 1,
-	ENA_ADMIN_BAD_OPCODE		= 2,
-	ENA_ADMIN_UNSUPPORTED_OPCODE	= 3,
-	ENA_ADMIN_MALFORMED_REQUEST	= 4,
+	ENA_ADMIN_BAD_OPCODE = 2,
+	ENA_ADMIN_UNSUPPORTED_OPCODE = 3,
+	ENA_ADMIN_MALFORMED_REQUEST = 4,
 	/* Additional status is provided in ACQ extended_status */
-	ENA_ADMIN_ILLEGAL_PARAMETER	= 5,
-	ENA_ADMIN_UNKNOWN_ERROR		= 6,
-	ENA_ADMIN_RESOURCE_BUSY		= 7,
+	ENA_ADMIN_ILLEGAL_PARAMETER = 5,
+	ENA_ADMIN_UNKNOWN_ERROR = 6,
+	ENA_ADMIN_RESOURCE_BUSY = 7,
 };
 
 /* Statistics type for GET_STATS (ena_admin_defs.h,
  * enum ena_admin_get_stats_type). */
 enum ena_admin_get_stats_type {
-	ENA_ADMIN_GET_STATS_TYPE_BASIC		= 0,
-	ENA_ADMIN_GET_STATS_TYPE_EXTENDED	= 1,
-	ENA_ADMIN_GET_STATS_TYPE_ENI		= 2,
+	ENA_ADMIN_GET_STATS_TYPE_BASIC = 0,
+	ENA_ADMIN_GET_STATS_TYPE_EXTENDED = 1,
+	ENA_ADMIN_GET_STATS_TYPE_ENI = 2,
 };
 
 /* Statistics scope (enum ena_admin_get_stats_scope). */
 enum ena_admin_get_stats_scope {
-	ENA_ADMIN_SPECIFIC_QUEUE	= 0,
-	ENA_ADMIN_ETH_TRAFFIC		= 1,
+	ENA_ADMIN_SPECIFIC_QUEUE = 0,
+	ENA_ADMIN_ETH_TRAFFIC = 1,
 };
 
 /* GET_STATS request payload. It fills the inline data region of an
@@ -222,17 +223,17 @@ enum ena_admin_get_stats_scope {
  * ena_admin_defs.h struct ena_admin_aq_get_stats_cmd. */
 struct ena_admin_aq_get_stats_cmd {
 	struct ena_admin_ctrl_buff_info control_buffer;
-	uint8_t type;            /* enum ena_admin_get_stats_type */
-	uint8_t scope;           /* enum ena_admin_get_stats_scope */
+	uint8_t type;  /* enum ena_admin_get_stats_type */
+	uint8_t scope; /* enum ena_admin_get_stats_scope */
 	uint16_t reserved3;
 	uint16_t queue_idx;
-	uint16_t device_id;      /* 0xFFFF = this device */
+	uint16_t device_id; /* 0xFFFF = this device */
 	uint32_t requested_metrics_low;
 	uint32_t requested_metrics_high;
 };
 
 /* GET_STATS device id meaning "this device". */
-#define ENA_ADMIN_GET_STATS_DEVICE_ID_SELF	0xFFFFu
+#define ENA_ADMIN_GET_STATS_DEVICE_ID_SELF 0xFFFFu
 
 /* Basic device statistics, returned inline in the ACQ entry
  * (ena_admin_defs.h, struct ena_admin_basic_stats). */
@@ -264,11 +265,11 @@ struct ena_admin_eni_stats {
 
 /* AENQ event groups. */
 enum ena_admin_aenq_group {
-	ENA_ADMIN_LINK_CHANGE	= 0,
-	ENA_ADMIN_FATAL_ERROR	= 1,
-	ENA_ADMIN_WARNING		= 2,
-	ENA_ADMIN_NOTIFICATION	= 3,
-	ENA_ADMIN_KEEP_ALIVE	= 4,
+	ENA_ADMIN_LINK_CHANGE = 0,
+	ENA_ADMIN_FATAL_ERROR = 1,
+	ENA_ADMIN_WARNING = 2,
+	ENA_ADMIN_NOTIFICATION = 3,
+	ENA_ADMIN_KEEP_ALIVE = 4,
 };
 
 /**
@@ -278,7 +279,8 @@ enum ena_admin_aenq_group {
  * @param group Event group identifier.
  * @param syndrome Event syndrome code.
  * @param entry Pointer to the raw AENQ entry.
- * @return 0 to acknowledge and accept the event, or non-zero on processing error.
+ * @return 0 to acknowledge and accept the event, or non-zero on processing
+ * error.
  */
 typedef int ena_aenq_handler(void *arg, uint16_t group, uint16_t syndrome,
 			     const struct ena_admin_aenq_entry *entry);
@@ -315,7 +317,6 @@ void ena_adapter_invalidate_io_rings(struct ena_adapter *adapter);
  */
 int ena_aenq_default_handler(void *arg, uint16_t group, uint16_t syndrome,
 			     const struct ena_admin_aenq_entry *entry);
-
 
 /**
  * Retrieve device attributes using the Admin Queue.

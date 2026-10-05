@@ -15,13 +15,12 @@
 #define ENA_RSS_MAX_POLLS 5000
 
 /* Standard Microsoft Toeplitz 40-byte RSS hash key */
-static const uint8_t default_toeplitz_key[ENA_ADMIN_RSS_KEY_PARTS * sizeof(uint32_t)] = {
-	0x6d, 0x5a, 0x56, 0xda, 0x25, 0x5b, 0x0e, 0xc2,
-	0x41, 0x67, 0x25, 0x3d, 0x43, 0xa3, 0x8f, 0xb0,
-	0xd0, 0xca, 0x2b, 0xcb, 0xae, 0x7b, 0x30, 0xb4,
-	0x77, 0xcb, 0x2d, 0xa3, 0x80, 0x30, 0xf2, 0x0c,
-	0x6a, 0x42, 0xb7, 0x3b, 0xbe, 0xac, 0x01, 0xfa
-};
+static const uint8_t
+    default_toeplitz_key[ENA_ADMIN_RSS_KEY_PARTS * sizeof(uint32_t)] = {
+	0x6d, 0x5a, 0x56, 0xda, 0x25, 0x5b, 0x0e, 0xc2, 0x41, 0x67,
+	0x25, 0x3d, 0x43, 0xa3, 0x8f, 0xb0, 0xd0, 0xca, 0x2b, 0xcb,
+	0xae, 0x7b, 0x30, 0xb4, 0x77, 0xcb, 0x2d, 0xa3, 0x80, 0x30,
+	0xf2, 0x0c, 0x6a, 0x42, 0xb7, 0x3b, 0xbe, 0xac, 0x01, 0xfa};
 
 static int ena_rss_exec(struct ena_adapter *adapter, uint8_t opcode,
 			const void *req, size_t req_len, void *resp,
@@ -73,18 +72,21 @@ static void ena_rss_query_ind_table_limits(struct ena_adapter *adapter)
 	ret = ena_rss_exec(adapter, ENA_ADMIN_GET_FEATURE, &req, sizeof(req),
 			   &resp, sizeof(resp));
 	if (ret) {
-		ena_warn("rss: GET_FEATURE(RSS indirection table limits) failed (%d), "
+		ena_warn("rss: GET_FEATURE(RSS indirection table limits) "
+			 "failed (%d), "
 			 "using fixed table size %u",
 			 ret, (unsigned)ENA_ADMIN_RSS_IND_TABLE_NUM_ENTRIES);
 		return;
 	}
 
-	ena_info("rss: device indirection table limits: min_size=%u max_size=%u "
-		 "(log2 of entry count)",
-		 (unsigned)resp.min_size, (unsigned)resp.max_size);
+	ena_info(
+	    "rss: device indirection table limits: min_size=%u max_size=%u "
+	    "(log2 of entry count)",
+	    (unsigned)resp.min_size, (unsigned)resp.max_size);
 
 	if (resp.min_size == 0 || resp.min_size > resp.max_size) {
-		ena_warn("rss: device reports invalid table size range (min=%u max=%u), "
+		ena_warn("rss: device reports invalid table size range (min=%u "
+			 "max=%u), "
 			 "using fixed table size %u",
 			 (unsigned)resp.min_size, (unsigned)resp.max_size,
 			 (unsigned)ENA_ADMIN_RSS_IND_TABLE_NUM_ENTRIES);
@@ -119,8 +121,10 @@ int ena_rss_init(struct ena_adapter *adapter)
 	if (!adapter)
 		return -EINVAL;
 
-	if (!(adapter->supported_features & (1u << ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG))) {
-		ena_warn("rss: device does not support indirection table (features=0x%x)",
+	if (!(adapter->supported_features &
+	      (1u << ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG))) {
+		ena_warn("rss: device does not support indirection table "
+			 "(features=0x%x)",
 			 adapter->supported_features);
 		return -EOPNOTSUPP;
 	}
@@ -140,9 +144,10 @@ int ena_rss_init(struct ena_adapter *adapter)
 	if (!rss->host_ind_table)
 		return -ENOMEM;
 
-	ind_tbl_size = (size_t)rss->ind_table_size * sizeof(struct ena_admin_rss_ind_table_entry);
-	rss->ind_table = (struct ena_admin_rss_ind_table_entry *)
-		ena_dma_alloc(ind_tbl_size, &rss->ind_table_phys);
+	ind_tbl_size = (size_t)rss->ind_table_size *
+		       sizeof(struct ena_admin_rss_ind_table_entry);
+	rss->ind_table = (struct ena_admin_rss_ind_table_entry *)ena_dma_alloc(
+	    ind_tbl_size, &rss->ind_table_phys);
 	if (!rss->ind_table) {
 		free(rss->host_ind_table);
 		rss->host_ind_table = NULL;
@@ -151,8 +156,10 @@ int ena_rss_init(struct ena_adapter *adapter)
 	memset(rss->ind_table, 0, ind_tbl_size);
 
 	if (adapter->supported_features & (1u << ENA_ADMIN_RSS_HASH_FUNCTION)) {
-		key_size = sizeof(struct ena_admin_feature_rss_flow_hash_control);
-		rss->hash_key = (struct ena_admin_feature_rss_flow_hash_control *)
+		key_size =
+		    sizeof(struct ena_admin_feature_rss_flow_hash_control);
+		rss->hash_key =
+		    (struct ena_admin_feature_rss_flow_hash_control *)
 			ena_dma_alloc(key_size, &rss->hash_key_phys);
 		if (!rss->hash_key) {
 			ena_rss_fini(adapter);
@@ -163,8 +170,9 @@ int ena_rss_init(struct ena_adapter *adapter)
 
 	if (adapter->supported_features & (1u << ENA_ADMIN_RSS_HASH_INPUT)) {
 		ctrl_size = sizeof(struct ena_admin_feature_rss_hash_control);
-		rss->hash_ctrl = (struct ena_admin_feature_rss_hash_control *)
-			ena_dma_alloc(ctrl_size, &rss->hash_ctrl_phys);
+		rss->hash_ctrl =
+		    (struct ena_admin_feature_rss_hash_control *)ena_dma_alloc(
+			ctrl_size, &rss->hash_ctrl_phys);
 		if (!rss->hash_ctrl) {
 			ena_rss_fini(adapter);
 			return -ENOMEM;
@@ -212,7 +220,8 @@ void ena_rss_fini(struct ena_adapter *adapter)
 	rss->enabled = false;
 }
 
-int ena_rss_set_hash_key(struct ena_adapter *adapter, const uint8_t *key, size_t key_len)
+int ena_rss_set_hash_key(struct ena_adapter *adapter, const uint8_t *key,
+			 size_t key_len)
 {
 	struct ena_rss_info *rss;
 	struct {
@@ -245,11 +254,15 @@ int ena_rss_set_hash_key(struct ena_adapter *adapter, const uint8_t *key, size_t
 	req.flow_hash_func.selected_func = (1u << ENA_ADMIN_TOEPLITZ);
 	req.flow_hash_func.init_val = 0;
 
-	req.control_buffer.length = sizeof(struct ena_admin_feature_rss_flow_hash_control);
-	req.control_buffer.address.mem_addr_low = (uint32_t)(rss->hash_key_phys & 0xFFFFFFFFu);
-	req.control_buffer.address.mem_addr_high = (uint16_t)((rss->hash_key_phys >> 32) & 0xFFFFu);
+	req.control_buffer.length =
+	    sizeof(struct ena_admin_feature_rss_flow_hash_control);
+	req.control_buffer.address.mem_addr_low =
+	    (uint32_t)(rss->hash_key_phys & 0xFFFFFFFFu);
+	req.control_buffer.address.mem_addr_high =
+	    (uint16_t)((rss->hash_key_phys >> 32) & 0xFFFFu);
 
-	ret = ena_rss_exec(adapter, ENA_ADMIN_SET_FEATURE, &req, sizeof(req), NULL, 0);
+	ret = ena_rss_exec(adapter, ENA_ADMIN_SET_FEATURE, &req, sizeof(req),
+			   NULL, 0);
 	if (ret) {
 		ena_warn("rss: set hash key failed (%d)", ret);
 		return ret;
@@ -283,26 +296,33 @@ int ena_rss_set_hash_ctrl(struct ena_adapter *adapter)
 	/* IPv4 TCP and UDP: 4-tuple (Src IP, Dst IP, Src Port, Dst Port) */
 	tcp_udp_fields = (uint16_t)(ENA_ADMIN_RSS_L3_SA | ENA_ADMIN_RSS_L3_DA |
 				    ENA_ADMIN_RSS_L4_SP | ENA_ADMIN_RSS_L4_DP);
-	rss->hash_ctrl->selected_fields[ENA_ADMIN_RSS_TCP4].fields = tcp_udp_fields;
-	rss->hash_ctrl->selected_fields[ENA_ADMIN_RSS_UDP4].fields = tcp_udp_fields;
+	rss->hash_ctrl->selected_fields[ENA_ADMIN_RSS_TCP4].fields =
+	    tcp_udp_fields;
+	rss->hash_ctrl->selected_fields[ENA_ADMIN_RSS_UDP4].fields =
+	    tcp_udp_fields;
 
 	/* IPv4 general: 2-tuple (Src IP, Dst IP) */
 	ip_fields = (uint16_t)(ENA_ADMIN_RSS_L3_SA | ENA_ADMIN_RSS_L3_DA);
 	rss->hash_ctrl->selected_fields[ENA_ADMIN_RSS_IP4].fields = ip_fields;
-	rss->hash_ctrl->selected_fields[ENA_ADMIN_RSS_IP4_FRAG].fields = ip_fields;
+	rss->hash_ctrl->selected_fields[ENA_ADMIN_RSS_IP4_FRAG].fields =
+	    ip_fields;
 
 	memset(&req, 0, sizeof(req));
 	req.feat_common.flags = ENA_ADMIN_FEAT_SELECT_CURRENT;
 	req.feat_common.feature_id = ENA_ADMIN_RSS_HASH_INPUT;
 	req.flow_hash_input.enabled_input_sort =
-		ENA_ADMIN_FEATURE_RSS_FLOW_HASH_INPUT_L3_SORT_MASK |
-		ENA_ADMIN_FEATURE_RSS_FLOW_HASH_INPUT_L4_SORT_MASK;
+	    ENA_ADMIN_FEATURE_RSS_FLOW_HASH_INPUT_L3_SORT_MASK |
+	    ENA_ADMIN_FEATURE_RSS_FLOW_HASH_INPUT_L4_SORT_MASK;
 
-	req.control_buffer.length = sizeof(struct ena_admin_feature_rss_hash_control);
-	req.control_buffer.address.mem_addr_low = (uint32_t)(rss->hash_ctrl_phys & 0xFFFFFFFFu);
-	req.control_buffer.address.mem_addr_high = (uint16_t)((rss->hash_ctrl_phys >> 32) & 0xFFFFu);
+	req.control_buffer.length =
+	    sizeof(struct ena_admin_feature_rss_hash_control);
+	req.control_buffer.address.mem_addr_low =
+	    (uint32_t)(rss->hash_ctrl_phys & 0xFFFFFFFFu);
+	req.control_buffer.address.mem_addr_high =
+	    (uint16_t)((rss->hash_ctrl_phys >> 32) & 0xFFFFu);
 
-	ret = ena_rss_exec(adapter, ENA_ADMIN_SET_FEATURE, &req, sizeof(req), NULL, 0);
+	ret = ena_rss_exec(adapter, ENA_ADMIN_SET_FEATURE, &req, sizeof(req),
+			   NULL, 0);
 	if (ret) {
 		ena_warn("rss: set hash control failed (%d)", ret);
 		return ret;
@@ -337,9 +357,8 @@ int ena_rss_set_ind_table(struct ena_adapter *adapter, uint16_t num_queues)
 		uint16_t target_q = (uint16_t)(i % num_queues);
 		uint16_t sq_idx = target_q;
 
-		if (adapter->rx_rings && adapter->rx_rings[target_q]) {
+		if (adapter->rx_rings && adapter->rx_rings[target_q])
 			sq_idx = adapter->rx_rings[target_q]->sq_idx;
-		}
 
 		rss->host_ind_table[i] = target_q;
 		rss->ind_table[i].sq_idx = sq_idx;
@@ -350,21 +369,27 @@ int ena_rss_set_ind_table(struct ena_adapter *adapter, uint16_t num_queues)
 	req.feat_common.flags = ENA_ADMIN_FEAT_SELECT_CURRENT;
 	req.feat_common.feature_id = ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG;
 	req.ind_table.size = (uint16_t)__builtin_ctz(rss->ind_table_size);
-	req.ind_table.inline_index = 0xFFFFFFFFu; /* Set entire table via control buffer */
+	req.ind_table.inline_index =
+	    0xFFFFFFFFu; /* Set entire table via control buffer */
 
-	req.control_buffer.length = (uint32_t)(rss->ind_table_size *
-					      sizeof(struct ena_admin_rss_ind_table_entry));
-	req.control_buffer.address.mem_addr_low = (uint32_t)(rss->ind_table_phys & 0xFFFFFFFFu);
-	req.control_buffer.address.mem_addr_high = (uint16_t)((rss->ind_table_phys >> 32) & 0xFFFFu);
+	req.control_buffer.length =
+	    (uint32_t)(rss->ind_table_size *
+		       sizeof(struct ena_admin_rss_ind_table_entry));
+	req.control_buffer.address.mem_addr_low =
+	    (uint32_t)(rss->ind_table_phys & 0xFFFFFFFFu);
+	req.control_buffer.address.mem_addr_high =
+	    (uint16_t)((rss->ind_table_phys >> 32) & 0xFFFFu);
 
-	ret = ena_rss_exec(adapter, ENA_ADMIN_SET_FEATURE, &req, sizeof(req), NULL, 0);
+	ret = ena_rss_exec(adapter, ENA_ADMIN_SET_FEATURE, &req, sizeof(req),
+			   NULL, 0);
 	if (ret) {
 		ena_warn("rss: set indirection table failed (%d)", ret);
 		return ret;
 	}
 
-	ena_info("rss: indirection table (%u entries) configured across %u queues",
-		 rss->ind_table_size, num_queues);
+	ena_info(
+	    "rss: indirection table (%u entries) configured across %u queues",
+	    rss->ind_table_size, num_queues);
 	return 0;
 }
 
@@ -407,18 +432,21 @@ static void ena_rss_readback_ind_table(struct ena_adapter *adapter)
 	req.ind_table.inline_index = 0xFFFFFFFFu;
 
 	/* Point the device at our existing DMA buffer so it can populate it. */
-	req.control_buffer.length = (uint32_t)(rss->ind_table_size *
-					       sizeof(struct ena_admin_rss_ind_table_entry));
+	req.control_buffer.length =
+	    (uint32_t)(rss->ind_table_size *
+		       sizeof(struct ena_admin_rss_ind_table_entry));
 	req.control_buffer.address.mem_addr_low =
-		(uint32_t)(rss->ind_table_phys & 0xFFFFFFFFu);
+	    (uint32_t)(rss->ind_table_phys & 0xFFFFFFFFu);
 	req.control_buffer.address.mem_addr_high =
-		(uint16_t)((rss->ind_table_phys >> 32) & 0xFFFFu);
+	    (uint16_t)((rss->ind_table_phys >> 32) & 0xFFFFu);
 
 	memset(&resp, 0, sizeof(resp));
 	ret = ena_rss_exec(adapter, ENA_ADMIN_GET_FEATURE, &req, sizeof(req),
 			   &resp, sizeof(resp));
 	if (ret) {
-		ena_warn("rss: GET_FEATURE indirection table readback failed (%d)", ret);
+		ena_warn(
+		    "rss: GET_FEATURE indirection table readback failed (%d)",
+		    ret);
 		return;
 	}
 
@@ -427,14 +455,16 @@ static void ena_rss_readback_ind_table(struct ena_adapter *adapter)
 	ena_info("rss: readback: size=%u min_size=%u max_size=%u",
 		 (unsigned)resp.size, (unsigned)resp.min_size,
 		 (unsigned)resp.max_size);
-	ena_info("rss: readback: entry[0]=sq%u entry[1]=sq%u entry[%u]=sq%u entry[%u]=sq%u",
+	ena_info("rss: readback: entry[0]=sq%u entry[1]=sq%u entry[%u]=sq%u "
+		 "entry[%u]=sq%u",
 		 (unsigned)rss->ind_table[0].sq_idx,
-		 rss->ind_table_size > 1 ? (unsigned)rss->ind_table[1].sq_idx : 0u,
+		 rss->ind_table_size > 1 ? (unsigned)rss->ind_table[1].sq_idx
+					 : 0u,
 		 (unsigned)(last > 0 ? last - 1 : 0),
-		 rss->ind_table_size > 1 ?
-			(unsigned)rss->ind_table[last > 0 ? last - 1 : 0].sq_idx : 0u,
-		 (unsigned)last,
-		 (unsigned)rss->ind_table[last].sq_idx);
+		 rss->ind_table_size > 1
+		     ? (unsigned)rss->ind_table[last > 0 ? last - 1 : 0].sq_idx
+		     : 0u,
+		 (unsigned)last, (unsigned)rss->ind_table[last].sq_idx);
 }
 
 int ena_rss_configure(struct ena_adapter *adapter, uint16_t num_queues)
@@ -465,7 +495,8 @@ int ena_rss_configure(struct ena_adapter *adapter, uint16_t num_queues)
 		return ret;
 
 	/* Read back the table from firmware and log spot-check entries.
-	 * Best-effort: a readback failure is logged but does not abort start. */
+	 * Best-effort: a readback failure is logged but does not abort start.
+	 */
 	ena_rss_readback_ind_table(adapter);
 
 	adapter->rss_info.enabled = true;

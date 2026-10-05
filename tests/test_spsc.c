@@ -29,22 +29,24 @@
 
 static int g_failures;
 
-#define SUBTEST(fn) do { \
-	printf("[TEST] %s...\n", #fn); \
-	if ((fn)() == 0) \
-		printf("[PASS] %s\n", #fn); \
-	else { \
-		printf("[FAIL] %s\n", #fn); \
-		g_failures++; \
-	} \
-} while (0)
+#define SUBTEST(fn)                                                            \
+	do {                                                                   \
+		printf("[TEST] %s...\n", #fn);                                 \
+		if ((fn)() == 0)                                               \
+			printf("[PASS] %s\n", #fn);                            \
+		else {                                                         \
+			printf("[FAIL] %s\n", #fn);                            \
+			g_failures++;                                          \
+		}                                                              \
+	} while (0)
 
-#define TEST_ASSERT(cond) do { \
-	if (!(cond)) { \
-		fprintf(stderr, "  assertion failed: %s\n", #cond); \
-		return 1; \
-	} \
-} while (0)
+#define TEST_ASSERT(cond)                                                      \
+	do {                                                                   \
+		if (!(cond)) {                                                 \
+			fprintf(stderr, "  assertion failed: %s\n", #cond);    \
+			return 1;                                              \
+		}                                                              \
+	} while (0)
 
 /* 1. A fresh ring is empty and pop fails on it. */
 static int test_empty_pop(void)
@@ -91,10 +93,9 @@ static int test_full(void)
 
 	spsc_ring_init(&ring);
 
-	for (i = 0; i < SPSC_CAP + 1; i++) {
+	for (i = 0; i < SPSC_CAP + 1; i++)
 		if (!spsc_ring_push(&ring, i))
 			break;
-	}
 
 	TEST_ASSERT(i == SPSC_CAP);
 	TEST_ASSERT(spsc_ring_full(&ring));
@@ -135,10 +136,9 @@ static void *cc_producer(void *arg)
 
 	(void)arg;
 
-	for (i = 0; i < CC_N; i++) {
+	for (i = 0; i < CC_N; i++)
 		while (!spsc_ring_push(&cc_ring, i))
 			;
-	}
 
 	cc_done = 1;
 	return NULL;
