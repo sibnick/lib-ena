@@ -809,6 +809,68 @@ static void test_netdev_bounce_buffers(void)
 	ena_netdev_free(netdev);
 }
 
+/* TX bounce slots must be reclaimed at completion time through the ring
+ * completion callback, not by a scan on the next send. A bare
+ * ena_tx_poll_completions call must free the slots. An idle ring with no
+ * request in flight must skip the completion peek. [Ticket 292e049bf4] */
+static void test_netdev_tx_reclaim_at_completion(void)
+{
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+	struct uk_netdev_tx_queue *txq;
+	struct ena_ring *ring;
+	struct uk_netbuf *nb = test_calloc(1, sizeof(*nb));
+	uint8_t payload[64];
+	unsigned int cleaned = 0;
+	int i;
+
+	assert(nb != NULL);
+	memset(payload, 0x5A, sizeof(payload));
+
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 1;
+	conf.nb_tx_queues = 1;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+	assert(netdev->ops->rxq_configure(netdev, 0, 8, NULL) == 0);
+	assert(netdev->ops->txq_configure(netdev, 0, 8, NULL) == 0);
+	assert(netdev->ops->dev_start(netdev) == 0);
+
+	txq = &netdev->tx_queues[0];
+	ring = g_adapter.tx_rings[0];
+
+	/* Four low-memory sends take four bounce slots. */
+	nb->data = payload;
+	nb->len = sizeof(payload);
+	nb->phys_addr = 0x1000;
+	for (i = 0; i < 4; i++)
+		assert(netdev->ops->txq_xmit(netdev, 0, nb) == 0);
+	assert(txq->bounce_free_count == 4);
+
+	/* Completions arrive. A bare completion poll must reclaim each slot
+	 * through the callback. The old code held the slots until the next
+	 * send scanned the whole map. */
+	mock_ena_hw_emulate_tx(&g_hw, ring, 4);
+	assert(ena_tx_poll_completions(ring, 8, &cleaned) == 4);
+	assert(cleaned == 4);
+	assert(txq->bounce_free_count == 8);
+	assert(txq->bounce_in_use == false);
+
+	/* The ring is idle: no request is in flight. A further poll must
+	 * skip the lock and the CQ read and report no work. */
+	cleaned = 123;
+	assert(ena_tx_poll_completions(ring, 8, &cleaned) == 0);
+	assert(cleaned == 0);
+
+	assert(netdev->ops->dev_stop(netdev) == 0);
+	test_free(nb);
+	teardown_test_adapter(&g_adapter);
+	ena_netdev_free(netdev);
+}
+
 static void test_netdev_start_rollback(void)
 {
 	struct uk_netdev *netdev;
@@ -1276,6 +1338,7 @@ int main(void)
 	RUN_TEST(test_netdev_rx_bad_completion_bounce_pool);
 	RUN_TEST(test_netdev_invalid_ops);
 	RUN_TEST(test_netdev_bounce_buffers);
+	RUN_TEST(test_netdev_tx_reclaim_at_completion);
 	RUN_TEST(test_netdev_start_rollback);
 	RUN_TEST(test_netdev_free_running_teardown);
 	RUN_TEST(test_netdev_free_not_running);
@@ -1283,7 +1346,7 @@ int main(void)
 	RUN_TEST(test_netdev_rx_more_flag);
 
 	printf("========================================\n");
-	printf("ALL PHASE 7 NETDEV TESTS PASSED (17/17) \n");
+	printf("ALL PHASE 7 NETDEV TESTS PASSED (18/18) \n");
 	printf("========================================\n");
 	return 0;
 }

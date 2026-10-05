@@ -367,27 +367,29 @@ static void ena_netdev_free_txq_bounce(struct uk_netdev_tx_queue *txq)
 	txq->nb_desc = 0;
 }
 
-/* Reclaim TX bounce slots whose requests have completed */
-static void ena_netdev_reclaim_tx_bounce(struct ena_ring *ring,
-					 struct uk_netdev_tx_queue *txq)
+/* Reclaim the bounce slot tied to one completed TX request. ena_tx_poll_completions
+ * calls this through ring->tx_complete_cb for each completion, so reclaim is
+ * O(1) per completion. The old path scanned all nb_desc map entries on every
+ * send. [Ticket 292e049bf4] */
+static void ena_netdev_txq_reclaim_slot(void *arg, uint16_t req_id)
 {
-	uint16_t req_id;
+	struct uk_netdev_tx_queue *txq = (struct uk_netdev_tx_queue *)arg;
+	int16_t slot;
 
-	if (!ring || !txq || !txq->bounce_map || !ring->req_in_flight)
+	if (!txq || !txq->bounce_map || req_id >= txq->nb_desc)
 		return;
 
-	for (req_id = 0; req_id < txq->nb_desc; req_id++) {
-		int16_t slot = txq->bounce_map[req_id];
-		if (slot >= 0 && !ring->req_in_flight[req_id]) {
-			txq->bounce_map[req_id] = -1;
-			if (txq->bounce_free_ids && txq->nb_desc > 0) {
-				txq->bounce_free_ids[txq->bounce_free_tail] = (uint16_t)slot;
-				txq->bounce_free_tail = (uint16_t)((txq->bounce_free_tail + 1) & (txq->nb_desc - 1));
-				txq->bounce_free_count++;
-			}
-			txq->bounce_wait_polls = 0;
-		}
+	slot = txq->bounce_map[req_id];
+	if (slot < 0)
+		return;
+
+	txq->bounce_map[req_id] = -1;
+	if (txq->bounce_free_ids && txq->nb_desc > 0) {
+		txq->bounce_free_ids[txq->bounce_free_tail] = (uint16_t)slot;
+		txq->bounce_free_tail = (uint16_t)((txq->bounce_free_tail + 1) & (txq->nb_desc - 1));
+		txq->bounce_free_count++;
 	}
+	txq->bounce_wait_polls = 0;
 	txq->bounce_in_use = (txq->bounce_free_count < txq->nb_desc);
 }
 
@@ -762,6 +764,11 @@ static struct uk_netdev_tx_queue *ena_netdev_txq_configure(struct uk_netdev *dev
 	edev->tx_queues[queue_id].bounce_wait_polls = 0;
 	edev->tx_queues[queue_id].nb_desc = nb_desc;
 
+	/* Reclaim each TX bounce slot at its completion instead of scanning
+	 * the whole map on every send. [Ticket 292e049bf4] */
+	ring->tx_complete_cb = ena_netdev_txq_reclaim_slot;
+	ring->tx_complete_arg = &edev->tx_queues[queue_id];
+
 	edev->tx_queues[queue_id].bounce_buf = ena_dma_alloc((size_t)nb_desc * ENA_TX_BOUNCE_SIZE,
 							     &edev->tx_queues[queue_id].bounce_phys);
 	if (!edev->tx_queues[queue_id].bounce_buf) {
@@ -1009,8 +1016,10 @@ int ena_netdev_tx_one(struct uk_netdev *dev __attribute__((unused)),
 		return -EINVAL;
 
 	ring = queue->ring;
+	/* Reap completions. Each completion reclaims its own bounce slot
+	 * through ring->tx_complete_cb, so no map scan runs here.
+	 * [Ticket 292e049bf4] */
 	ena_tx_poll_completions(ring, 32, NULL);
-	ena_netdev_reclaim_tx_bounce(ring, queue);
 
 	/* Check for bounce stall if pool is exhausted */
 	if (queue->bounce_free_count == 0 && queue->nb_desc > 0) {
@@ -1313,6 +1322,11 @@ static int ena_netdev_txq_configure(struct uk_netdev *dev, uint16_t queue_id,
 	dev->tx_queues[queue_id].bounce_wait_polls = 0;
 	dev->tx_queues[queue_id].nb_desc = nb_desc;
 
+	/* Reclaim each TX bounce slot at its completion instead of scanning
+	 * the whole map on every send. [Ticket 292e049bf4] */
+	ring->tx_complete_cb = ena_netdev_txq_reclaim_slot;
+	ring->tx_complete_arg = &dev->tx_queues[queue_id];
+
 	dev->tx_queues[queue_id].bounce_buf = ena_dma_alloc((size_t)nb_desc * ENA_TX_BOUNCE_SIZE,
 							    &dev->tx_queues[queue_id].bounce_phys);
 	if (!dev->tx_queues[queue_id].bounce_buf) {
@@ -1566,9 +1580,10 @@ static int ena_netdev_txq_xmit(struct uk_netdev *dev, uint16_t queue_id,
 
 	uint16_t slot = 0;
 
-	/* Poll completions to free up space */
+	/* Poll completions to free up space. Each completion reclaims its
+	 * own bounce slot through ring->tx_complete_cb, so no map scan runs
+	 * here. [Ticket 292e049bf4] */
 	ena_tx_poll_completions(ring, 16, NULL);
-	ena_netdev_reclaim_tx_bounce(ring, txq);
 
 	/* Check for bounce stall if pool is exhausted */
 	if (txq->bounce_free_count == 0 && txq->nb_desc > 0) {

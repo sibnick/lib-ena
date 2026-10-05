@@ -231,6 +231,14 @@ struct ena_ring {
 	void (*drop_netbuf_cb)(void *arg, void *netbuf);
 	void *drop_netbuf_arg;
 
+	/* TX completion callback: called from ena_tx_poll_completions for each
+	 * completed request ID. The netdev layer uses it to reclaim that
+	 * request's bounce slot at completion time, so reclaim is O(1) per
+	 * completion instead of a scan of the whole map on every send.
+	 * Set by the netdev layer in txq_configure. [Ticket 292e049bf4] */
+	void (*tx_complete_cb)(void *arg, uint16_t req_id);
+	void *tx_complete_arg;
+
 	/* Tracking Buffers (allocated to depth entries, indexed by req_id) */
 	union {
 		struct ena_tx_buffer *tx_bufs;

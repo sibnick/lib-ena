@@ -148,6 +148,17 @@ int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 	if (!ring->hw_valid)
 		return 0;
 
+	/* No request is outstanding, so the device has no completion to
+	 * post. Skip the lock and the CQ read. A completion can only exist
+	 * for a submitted request that still holds a request ID, and that
+	 * keeps free_req_count below sq_depth. This removes the per-poll
+	 * and per-send lock cycle on an idle TX ring. [Ticket 292e049bf4] */
+	if (ring->free_req_count >= ring->sq_depth) {
+		if (cleaned_count)
+			*cleaned_count = 0;
+		return 0;
+	}
+
 	if (budget == 0)
 		budget = ring->cq_depth;
 
@@ -185,6 +196,12 @@ int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 		}
 
 		ring->req_in_flight[req_id] = 0;
+
+		/* Reclaim this request's resources at completion time. The
+		 * netdev layer returns the matching bounce slot through the
+		 * callback, so it never scans the whole map. [Ticket 292e049bf4] */
+		if (ring->tx_complete_cb)
+			ring->tx_complete_cb(ring->tx_complete_arg, req_id);
 
 		/* Update SQ head index acknowledged by controller */
 		ring->sq_head = ena_le16_to_cpu(cdesc->sq_head_idx) & (ring->sq_depth - 1);
