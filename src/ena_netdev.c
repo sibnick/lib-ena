@@ -492,8 +492,16 @@ static void *ena_netbuf_alloc_helper(void *arg, uint64_t *phys_out, uint32_t *le
 	} else {
 		if (phys_out)
 			*phys_out = phys;
-		if (len_out)
-			*len_out = (uint32_t)nb->buflen;
+		if (len_out) {
+			/* Probe [Ticket a9c6945c21]: the heap canary at the
+			 * buffer end is clobbered even for small frames. Post
+			 * 64 bytes less than the buffer so the device cannot
+			 * reach the canary. If the canary stops firing, the
+			 * device writes to the buffer end (full-buffer DMA).
+			 */
+			*len_out = (nb->buflen > 64) ? (uint32_t)(nb->buflen - 64)
+			                            : (uint32_t)nb->buflen;
+		}
 	}
 
 	return nb;
