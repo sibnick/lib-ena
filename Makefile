@@ -2,7 +2,7 @@
 # Standalone build & test harness for Unikraft ENA driver
 
 CC ?= gcc
-CFLAGS ?= -std=c99 -Wall -Wextra -Werror -pedantic -Iinclude -Ireference -Itests -D_POSIX_C_SOURCE=200809L
+CFLAGS ?= -std=c99 -O2 -Wall -Wextra -Werror -pedantic -Iinclude -Ireference -Itests -D_POSIX_C_SOURCE=200809L
 
 BUILD = build
 TEST1 = $(BUILD)/test_runner
@@ -36,7 +36,9 @@ all: test
 
 sanitize: test-sanitize
 
-test-sanitize: CFLAGS += -fsanitize=address,undefined -g
+# Keep the sanitizer build at -O0. Optimized code hides UB and shifts ASAN
+# reports away from the faulting line. -O0 is last, so it wins over -O2.
+test-sanitize: CFLAGS += -O0 -fsanitize=address,undefined -g
 test-sanitize: clean test
 
 test: $(TEST1) $(TEST2) $(TEST3) $(TEST4) $(TEST5) $(TEST6) $(TEST7) $(TEST8) $(TEST9) $(TEST10) $(TEST11) $(TEST12)

@@ -2,6 +2,15 @@ $(eval $(call addlib_s,libena,$(CONFIG_LIBENA)))
 
 CINCLUDES-$(CONFIG_LIBENA) += -I$(LIBENA_BASE)/include
 
+# Raise the ENA library above the global -O2. Unikraft forces -fno-tree-sra
+# and -fno-tree-loop-distribute-patterns. Re-enable SRA for the datapath.
+# These flags come after the global CFLAGS, so they win.
+#
+# -fomit-frame-pointer frees a register in the RX/TX hot loops. The kernel
+# keeps frame pointers because Kraft cannot turn off a default-y Kconfig
+# symbol. Undo the pinning for this library only.
+LIBENA_CFLAGS-$(CONFIG_LIBENA) += -O3 -ftree-sra -fomit-frame-pointer
+
 # Phase 1 sources.
 LIBENA_SRCS-y += $(LIBENA_BASE)/src/ena_pci.c
 LIBENA_SRCS-y += $(LIBENA_BASE)/src/ena_com.c
