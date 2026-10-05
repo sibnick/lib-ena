@@ -791,6 +791,17 @@ static volatile __nsec mc_fd_lock_acquired_at;
 
 #define MC_FD_LOCK_STUCK_NS ukarch_time_sec_to_nsec(2)
 
+/*
+ * Per-core record of what a core is doing while it holds the fd lock, so
+ * a waiter that sees a stuck holder can name the blocked operation and
+ * the fd. The lock is only ever held around accept4 and close.
+ * [Ticket a9c6945c21]
+ */
+enum mc_fd_op { MC_FD_OP_NONE = 0, MC_FD_OP_ACCEPT, MC_FD_OP_CLOSE };
+static volatile int mc_fd_op[MC_MAX_WORKERS];
+static volatile __nsec mc_fd_op_at[MC_MAX_WORKERS];
+static volatile int mc_fd_op_fd[MC_MAX_WORKERS];
+
 static uint32_t mc_this_core(void)
 {
 	return (uint32_t)uk_pcpuvar_current_get(uk_pcpuvar_cpu_idx);
@@ -815,11 +826,24 @@ static void mc_fd_lock_acquire(void)
 		__nsec held = now - mc_fd_lock_acquired_at;
 
 		if (!warned && held >= MC_FD_LOCK_STUCK_NS && expected >= 1) {
+			uint32_t holder = expected - 1;
+			int op = __atomic_load_n(&mc_fd_op[holder],
+						 __ATOMIC_RELAXED);
+			__nsec op_at = __atomic_load_n(&mc_fd_op_at[holder],
+						       __ATOMIC_RELAXED);
+			int ofd = mc_fd_op_fd[holder];
+			const char *opname =
+				(op == MC_FD_OP_ACCEPT) ? "accept4" :
+				(op == MC_FD_OP_CLOSE) ? "close" : "unknown";
+
 			warned = 1;
 			printf("httpreply-mc: [WARN] core %u waiting on fd lock "
-			       "held by core %u for %lld ms (holder may be stuck)\n",
-			       (unsigned)(want - 1), (unsigned)(expected - 1),
-			       (long long)(held / 1000000LL));
+			       "held by core %u for %lld ms; holder is in %s "
+			       "on fd %d for %lld ms\n",
+			       (unsigned)(want - 1), (unsigned)holder,
+			       (long long)(held / 1000000LL), opname, ofd,
+			       op_at ? (long long)((now - op_at) / 1000000LL)
+				     : -1LL);
 		}
 		uk_sched_yield();
 	}
@@ -829,6 +853,25 @@ static void mc_fd_lock_release(void)
 {
 	mc_fd_lock_acquired_at = 0;
 	__atomic_store_n(&mc_fd_lock, 0, __ATOMIC_RELEASE);
+}
+
+/*
+ * Helpers that record what a core is doing while it holds the fd lock.
+ * The state itself (mc_fd_op*) is declared above mc_fd_lock_acquire so
+ * the waiter can read it. [Ticket a9c6945c21]
+ */
+static void mc_fd_mark(int core, enum mc_fd_op op, int fd)
+{
+	mc_fd_op_fd[core] = fd;
+	__atomic_store_n(&mc_fd_op[core], (int)op, __ATOMIC_RELAXED);
+	__atomic_store_n(&mc_fd_op_at[core], ukplat_monotonic_clock(),
+			 __ATOMIC_RELAXED);
+}
+
+static void mc_fd_unmark(int core)
+{
+	__atomic_store_n(&mc_fd_op[core], MC_FD_OP_NONE, __ATOMIC_RELAXED);
+	mc_fd_op_fd[core] = -1;
 }
 
 static void drop_connection(struct worker_ctx *w, int fd)
@@ -841,8 +884,10 @@ static void drop_connection(struct worker_ctx *w, int fd)
 
 	if (fd >= 0) {
 		mc_fd_lock_acquire();
+		mc_fd_mark(mc_this_core(), MC_FD_OP_CLOSE, fd);
 		epoll_ctl(w->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
 		close(fd);
+		mc_fd_unmark(mc_this_core());
 		mc_fd_lock_release();
 	}
 }
@@ -1049,10 +1094,13 @@ static __noreturn void run_to_completion_worker(int core_id)
 					int cfd;
 
 					mc_fd_lock_acquire();
+					mc_fd_mark(mc_this_core(),
+						   MC_FD_OP_ACCEPT, server_fd);
 					cfd = accept4(server_fd,
 						      (struct sockaddr *)&client_addr,
 						      &client_len, SOCK_NONBLOCK);
 					if (cfd < 0) {
+						mc_fd_unmark(mc_this_core());
 						mc_fd_lock_release();
 						break;
 					}
@@ -1064,9 +1112,11 @@ static __noreturn void run_to_completion_worker(int core_id)
 					if (epoll_ctl(w->epoll_fd, EPOLL_CTL_ADD,
 						      cfd, &ev) < 0) {
 						close(cfd);
+						mc_fd_unmark(mc_this_core());
 						mc_fd_lock_release();
 						break;
 					}
+					mc_fd_unmark(mc_this_core());
 					mc_fd_lock_release();
 					w->conn_count++;
 				}
