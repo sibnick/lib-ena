@@ -422,10 +422,10 @@ index 04bc0ed..1cbb4b6 100644
  
  	iolock = _SHOULD_LOCK(of->mode);
 diff --git a/lib/ukalloc/alloc.c b/lib/ukalloc/alloc.c
-index b7bf88f..121e5e4 100644
+index b7bf88f..a9663e4 100644
 --- a/lib/ukalloc/alloc.c
 +++ b/lib/ukalloc/alloc.c
-@@ -41,18 +41,32 @@
+@@ -41,18 +41,43 @@
  #include <uk/assert.h>
  #include <uk/arch/limits.h>
  #include <uk/lcpu.h>
@@ -439,6 +439,17 @@ index b7bf88f..121e5e4 100644
 +#if defined(CONFIG_LIBUKPCPUVAR) && CONFIG_LIBUKPCPUVAR
 +#include <uk/pcpuvar.h>
 +#endif /* CONFIG_LIBUKPCPUVAR */
++
++#if CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY
++#include <uk/print.h>
++/* Heap canary. Place a guard pattern after each allocation's user data
++ * and verify it on free. A clobbered canary names the allocation that
++ * overran into its neighbor. Reuses the bbuddy sanity flag so a single
++ * config turns on all allocator diagnostics. [Ticket a9c6945c21] */
++#define UKALLOC_CANARY_BYTES 16
++#define UKALLOC_CANARY_A 0xdeadbeefcafebabeULL
++#define UKALLOC_CANARY_B 0x0123456789abcdefULL
++#endif
 +
  #define size_to_num_pages(size) \
  	(UK_PAGING_PAGE_ALIGN_UP((unsigned long)(size)) / __PAGE_SIZE)
@@ -458,7 +469,124 @@ index b7bf88f..121e5e4 100644
  int uk_alloc_register(struct uk_alloc *a)
  {
  	struct uk_alloc *this = _uk_alloc_head;
-@@ -629,3 +643,22 @@ unsigned long uk_alloc_pavailmem_total(void)
+@@ -149,7 +174,12 @@ void *uk_malloc_ifpages(struct uk_alloc *a, __sz size)
+ #ifdef CONFIG_HAVE_MEMTAG
+ 	size = MEMTAG_ALIGN(size);
+ #endif /* CONFIG_HAVE_MEMTAG */
++#if CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY
++	__sz realsize = METADATA_IFPAGES_SIZE_POW2 + size +
++			UKALLOC_CANARY_BYTES;
++#else
+ 	__sz realsize = METADATA_IFPAGES_SIZE_POW2 + size;
++#endif
+ 
+ 	UK_ASSERT(a);
+ 	/* check for invalid size and overflow */
+@@ -167,6 +197,16 @@ void *uk_malloc_ifpages(struct uk_alloc *a, __sz size)
+ 	metadata->num_pages = num_pages;
+ 	metadata->base = (void *) intptr;
+ 
++#if CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY
++	{
++		unsigned long long *canary = (unsigned long long *)
++			((char *) intptr + METADATA_IFPAGES_SIZE_POW2 + size);
++
++		canary[0] = UKALLOC_CANARY_A;
++		canary[1] = UKALLOC_CANARY_B;
++	}
++#endif
++
+ #ifdef CONFIG_HAVE_MEMTAG
+ 	return ukarch_memtag_region(
+ 		(void *)(intptr + METADATA_IFPAGES_SIZE_POW2),
+@@ -197,6 +237,22 @@ void uk_free_ifpages(struct uk_alloc *a, void *ptr)
+ 
+ 	UK_ASSERT(metadata->base != __NULL);
+ 	UK_ASSERT(metadata->num_pages != 0);
++
++#if CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY
++	{
++		/* The canary sits just past the user region: userptr + size.
++		 * For uk_malloc that is base+METADATA+size; for uk_memalign
++		 * the user pointer is alignment-offset, so use ptr itself. */
++		unsigned long long *canary = (unsigned long long *)
++			((char *) ptr + metadata->size);
++
++		if (canary[0] != UKALLOC_CANARY_A ||
++		    canary[1] != UKALLOC_CANARY_B)
++			uk_pr_err("ukalloc canary: heap overrun ptr=%p size=%zu\n",
++				  ptr, (size_t) metadata->size);
++	}
++#endif
++
+ 	uk_pfree(a, metadata->base, metadata->num_pages);
+ 
+ #ifdef CONFIG_HAVE_MEMTAG
+@@ -204,6 +260,35 @@ void uk_free_ifpages(struct uk_alloc *a, void *ptr)
+ #endif /* CONFIG_HAVE_MEMTAG */
+ }
+ 
++/*
++ * Check the heap canary of the allocation that contains ptr.
++ * Returns 1 if the canary is clobbered (a write ran past the object),
++ * 0 if it is intact or the canary is disabled. Callers use this to
++ * localize where an overrun happened: check at allocation hand-off and
++ * again at free. [Ticket a9c6945c21]
++ */
++int uk_alloc_canary_check(const void *ptr)
++{
++#if CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY
++	struct metadata_ifpages *metadata;
++	unsigned long long *canary;
++
++	if (!ptr)
++		return 0;
++	metadata = uk_get_metadata((void *)ptr);
++	if (!metadata->base || !metadata->num_pages)
++		return 0;
++	canary = (unsigned long long *)
++		((char *) ptr + metadata->size);
++	if (canary[0] != UKALLOC_CANARY_A || canary[1] != UKALLOC_CANARY_B)
++		return 1;
++	return 0;
++#else
++	(void)ptr;
++	return 0;
++#endif
++}
++
+ void *uk_realloc_ifpages(struct uk_alloc *a, void *ptr, __sz size)
+ {
+ 	void *retptr;
+@@ -290,6 +375,10 @@ int uk_posix_memalign_ifpages(struct uk_alloc *a,
+ 	 * order to be sure to find an aligned pointer preceding `size` bytes.
+ 	 */
+ 	realsize = size + padding + align;
++#if CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY
++	/* Room for the heap canary just past the user region. */
++	realsize += UKALLOC_CANARY_BYTES;
++#endif
+ 
+ 	/* check for overflow */
+ 	if (realsize < size)
+@@ -313,6 +402,16 @@ int uk_posix_memalign_ifpages(struct uk_alloc *a,
+ 	metadata->num_pages = num_pages;
+ 	metadata->base = (void *) intptr;
+ 
++#if CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY
++	{
++		unsigned long long *canary = (unsigned long long *)
++			((char *) *memptr + size);
++
++		canary[0] = UKALLOC_CANARY_A;
++		canary[1] = UKALLOC_CANARY_B;
++	}
++#endif
++
+ #ifdef CONFIG_HAVE_MEMTAG
+ 	ukarch_memtag_region(*memptr, size);
+ #endif /* CONFIG_HAVE_MEMTAG */
+@@ -629,3 +728,22 @@ unsigned long uk_alloc_pavailmem_total(void)
  	}
  	return total;
  }
@@ -482,14 +610,15 @@ index b7bf88f..121e5e4 100644
 +	return uk_alloc_get_default();
 +}
 diff --git a/lib/ukalloc/exportsyms.uk b/lib/ukalloc/exportsyms.uk
-index 5a8edfc..daa1364 100644
+index 5a8edfc..3b18479 100644
 --- a/lib/ukalloc/exportsyms.uk
 +++ b/lib/ukalloc/exportsyms.uk
-@@ -19,6 +19,8 @@ uk_alloc_pmaxalloc_compat
+@@ -19,6 +19,9 @@ uk_alloc_pmaxalloc_compat
  uk_alloc_pavailmem_compat
  uk_alloc_availmem_total
  uk_alloc_pavailmem_total
 +uk_alloc_get_current
++uk_alloc_canary_check
 +uk_pcpuvar_percore_alloc
  _uk_alloc_head
  uk_alloc_stats_get
@@ -573,6 +702,74 @@ index b4f7d55..84e53bb 100644
 +
  	return _uk_alloc_head;
  }
+ 
+diff --git a/lib/ukallocbbuddy/bbuddy.c b/lib/ukallocbbuddy/bbuddy.c
+index 3e39480..113af81 100644
+--- a/lib/ukallocbbuddy/bbuddy.c
++++ b/lib/ukallocbbuddy/bbuddy.c
+@@ -117,11 +117,11 @@ do {									\
+ 			uk_pr_err("Bad page level" _FREESAN_LOCFMT	\
+ 				  "got %u, expected %zu\n",		\
+ 				  c, (ord), (head), off, c->page_order, (ord));\
+-		if (c->link.pprev && (*c->link.pprev)->next != &c->link) \
++		if (!c->link.pprev || *c->link.pprev != &c->link) \
+ 			uk_pr_err("Bad backlink" _FREESAN_LOCFMT	\
+ 				  "got %p, expected %p\n",		\
+ 				  c, (ord), (head), off,		\
+-				  (*c->link.pprev)->next, &c->link);	\
++				  c->link.pprev ? *c->link.pprev : NULL, &c->link);	\
+ 	}								\
+ } while (0)
+ 
+@@ -473,6 +473,49 @@ static void bbuddy_pfree(struct uk_alloc *a, void *obj, unsigned long num_pages)
+ 	UK_ASSERT(num_pages);
+ 	UK_ASSERT(IS_ALIGNED((uintptr_t)obj, __PAGE_SIZE));
+ 
++#if CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY
++	/* Free-path guard. Catch a double free or a bad-size free before it
++	 * corrupts the allocator, name the object and size, and print the
++	 * freeing call chain. A bad size here means the caller's size
++	 * bookkeeping, or the pointer itself, was corrupted by an earlier
++	 * write. This is the fault that shows up later as a map_free
++	 * region-overrun assert. [Ticket a9c6945c21] */
++	{
++		struct uk_bbpalloc_memr *gm = map_get_memr(b, (uintptr_t)obj);
++		unsigned long end = (uintptr_t)obj + (num_pages << __PAGE_SHIFT);
++		unsigned long rend = gm ? gm->first_page +
++			(gm->nr_pages << __PAGE_SHIFT) : 0;
++		int bad = 0;
++
++		if (!allocated_in_map(b, (uintptr_t)obj)) {
++			uk_pr_err("bbuddy guard: free of unallocated or wild obj=%p num_pages=%lu\n",
++				  obj, num_pages);
++			bad = 1;
++		} else if (!gm || end > rend) {
++			uk_pr_err("bbuddy guard: bad-size free obj=%p num_pages=%lu region=[%p,%p)\n",
++				  obj, num_pages,
++				  (void *)(gm ? gm->first_page : 0), (void *)rend);
++			bad = 1;
++		}
++		if (bad) {
++			unsigned long *fp = __builtin_frame_address(0);
++			int i;
++
++			for (i = 0; i < 12 && fp; i++) {
++				unsigned long ra;
++
++				if (((uintptr_t)fp & (sizeof(long) - 1)) != 0)
++					break;
++				ra = fp[1];
++				if (!ra)
++					break;
++				uk_pr_err("bbuddy guard:   #%d ra=0x%lx\n", i, ra);
++				fp = (unsigned long *)fp[0];
++			}
++		}
++	}
++#endif
++
+ 	uk_alloc_stats_count_pfree(a, obj, num_pages);
+ 	freelist_sanitycheck(b->free_head);
  
 diff --git a/lib/ukboot/Config.uk b/lib/ukboot/Config.uk
 index cee02cb..e321b56 100644
@@ -1833,74 +2030,3 @@ index 6705173..b70ed4b 100644
  	auxspcb = ukarch_auxsp_get_cb(auxsp);
  	sc = (struct uk_plat_native_sysctx *)auxspcb->uksysctx;
  	sc->gsbase = rdgsbasefn();
-
-
-
-diff --git a/lib/ukallocbbuddy/bbuddy.c b/lib/ukallocbbuddy/bbuddy.c
-index 3e39480..113af81 100644
---- a/lib/ukallocbbuddy/bbuddy.c
-+++ b/lib/ukallocbbuddy/bbuddy.c
-@@ -117,11 +117,11 @@ do {									\
- 			uk_pr_err("Bad page level" _FREESAN_LOCFMT	\
- 				  "got %u, expected %zu\n",		\
- 				  c, (ord), (head), off, c->page_order, (ord));\
--		if (c->link.pprev && (*c->link.pprev)->next != &c->link) \
-+		if (!c->link.pprev || *c->link.pprev != &c->link) \
- 			uk_pr_err("Bad backlink" _FREESAN_LOCFMT	\
- 				  "got %p, expected %p\n",		\
- 				  c, (ord), (head), off,		\
--				  (*c->link.pprev)->next, &c->link);	\
-+				  c->link.pprev ? *c->link.pprev : NULL, &c->link);	\
- 	}								\
- } while (0)
- 
-@@ -473,6 +473,49 @@ static void bbuddy_pfree(struct uk_alloc *a, void *obj, unsigned long num_pages)
- 	UK_ASSERT(num_pages);
- 	UK_ASSERT(IS_ALIGNED((uintptr_t)obj, __PAGE_SIZE));
- 
-+#if CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY
-+	/* Free-path guard. Catch a double free or a bad-size free before it
-+	 * corrupts the allocator, name the object and size, and print the
-+	 * freeing call chain. A bad size here means the caller's size
-+	 * bookkeeping, or the pointer itself, was corrupted by an earlier
-+	 * write. This is the fault that shows up later as a map_free
-+	 * region-overrun assert. [Ticket a9c6945c21] */
-+	{
-+		struct uk_bbpalloc_memr *gm = map_get_memr(b, (uintptr_t)obj);
-+		unsigned long end = (uintptr_t)obj + (num_pages << __PAGE_SHIFT);
-+		unsigned long rend = gm ? gm->first_page +
-+			(gm->nr_pages << __PAGE_SHIFT) : 0;
-+		int bad = 0;
-+
-+		if (!allocated_in_map(b, (uintptr_t)obj)) {
-+			uk_pr_err("bbuddy guard: free of unallocated or wild obj=%p num_pages=%lu\n",
-+				  obj, num_pages);
-+			bad = 1;
-+		} else if (!gm || end > rend) {
-+			uk_pr_err("bbuddy guard: bad-size free obj=%p num_pages=%lu region=[%p,%p)\n",
-+				  obj, num_pages,
-+				  (void *)(gm ? gm->first_page : 0), (void *)rend);
-+			bad = 1;
-+		}
-+		if (bad) {
-+			unsigned long *fp = __builtin_frame_address(0);
-+			int i;
-+
-+			for (i = 0; i < 12 && fp; i++) {
-+				unsigned long ra;
-+
-+				if (((uintptr_t)fp & (sizeof(long) - 1)) != 0)
-+					break;
-+				ra = fp[1];
-+				if (!ra)
-+					break;
-+				uk_pr_err("bbuddy guard:   #%d ra=0x%lx\n", i, ra);
-+				fp = (unsigned long *)fp[0];
-+			}
-+		}
-+	}
-+#endif
-+
- 	uk_alloc_stats_count_pfree(a, obj, num_pages);
- 	freelist_sanitycheck(b->free_head);
- 

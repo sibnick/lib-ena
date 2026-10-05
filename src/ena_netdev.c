@@ -499,6 +499,24 @@ static void *ena_netbuf_alloc_helper(void *arg, uint64_t *phys_out, uint32_t *le
 	return nb;
 }
 
+#if CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY
+/*
+ * Bisect the heap overrun: check the ukalloc canary of a freshly received
+ * netbuf before it is handed to the network stack. If this fires, the
+ * overrun happened in the driver or the device DMA. If it stays silent
+ * here but the ukalloc free-path canary fires later, the overrun is in
+ * the stack (lwIP/app). [Ticket a9c6945c21]
+ */
+extern int uk_alloc_canary_check(const void *ptr);
+
+static void ena_rx_check_canary(struct uk_netbuf *nb, unsigned int qid)
+{
+	if (nb && nb->_b && uk_alloc_canary_check(nb->_b))
+		ena_err("rx canary: netbuf overrun nb=%p buf=%p buflen=%zu len=%u q%u",
+			nb, nb->buf, nb->buflen, (unsigned) nb->len, qid);
+}
+#endif
+
 /* Check whether the next completion descriptor is ready. */
 static int ena_netdev_rx_status(struct ena_ring *ring)
 {
@@ -947,6 +965,10 @@ int ena_netdev_rx_one(struct uk_netdev *dev,
 
 		/* Replenish consumed descriptors. */
 		ena_netdev_rx_refill_helper(ring, queue);
+
+#if CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY
+		ena_rx_check_canary(nb, queue->queue_id);
+#endif
 
 		/* Packet reassembly: handle both single-descriptor and multi-descriptor frames. */
 		if (!queue->chain_head) {
@@ -1485,6 +1507,10 @@ static int ena_netdev_rxq_recv(struct uk_netdev *dev, uint16_t queue_id,
 			if (ref_ret < 0 || (ring->free_req_count > 0 && refilled == 0))
 				ring->rx_refill_err++;
 		}
+
+#if CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY
+		ena_rx_check_canary(nb, rxq->queue_id);
+#endif
 
 		/* Packet reassembly: handle both single-descriptor and multi-descriptor (LRO/jumbo) chains */
 		if (!rxq->chain_head) {

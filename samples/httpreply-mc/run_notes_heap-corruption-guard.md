@@ -115,3 +115,38 @@ Guarded + netlog build:
     sed -i 's/^# CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY is not set/CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY=y/' .config
     sed -i 's/^# CONFIG_APPHTTPREPLYMC_NETLOG is not set/CONFIG_APPHTTPREPLYMC_NETLOG=y/' .config
     make olddefconfig && make
+
+## CORRECTION (2026-10-05): the heap corruption was a false positive
+
+The ukalloc heap canary was buggy: uk_posix_memalign_ifpages (the path
+uk_netbuf_alloc_buf uses) calls uk_palloc directly and never wrote a
+canary, and the check read at metadata->base+METADATA+size, which is not
+the user region for a memalign allocation (the user pointer is
+alignment-offset). So every ENA RX netbuf was flagged at boot with no
+real fault. A follow-up bug (canary write past the block) even crashed at
+boot with rax = the canary pattern.
+
+Fixed: write the canary at userptr+size in the memalign path, reserve
+UKALLOC_CANARY_BYTES in its realsize, and check at userptr+size in the
+free path and uk_alloc_canary_check. Verified clean on local QEMU (both
+cores' alloc self-test passes, no canary lines).
+
+With the trustworthy canary on EC2: ZERO real heap overruns under load
+(0 ukalloc-canary, 0 rx-canary, 0 Bad backlink, 0 crash). The heap was
+never the cause. The bbuddy freelist "corruption" reports were also
+artifacts of the same broken canary.
+
+## Real failure mode: cross-core fd-lock deadlock
+
+The live failure is the app's fd lock (mc_fd_lock, main.c:799) held by a
+stuck core: "core X waiting on fd lock held by core Y for 21923..112518
+ms (holder may be stuck)". The lock guards fd lifecycle only (accept4 at
+main.c:1051, close at main.c:843). A holder stuck for >100s is blocked
+inside accept4/close. There is also a flat ~116ms latency floor at every
+concurrency level. The hang is intermittent (struck at c50 in one run;
+another survived c50/c100/c200).
+
+Leading hypothesis: close()/send() blocks on a stalled ENA TX completion
+while holding mc_fd_lock, so the holder never releases and the other core
+deadlocks. Next: instrument the fd-lock holder (what it is doing while
+holding the lock) and the ENA TX completion latency.
