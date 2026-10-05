@@ -54,7 +54,8 @@ static int pin_to_core(int core_id)
 	cpu_set_t cpuset;
 	CPU_ZERO(&cpuset);
 	CPU_SET(core_id, &cpuset);
-	return pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+	return pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t),
+				      &cpuset);
 }
 #endif
 
@@ -64,21 +65,21 @@ static void configure_socket_options(int fd)
 	int buf_size = SOCKET_BUFFER_SIZE;
 
 	/* Allow quick address and port reuse */
-	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
 		perror("setsockopt(SO_REUSEADDR)");
-	}
 
 #ifdef SO_REUSEPORT
-	if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
+	if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0)
 		perror("setsockopt(SO_REUSEPORT)");
-	}
 #endif
 
 	/* Increase OS receive and send buffers to avoid drops */
-	if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size)) < 0) {
+	if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size)) <
+	    0) {
 		perror("setsockopt(SO_RCVBUF)");
 	}
-	if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size)) < 0) {
+	if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size)) <
+	    0) {
 		perror("setsockopt(SO_SNDBUF)");
 	}
 
@@ -93,7 +94,8 @@ static void configure_socket_options(int fd)
 	/* Enable busy polling if supported by Linux kernel */
 #ifdef SO_BUSY_POLL
 	int busy_poll_us = 50;
-	if (setsockopt(fd, SOL_SOCKET, SO_BUSY_POLL, &busy_poll_us, sizeof(busy_poll_us)) < 0) {
+	if (setsockopt(fd, SOL_SOCKET, SO_BUSY_POLL, &busy_poll_us,
+		       sizeof(busy_poll_us)) < 0) {
 		/* Not fatal: ignore if unsupported */
 	}
 #endif
@@ -103,9 +105,12 @@ static void print_usage(const char *prog)
 {
 	printf("Usage: %s [options]\n", prog);
 	printf("Options:\n");
-	printf("  -p, --port <port>        UDP port to bind (default: %d)\n", DEFAULT_PORT);
-	printf("  -b, --bind <ip>          IP address to bind (default: %s)\n", DEFAULT_BIND_IP);
-	printf("  -c, --core <id>          Pin server process to CPU core ID\n");
+	printf("  -p, --port <port>        UDP port to bind (default: %d)\n",
+	       DEFAULT_PORT);
+	printf("  -b, --bind <ip>          IP address to bind (default: %s)\n",
+	       DEFAULT_BIND_IP);
+	printf(
+	    "  -c, --core <id>          Pin server process to CPU core ID\n");
 	printf("  -v, --verbose            Print packet activity\n");
 	printf("  -h, --help               Show this help message\n");
 }
@@ -118,21 +123,22 @@ int main(int argc, char *argv[])
 	bool verbose = false;
 
 	static struct option long_options[] = {
-		{"port",    required_argument, 0, 'p'},
-		{"bind",    required_argument, 0, 'b'},
-		{"core",    required_argument, 0, 'c'},
-		{"verbose", no_argument,       0, 'v'},
-		{"help",    no_argument,       0, 'h'},
-		{0, 0, 0, 0}
-	};
+	    {"port", required_argument, 0, 'p'},
+	    {"bind", required_argument, 0, 'b'},
+	    {"core", required_argument, 0, 'c'},
+	    {"verbose", no_argument, 0, 'v'},
+	    {"help", no_argument, 0, 'h'},
+	    {0, 0, 0, 0}};
 
 	int opt;
-	while ((opt = getopt_long(argc, argv, "p:b:c:vh", long_options, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "p:b:c:vh", long_options,
+				  NULL)) != -1) {
 		switch (opt) {
 		case 'p':
 			port = atoi(optarg);
 			if (port <= 0 || port > 65535) {
-				fprintf(stderr, "Error: Invalid port %s\n", optarg);
+				fprintf(stderr, "Error: Invalid port %s\n",
+					optarg);
 				return EXIT_FAILURE;
 			}
 			break;
@@ -157,9 +163,12 @@ int main(int argc, char *argv[])
 #if defined(__linux__) && !defined(__Unikraft__)
 	if (pin_core >= 0) {
 		if (pin_to_core(pin_core) == 0) {
-			printf("Pinned server process to CPU core %d\n", pin_core);
+			printf("Pinned server process to CPU core %d\n",
+			       pin_core);
 		} else {
-			fprintf(stderr, "Warning: Failed to pin to CPU core %d\n", pin_core);
+			fprintf(stderr,
+				"Warning: Failed to pin to CPU core %d\n",
+				pin_core);
 		}
 	}
 #endif
@@ -167,7 +176,8 @@ int main(int argc, char *argv[])
 	struct sigaction sa;
 	memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = handle_signal;
-	sa.sa_flags = 0; /* Do NOT set SA_RESTART so blocking recvfrom is interrupted */
+	sa.sa_flags =
+	    0; /* Do NOT set SA_RESTART so blocking recvfrom is interrupted */
 	sigaction(SIGINT, &sa, NULL);
 	sigaction(SIGTERM, &sa, NULL);
 
@@ -196,7 +206,8 @@ int main(int argc, char *argv[])
 		return EXIT_FAILURE;
 	}
 
-	if (bind(fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+	if (bind(fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) <
+	    0) {
 		perror("bind");
 		close(fd);
 		return EXIT_FAILURE;
@@ -222,15 +233,14 @@ int main(int argc, char *argv[])
 		sys_check_timeouts();
 #endif
 		client_len = sizeof(client_addr);
-		ssize_t n = recvfrom(fd, buffer, sizeof(buffer), 0,
-				     (struct sockaddr *)&client_addr, &client_len);
+		ssize_t n =
+		    recvfrom(fd, buffer, sizeof(buffer), 0,
+			     (struct sockaddr *)&client_addr, &client_len);
 		if (n < 0) {
-			if (errno == EINTR) {
+			if (errno == EINTR)
 				continue;
-			}
-			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
 				continue;
-			}
 			perror("recvfrom");
 			break;
 		}
@@ -239,21 +249,23 @@ int main(int argc, char *argv[])
 		rx_bytes += (uint64_t)n;
 
 		/* In-place echo back to sender */
-		ssize_t sent = sendto(fd, buffer, (size_t)n, 0,
-				      (struct sockaddr *)&client_addr, client_len);
+		ssize_t sent =
+		    sendto(fd, buffer, (size_t)n, 0,
+			   (struct sockaddr *)&client_addr, client_len);
 		if (sent > 0) {
 			tx_packets++;
 		} else if (sent < 0 && errno != EINTR) {
-			if (verbose) {
+			if (verbose)
 				perror("sendto");
-			}
 		}
 
 		if (verbose && (rx_packets % 10000 == 0 || rx_packets <= 10)) {
 			char client_str[INET_ADDRSTRLEN];
-			inet_ntop(AF_INET, &client_addr.sin_addr, client_str, sizeof(client_str));
-			printf("Echoed %zd bytes to %s:%d (total rx: %lu)\n",
-			       n, client_str, ntohs(client_addr.sin_port), (unsigned long)rx_packets);
+			inet_ntop(AF_INET, &client_addr.sin_addr, client_str,
+				  sizeof(client_str));
+			printf("Echoed %zd bytes to %s:%d (total rx: %lu)\n", n,
+			       client_str, ntohs(client_addr.sin_port),
+			       (unsigned long)rx_packets);
 			fflush(stdout);
 		}
 	}

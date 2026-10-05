@@ -82,13 +82,13 @@ int uk_percore_heap_get(unsigned int i, __uptr *base, __sz *len);
 #define MC_STATS_INTERVAL 20000UL
 
 static const char http_response[] =
-	"HTTP/1.1 200 OK\r\n"
-	"Content-Type: text/plain; charset=utf-8\r\n"
-	"Content-Length: 14\r\n"
-	"Connection: keep-alive\r\n"
-	"Server: Unikraft-ENA-Benchmark-MC\r\n"
-	"\r\n"
-	"Hello, World!\n";
+    "HTTP/1.1 200 OK\r\n"
+    "Content-Type: text/plain; charset=utf-8\r\n"
+    "Content-Length: 14\r\n"
+    "Connection: keep-alive\r\n"
+    "Server: Unikraft-ENA-Benchmark-MC\r\n"
+    "\r\n"
+    "Hello, World!\n";
 
 static const size_t http_resp_len = sizeof(http_response) - 1;
 
@@ -159,8 +159,9 @@ static void mc_percore_alloc_init(void)
 
 	mc_percore_ready = 0;
 
-	for (i = 1; i <= n && i < MC_MAX_WORKERS &&
-	     i < CONFIG_UKPLAT_CPU_MAXCOUNT; i++) {
+	for (i = 1;
+	     i <= n && i < MC_MAX_WORKERS && i < CONFIG_UKPLAT_CPU_MAXCOUNT;
+	     i++) {
 		__uptr base;
 		__sz len;
 		struct uk_alloc *a;
@@ -179,7 +180,8 @@ static void mc_percore_alloc_init(void)
 	}
 
 	if (mc_percore_ready == 0)
-		printf("httpreply-mc: [WARN] no per-core heap partitions available\n");
+		printf("httpreply-mc: [WARN] no per-core heap partitions "
+		       "available\n");
 #endif
 }
 
@@ -247,8 +249,8 @@ struct mc_arp_req {
 
 static struct mc_arp_pub mc_arp_pub;
 static struct mc_arp_req mc_arp_req;
-static uint32_t mc_arp_seen[LWIP_CORE_MAX < MC_MAX_WORKERS ?
-			      MC_MAX_WORKERS : LWIP_CORE_MAX];
+static uint32_t mc_arp_seen[LWIP_CORE_MAX < MC_MAX_WORKERS ? MC_MAX_WORKERS
+							   : LWIP_CORE_MAX];
 static uint32_t mc_arp_req_served;
 
 /*
@@ -265,12 +267,14 @@ static __nsec mc_arp_sync_last[MC_MAX_WORKERS];
  * enumerator is internal to lwIP and the public headers do not
  * expose it.
  */
+// clang-format off
 #define MC_ARP_STATE_EMPTY       0
 #define MC_ARP_STATE_PENDING      1
 #define MC_ARP_STATE_STABLE      2
 #define MC_ARP_STATE_RREQ_1      3
 #define MC_ARP_STATE_RREQ_2      4
 #define MC_ARP_STATE_STATIC      5
+// clang-format on
 
 static void mc_arp_publish(void)
 {
@@ -300,9 +304,11 @@ static void mc_arp_publish(void)
 
 		bool found = false;
 		for (j = 0; j < mc_arp_pub.count; j++) {
-			if (ip4_addr_cmp(&mc_arp_pub.entries[j].ipaddr, &e->ipaddr)) {
+			if (ip4_addr_cmp(&mc_arp_pub.entries[j].ipaddr,
+					 &e->ipaddr)) {
 				found = true;
-				if (memcmp(&mc_arp_pub.entries[j].mac, &e->ethaddr,
+				if (memcmp(&mc_arp_pub.entries[j].mac,
+					   &e->ethaddr,
 					   sizeof(struct eth_addr)) != 0) {
 					mc_arp_pub.entries[j].mac = e->ethaddr;
 					changed = true;
@@ -344,7 +350,8 @@ static void mc_arp_adopt(unsigned int core_id, __nsec now)
 		if (e->state == MC_ARP_STATE_PENDING &&
 		    !ip4_addr_isany_val(e->ipaddr)) {
 			if (!ip4_addr_cmp(&mc_arp_req.ipaddr, &e->ipaddr) ||
-			    (now - last_arp_req >= ukarch_time_msec_to_nsec(500))) {
+			    (now - last_arp_req >=
+			     ukarch_time_msec_to_nsec(500))) {
 				last_arp_req = now;
 				mc_arp_req.ipaddr = e->ipaddr;
 				uk_arch_wmb();
@@ -370,8 +377,10 @@ static void mc_arp_adopt(unsigned int core_id, __nsec now)
 		if (ip4_addr_isany_val(entries[i].ipaddr))
 			continue;
 
-		if (etharp_add_static_entry(&entries[i].ipaddr, &entries[i].mac) != ERR_OK) {
-			printf("httpreply-mc: [WARN] core %u failed to adopt ARP for %s\n",
+		if (etharp_add_static_entry(&entries[i].ipaddr,
+					    &entries[i].mac) != ERR_OK) {
+			printf("httpreply-mc: [WARN] core %u failed to adopt "
+			       "ARP for %s\n",
 			       core_id, ip4addr_ntoa(&entries[i].ipaddr));
 			continue;
 		}
@@ -379,8 +388,9 @@ static void mc_arp_adopt(unsigned int core_id, __nsec now)
 		printf("httpreply-mc: core %u adopted ARP %s MAC "
 		       "%02x:%02x:%02x:%02x:%02x:%02x\n",
 		       core_id, ip4addr_ntoa(&entries[i].ipaddr),
-		       entries[i].mac.addr[0], entries[i].mac.addr[1], entries[i].mac.addr[2],
-		       entries[i].mac.addr[3], entries[i].mac.addr[4], entries[i].mac.addr[5]);
+		       entries[i].mac.addr[0], entries[i].mac.addr[1],
+		       entries[i].mac.addr[2], entries[i].mac.addr[3],
+		       entries[i].mac.addr[4], entries[i].mac.addr[5]);
 	}
 }
 
@@ -485,7 +495,8 @@ static void drive_core_stack(int core_id)
 			active_pcbs++;
 
 		if (cs->memp_tabs[MEMP_PBUF_POOL])
-			m_pbuf = mc_count_memp_free(cs->memp_tabs[MEMP_PBUF_POOL]);
+			m_pbuf =
+			    mc_count_memp_free(cs->memp_tabs[MEMP_PBUF_POOL]);
 		if (cs->memp_tabs[MEMP_TCP_PCB])
 			m_pcb = mc_count_memp_free(cs->memp_tabs[MEMP_TCP_PCB]);
 		if (cs->memp_tabs[MEMP_TCP_SEG])
@@ -501,21 +512,30 @@ static void drive_core_stack(int core_id)
 			uint64_t aen_rx = 0, aen_tx = 0;
 
 			if (dev)
-				ena_netdev_aen_report(dev, &aen_n, &aen_rx, &aen_tx);
-			printf("httpreply-mc: core %d heartbeat (polls=%lu, rx=%lu, tx=%lu, active=%u, rxpost=%u refill=%llu rxdrop=%llu, aen=%u rxdrop=%llu txdrop=%llu, free: pbuf=%u pcb=%u seg=%u, heapfree=%lld defheapfree=%lld)\n",
-			       core_id, poll_cnt[core_id], rxpkts, txpkts,
-			       active_pcbs,
-			       dev ? ena_netdev_rx_posted(dev, (uint16_t)core_id) : 0xFFFFFFFFu,
-			       dev ? (unsigned long long)ena_netdev_rx_refill_err(dev, (uint16_t)core_id) : 0ULL,
-			       dev ? (unsigned long long)ena_netdev_rx_dropped(dev, (uint16_t)core_id) : 0ULL,
-			       aen_n,
-			       (unsigned long long)aen_rx,
-			       (unsigned long long)aen_tx,
-			       m_pbuf, m_pcb, m_seg,
-			       (long long)uk_alloc_availmem(uk_alloc_get_current()),
-			       (long long)uk_alloc_availmem(uk_alloc_get_default()));
-
-
+				ena_netdev_aen_report(dev, &aen_n, &aen_rx,
+						      &aen_tx);
+			printf(
+			    "httpreply-mc: core %d heartbeat (polls=%lu, "
+			    "rx=%lu, tx=%lu, active=%u, rxpost=%u refill=%llu "
+			    "rxdrop=%llu, aen=%u rxdrop=%llu txdrop=%llu, "
+			    "free: pbuf=%u pcb=%u seg=%u, heapfree=%lld "
+			    "defheapfree=%lld)\n",
+			    core_id, poll_cnt[core_id], rxpkts, txpkts,
+			    active_pcbs,
+			    dev ? ena_netdev_rx_posted(dev, (uint16_t)core_id)
+				: 0xFFFFFFFFu,
+			    dev ? (unsigned long long)ena_netdev_rx_refill_err(
+				      dev, (uint16_t)core_id)
+				: 0ULL,
+			    dev ? (unsigned long long)ena_netdev_rx_dropped(
+				      dev, (uint16_t)core_id)
+				: 0ULL,
+			    aen_n, (unsigned long long)aen_rx,
+			    (unsigned long long)aen_tx, m_pbuf, m_pcb, m_seg,
+			    (long long)uk_alloc_availmem(
+				uk_alloc_get_current()),
+			    (long long)uk_alloc_availmem(
+				uk_alloc_get_default()));
 		}
 
 		/*
@@ -525,9 +545,10 @@ static void drive_core_stack(int core_id)
 		 * [Ticket ba82aec88b]
 		 */
 		if (m_pbuf < 4)
-			printf("httpreply-mc: [WARN] core %d pbuf pool near-empty "
-			       "(free=%u) — send() will fail with ENOBUFS\n",
-			       core_id, m_pbuf);
+			printf(
+			    "httpreply-mc: [WARN] core %d pbuf pool near-empty "
+			    "(free=%u) — send() will fail with ENOBUFS\n",
+			    core_id, m_pbuf);
 
 		/*
 		 * Stall probe: this core has open connections but its RX
@@ -544,7 +565,10 @@ static void drive_core_stack(int core_id)
 					if (p->nrtx == 0 && p->rtime == 0)
 						continue;
 					qlen = p->snd_queuelen;
-					printf("httpreply-mc: core %d STALL pcb %u->%u state=%d nrtx=%u rtime=%d snd.wnd=%u rcv.wnd=%u snd.qlen=%u flags=%04x\n",
+					printf("httpreply-mc: core %d STALL "
+					       "pcb %u->%u state=%d nrtx=%u "
+					       "rtime=%d snd.wnd=%u rcv.wnd=%u "
+					       "snd.qlen=%u flags=%04x\n",
 					       core_id,
 					       (unsigned int)p->local_port,
 					       (unsigned int)p->remote_port,
@@ -552,8 +576,7 @@ static void drive_core_stack(int core_id)
 					       (unsigned int)p->nrtx,
 					       (int)p->rtime,
 					       (unsigned int)p->snd_wnd,
-					       (unsigned int)p->rcv_wnd,
-					       qlen,
+					       (unsigned int)p->rcv_wnd, qlen,
 					       (unsigned int)p->flags);
 				}
 			}
@@ -596,8 +619,8 @@ static int send_pending_response(struct worker_ctx *w, int fd,
  * The /__log handler must not print, or it would feed itself.
  * [Ticket a9c6945c21]
  */
-#define MC_NETLOG_SIZE   CONFIG_APPHTTPREPLYMC_NETLOG_SIZE
-#define MC_NETLOG_SEND   65536
+#define MC_NETLOG_SIZE CONFIG_APPHTTPREPLYMC_NETLOG_SIZE
+#define MC_NETLOG_SEND 65536
 
 static char mc_netlog_buf[MC_NETLOG_SIZE];
 static size_t mc_netlog_w;
@@ -617,7 +640,7 @@ static __ssz mc_netlog_out(struct uk_console *dev, const char *buf, __sz len)
 	return len;
 }
 
-static const struct uk_console_ops mc_netlog_ops = { .out = mc_netlog_out };
+static const struct uk_console_ops mc_netlog_ops = {.out = mc_netlog_out};
 static struct uk_console mc_netlog_dev;
 
 static void mc_netlog_init(void)
@@ -654,23 +677,30 @@ static void mc_netlog_send_response(struct worker_ctx *w, int fd)
 
 	blen = mc_netlog_snapshot(mc_netlog_body, sizeof(mc_netlog_body));
 	hlen = (size_t)snprintf(hdr, sizeof(hdr),
-		"HTTP/1.1 200 OK\r\n"
-		"Content-Type: text/plain; charset=utf-8\r\n"
-		"Content-Length: %u\r\n"
-		"Connection: close\r\n\r\n", (unsigned int)blen);
+				"HTTP/1.1 200 OK\r\n"
+				"Content-Type: text/plain; charset=utf-8\r\n"
+				"Content-Length: %u\r\n"
+				"Connection: close\r\n\r\n",
+				(unsigned int)blen);
 
-	for (off = 0; off < hlen; ) {
+	for (off = 0; off < hlen;) {
 		ssize_t n = send(fd, hdr + off, hlen - off, 0);
-		if (n > 0) { off += (size_t)n; continue; }
+		if (n > 0) {
+			off += (size_t)n;
+			continue;
+		}
 		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
 			drive_core_stack(w->worker_id);
 			continue;
 		}
 		return;
 	}
-	for (off = 0; off < blen; ) {
+	for (off = 0; off < blen;) {
 		ssize_t n = send(fd, mc_netlog_body + off, blen - off, 0);
-		if (n > 0) { off += (size_t)n; continue; }
+		if (n > 0) {
+			off += (size_t)n;
+			continue;
+		}
 		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
 			drive_core_stack(w->worker_id);
 			continue;
@@ -700,15 +730,16 @@ static int handle_readable(struct worker_ctx *w, int fd)
 		w->byte_count += http_resp_len;
 #if CONFIG_APPHTTPREPLYMC_CONSOLE_STATS
 		if ((w->req_count % MC_STATS_INTERVAL) == 0)
-			printf("httpreply-mc: [stats] core %d: req=%lu bytes=%lu\n",
-			       w->worker_id,
-			       (unsigned long)w->req_count,
+			printf("httpreply-mc: [stats] core %d: req=%lu "
+			       "bytes=%lu\n",
+			       w->worker_id, (unsigned long)w->req_count,
 			       (unsigned long)w->byte_count);
 #endif
 
 		if (fd < MAX_TRACKED_FDS) {
 			w->resp_pending[fd] = (uint32_t)http_resp_len;
-			if (send_pending_response(w, fd, EPOLLIN | EPOLLRDHUP) < 0)
+			if (send_pending_response(w, fd, EPOLLIN | EPOLLRDHUP) <
+			    0)
 				return -1;
 		} else {
 			send(fd, http_response, http_resp_len, 0);
@@ -728,7 +759,8 @@ static int handle_readable(struct worker_ctx *w, int fd)
 /*
  * Send as many bytes of pending response as the socket accepts.
  */
-static int send_pending_response(struct worker_ctx *w, int fd, uint32_t base_events)
+static int send_pending_response(struct worker_ctx *w, int fd,
+				 uint32_t base_events)
 {
 	uint32_t pending;
 	ssize_t n;
@@ -739,7 +771,8 @@ static int send_pending_response(struct worker_ctx *w, int fd, uint32_t base_eve
 	pending = w->resp_pending[fd];
 
 	while (pending > 0) {
-		n = send(fd, http_response + (http_resp_len - pending), pending, 0);
+		n = send(fd, http_response + (http_resp_len - pending), pending,
+			 0);
 		if (n > 0) {
 			pending -= (uint32_t)n;
 			continue;
@@ -748,7 +781,8 @@ static int send_pending_response(struct worker_ctx *w, int fd, uint32_t base_eve
 		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK ||
 			      errno == ENOBUFS || errno == EBUSY)) {
 			drive_core_stack(w->worker_id);
-			n = send(fd, http_response + (http_resp_len - pending), pending, 0);
+			n = send(fd, http_response + (http_resp_len - pending),
+				 pending, 0);
 			if (n > 0) {
 				pending -= (uint32_t)n;
 				continue;
@@ -808,7 +842,8 @@ static int create_core_listener(int core_id)
 	int fd;
 	struct tcp_pcb_listen *l;
 
-	printf("httpreply-mc: core %d create_core_listener starting (lwip_core %u, pcpu_idx %lu)\n",
+	printf("httpreply-mc: core %d create_core_listener starting (lwip_core "
+	       "%u, pcpu_idx %lu)\n",
 	       core_id, lwip_current_core_id(),
 	       (unsigned long)uk_pcpuvar_current_get(uk_pcpuvar_cpu_idx));
 
@@ -819,13 +854,15 @@ static int create_core_listener(int core_id)
 	}
 
 	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-		printf("httpreply-mc: [ERR] SO_REUSEADDR failed: errno %d\n", errno);
+		printf("httpreply-mc: [ERR] SO_REUSEADDR failed: errno %d\n",
+		       errno);
 		close(fd);
 		return -1;
 	}
 
 	if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
-		printf("httpreply-mc: [ERR] SO_REUSEPORT failed: errno %d\n", errno);
+		printf("httpreply-mc: [ERR] SO_REUSEPORT failed: errno %d\n",
+		       errno);
 		close(fd);
 		return -1;
 	}
@@ -850,7 +887,8 @@ static int create_core_listener(int core_id)
 	}
 
 	l = lwip_get_core_state()->tcp_listen_pcbs.listen_pcbs;
-	printf("httpreply-mc: core %d listener fd=%d (lwip_core %u, listen_pcb=%p)\n",
+	printf("httpreply-mc: core %d listener fd=%d (lwip_core %u, "
+	       "listen_pcb=%p)\n",
 	       core_id, fd, lwip_current_core_id(), (void *)l);
 
 	return fd;
@@ -866,8 +904,7 @@ static int create_core_listener(int core_id)
  * interrupt or its queue MSI, whichever comes first.
  * [Ticket 597c1b9731, Ticket a5b91e7993]
  */
-static inline void
-mc_idle_sleep(int core_id, uint64_t ns)
+static inline void mc_idle_sleep(int core_id, uint64_t ns)
 {
 	unsigned long flags;
 	__nsec now;
@@ -893,7 +930,6 @@ mc_idle_sleep(int core_id, uint64_t ns)
 	uk_lcpu_irqs_handle_pending();
 	uk_lcpu_restore_irqf(flags);
 }
-
 
 /*
  * Report whether this core's lwIP instance still owns an active TCP
@@ -943,26 +979,27 @@ static __noreturn void run_to_completion_worker(int core_id)
 
 	server_fd = create_core_listener(core_id);
 	if (server_fd < 0) {
-		printf("httpreply-mc: [ERR] core %d failed to create listener\n",
-		       core_id);
-		for (;;) {
+		printf(
+		    "httpreply-mc: [ERR] core %d failed to create listener\n",
+		    core_id);
+		for (;;)
 			uk_sched_yield();
-		}
 	}
 	w->listener_fd = server_fd;
 
 	ev.events = EPOLLIN;
 	ev.data.fd = server_fd;
 	if (epoll_ctl(w->epoll_fd, EPOLL_CTL_ADD, server_fd, &ev) < 0) {
-		printf("httpreply-mc: [ERR] core %d failed to add listener to epoll: errno %d\n",
+		printf("httpreply-mc: [ERR] core %d failed to add listener to "
+		       "epoll: errno %d\n",
 		       core_id, errno);
 		close(server_fd);
-		for (;;) {
+		for (;;)
 			uk_sched_yield();
-		}
 	}
 
-	printf("httpreply-mc: [INFO] core %d listening on port %d (queue pair %d)\n",
+	printf("httpreply-mc: [INFO] core %d listening on port %d (queue pair "
+	       "%d)\n",
 	       core_id, LISTEN_PORT, core_id);
 
 	/*
@@ -986,8 +1023,9 @@ static __noreturn void run_to_completion_worker(int core_id)
 		if (n < 0) {
 			if (errno == EINTR)
 				continue;
-			printf("httpreply-mc: [ERR] core %d epoll_wait errno %d\n",
-			       core_id, errno);
+			printf(
+			    "httpreply-mc: [ERR] core %d epoll_wait errno %d\n",
+			    core_id, errno);
 			continue;
 		}
 
@@ -998,12 +1036,14 @@ static __noreturn void run_to_completion_worker(int core_id)
 			if (fd == server_fd) {
 				for (;;) {
 					struct sockaddr_in client_addr;
-					socklen_t client_len = sizeof(client_addr);
+					socklen_t client_len =
+					    sizeof(client_addr);
 					int cfd;
 
-					cfd = accept4(server_fd,
-						      (struct sockaddr *)&client_addr,
-						      &client_len, SOCK_NONBLOCK);
+					cfd = accept4(
+					    server_fd,
+					    (struct sockaddr *)&client_addr,
+					    &client_len, SOCK_NONBLOCK);
 					if (cfd < 0)
 						break;
 
@@ -1011,8 +1051,9 @@ static __noreturn void run_to_completion_worker(int core_id)
 
 					ev.events = EPOLLIN | EPOLLRDHUP;
 					ev.data.fd = cfd;
-					if (epoll_ctl(w->epoll_fd, EPOLL_CTL_ADD,
-						      cfd, &ev) < 0) {
+					if (epoll_ctl(w->epoll_fd,
+						      EPOLL_CTL_ADD, cfd,
+						      &ev) < 0) {
 						close(cfd);
 						break;
 					}
@@ -1021,14 +1062,16 @@ static __noreturn void run_to_completion_worker(int core_id)
 				continue;
 			}
 
-			if (events[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
+			if (events[i].events &
+			    (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
 				drop_connection(w, fd);
 				continue;
 			}
 
 			if (fd < MAX_TRACKED_FDS && w->resp_pending[fd] > 0) {
 				if (events[i].events & EPOLLOUT) {
-					if (send_pending_response(w, fd, base_events) < 0)
+					if (send_pending_response(
+						w, fd, base_events) < 0)
 						drop_connection(w, fd);
 				}
 				continue;
@@ -1061,8 +1104,8 @@ static __noreturn void run_to_completion_worker(int core_id)
 				int rc;
 
 				if (w->resp_pending[fd2] > 0) {
-					rc = send_pending_response(w, fd2,
-								   EPOLLIN | EPOLLRDHUP);
+					rc = send_pending_response(
+					    w, fd2, EPOLLIN | EPOLLRDHUP);
 					if (rc < 0) {
 						drop_connection(w, fd2);
 					} else {
@@ -1071,10 +1114,11 @@ static __noreturn void run_to_completion_worker(int core_id)
 						 * The response fully went out.
 						 * The EPOLLIN guard above skips
 						 * reads while a response is
-						 * pending, and the event for data
-						 * that arrived meanwhile may not
-						 * repeat. Drain the socket now.
-						 * [Ticket 1152cbcaca]
+						 * pending, and the event for
+						 * data that arrived meanwhile
+						 * may not repeat. Drain the
+						 * socket now. [Ticket
+						 * 1152cbcaca]
 						 */
 						if (rc == 0 &&
 						    handle_readable(w, fd2) < 0)
@@ -1095,8 +1139,6 @@ static __noreturn void run_to_completion_worker(int core_id)
 		 */
 		work |= (w->conn_count > 0) || mc_core_has_pcb();
 
-
-
 		if (dev) {
 			unsigned long rx_now, tx_now;
 
@@ -1109,9 +1151,8 @@ static __noreturn void run_to_completion_worker(int core_id)
 
 		sleep_ns = ib_tick(&ib, ukplat_monotonic_clock(), work);
 
-		if (sleep_ns) {
+		if (sleep_ns)
 			mc_idle_sleep(core_id, sleep_ns);
-		}
 	}
 }
 
@@ -1148,15 +1189,15 @@ static __noreturn void mc_secondary_entry(void *arg)
 	if (cpu < MC_MAX_WORKERS)
 		mc_cpu_sched[cpu] = sec_s;
 	else
-		printf("httpreply-mc: [ERR] cpu %u is outside the worker table (%d)\n",
+		printf("httpreply-mc: [ERR] cpu %u is outside the worker table "
+		       "(%d)\n",
 		       cpu, MC_MAX_WORKERS);
 
 	uk_sched_register(sec_s);
 	uk_sched_start(sec_s);
 
-	while (1) {
+	while (1)
 		uk_sched_yield();
-	}
 }
 
 static void mc_boot_secondary_cores(void)
@@ -1175,7 +1216,8 @@ static void mc_boot_secondary_cores(void)
 
 		if (!mc_core_has_percore_alloc(i)) {
 			printf("httpreply-mc: [INFO] core %u not started: "
-			       "no per-core allocator bound\n", (unsigned)i);
+			       "no per-core allocator bound\n",
+			       (unsigned)i);
 			continue;
 		}
 
@@ -1204,15 +1246,16 @@ static void mc_boot_secondary_cores(void)
 			/* Bounded wait for the AP to come online */
 			for (spins = 0; spins < 200000000UL; spins++) {
 				if (uk_lcpu_state_is_online(
-					    uk_pcpuvar_lval(ap_idx[j],
-							       uk_lcpus).state)) {
+					uk_pcpuvar_lval(ap_idx[j], uk_lcpus)
+					    .state)) {
 					online = 1;
 					break;
 				}
 				__asm__ __volatile__("pause");
 			}
 			if (!online) {
-				printf("httpreply-mc: [WARN] lcpu %u did not come online\n",
+				printf("httpreply-mc: [WARN] lcpu %u did not "
+				       "come online\n",
 				       (unsigned)ap_idx[j]);
 				continue;
 			}
@@ -1224,7 +1267,8 @@ static void mc_boot_secondary_cores(void)
 				__asm__ __volatile__("pause");
 			}
 			if (mc_cpu_sched[ap_idx[j]] == NULL)
-				printf("httpreply-mc: [WARN] lcpu %u came online but published no scheduler\n",
+				printf("httpreply-mc: [WARN] lcpu %u came "
+				       "online but published no scheduler\n",
 				       (unsigned)ap_idx[j]);
 		}
 	}
@@ -1259,7 +1303,8 @@ int main(int argc, char **argv)
 	 * CPU i, so a CPU with no entry has no worker. [Ticket f47bdd0ed1]
 	 */
 	mc_nworkers = 1;
-	for (i = 1; i < MC_MAX_WORKERS && i < (int)CONFIG_UKPLAT_CPU_MAXCOUNT; i++) {
+	for (i = 1; i < MC_MAX_WORKERS && i < (int)CONFIG_UKPLAT_CPU_MAXCOUNT;
+	     i++) {
 		if (mc_get_sched(i) != NULL)
 			mc_nworkers++;
 	}
@@ -1294,8 +1339,10 @@ int main(int argc, char **argv)
 				drive_core_stack(0);
 				cs0 = lwip_get_core_state_by_id(0);
 				for (i = 0; i < ARP_TABLE_SIZE; i++) {
-					if (cs0->arp_table[i].state >= MC_ARP_STATE_STABLE &&
-					    cs0->arp_table[i].ipaddr.addr == gw->addr) {
+					if (cs0->arp_table[i].state >=
+						MC_ARP_STATE_STABLE &&
+					    cs0->arp_table[i].ipaddr.addr ==
+						gw->addr) {
 						resolved = 1;
 						break;
 					}
@@ -1307,7 +1354,8 @@ int main(int argc, char **argv)
 			}
 
 			if (resolved) {
-				printf("httpreply-mc: gateway ARP resolved to %02x:%02x:%02x:%02x:%02x:%02x\n",
+				printf("httpreply-mc: gateway ARP resolved to "
+				       "%02x:%02x:%02x:%02x:%02x:%02x\n",
 				       cs0->arp_table[i].ethaddr.addr[0],
 				       cs0->arp_table[i].ethaddr.addr[1],
 				       cs0->arp_table[i].ethaddr.addr[2],
@@ -1320,32 +1368,39 @@ int main(int argc, char **argv)
 				 * MAC. Each worker adopts the MAC in its own
 				 * ARP table during its first stack drive.
 				 */
-				if (etharp_add_static_entry(gw,
-						&cs0->arp_table[i].ethaddr) != ERR_OK)
+				if (etharp_add_static_entry(
+					gw, &cs0->arp_table[i].ethaddr) !=
+				    ERR_OK)
 					printf("httpreply-mc: [WARN] failed to "
 					       "make gateway entry static\n");
 				mc_arp_publish();
 			} else {
-				printf("httpreply-mc: [WARN] gateway ARP resolution timed out\n");
+				printf("httpreply-mc: [WARN] gateway ARP "
+				       "resolution timed out\n");
 			}
 		}
 	}
 
-	for (i = 0; i < MC_MAX_WORKERS && i < (int)CONFIG_UKPLAT_CPU_MAXCOUNT; i++) {
+	for (i = 0; i < MC_MAX_WORKERS && i < (int)CONFIG_UKPLAT_CPU_MAXCOUNT;
+	     i++) {
 		mc_workers[i].worker_id = i;
 		mc_workers[i].epoll_fd = epoll_create1(0);
 		if (mc_workers[i].epoll_fd < 0) {
-			printf("httpreply-mc: [ERR] epoll_create1 failed for worker %d\n", i);
+			printf("httpreply-mc: [ERR] epoll_create1 failed for "
+			       "worker %d\n",
+			       i);
 			return 1;
 		}
 		mc_workers[i].recv_buf = malloc(MC_RECVBUF_SIZE);
-		mc_workers[i].resp_pending = calloc(MAX_TRACKED_FDS, sizeof(uint32_t));
+		mc_workers[i].resp_pending =
+		    calloc(MAX_TRACKED_FDS, sizeof(uint32_t));
 		mc_workers[i].conn_count = 0;
 		mc_workers[i].req_count = 0;
 		mc_workers[i].byte_count = 0;
 	}
 
-	for (i = 1; i < MC_MAX_WORKERS && i < (int)CONFIG_UKPLAT_CPU_MAXCOUNT; i++) {
+	for (i = 1; i < MC_MAX_WORKERS && i < (int)CONFIG_UKPLAT_CPU_MAXCOUNT;
+	     i++) {
 		struct uk_sched *ws = mc_get_sched(i);
 		struct uk_thread *th;
 
@@ -1357,14 +1412,20 @@ int main(int argc, char **argv)
 			 * [Ticket f47bdd0ed1]
 			 */
 			if (mc_core_has_percore_alloc(i))
-				printf("httpreply-mc: [WARN] core %d has no scheduler: "
-				       "worker %d will not run on its own CPU\n", i, i);
+				printf(
+				    "httpreply-mc: [WARN] core %d has no "
+				    "scheduler: "
+				    "worker %d will not run on its own CPU\n",
+				    i, i);
 			ws = uk_sched_current();
 		}
 
-		th = uk_sched_thread_create(ws, worker_thread, &mc_workers[i], "worker");
+		th = uk_sched_thread_create(ws, worker_thread, &mc_workers[i],
+					    "worker");
 		if (th == NULL) {
-			printf("httpreply-mc: [ERR] failed to start worker %d\n", i);
+			printf(
+			    "httpreply-mc: [ERR] failed to start worker %d\n",
+			    i);
 			return 1;
 		}
 	}

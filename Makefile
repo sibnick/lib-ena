@@ -31,7 +31,13 @@ ENA_SRCS_ALL = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/en
 ENA_HDRS = include/ena.h include/ena_regs.h include/ena_plat.h include/ena_admin.h include/ena_init.h include/ena_datapath.h include/ena_netdev.h include/ena_intr.h include/ena_llq.h include/ena_rss.h
 
 CLANG_FORMAT ?= clang-format
-FORMAT_SRCS = $(shell find src include tests -name '*.c' -o -name '*.h' | sort)
+# Project-owned C sources. The prune list skips vendored and generated trees:
+# Unikraft build output, fetched libraries, and the reference/ headers.
+FORMAT_DIRS = src include tests samples examples
+FORMAT_PRUNE = -name build -o -name .libs -o -name .unikraft -o -name .git
+FORMAT_SRCS = $(shell find $(FORMAT_DIRS) \
+	\( $(FORMAT_PRUNE) \) -prune -o \
+	-type f \( -name '*.c' -o -name '*.h' \) -print | sort)
 
 .PHONY: all test sanitize test-sanitize format format-check clean
 

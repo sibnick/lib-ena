@@ -39,13 +39,13 @@
 #define SOCK_BUF_SIZE 32768
 
 static const char http_response[] =
-	"HTTP/1.1 200 OK\r\n"
-	"Content-Type: text/plain; charset=utf-8\r\n"
-	"Content-Length: 14\r\n"
-	"Connection: keep-alive\r\n"
-	"Server: Unikraft-ENA-Benchmark\r\n"
-	"\r\n"
-	"Hello, World!\n";
+    "HTTP/1.1 200 OK\r\n"
+    "Content-Type: text/plain; charset=utf-8\r\n"
+    "Content-Length: 14\r\n"
+    "Connection: keep-alive\r\n"
+    "Server: Unikraft-ENA-Benchmark\r\n"
+    "\r\n"
+    "Hello, World!\n";
 
 static const size_t http_resp_len = sizeof(http_response) - 1;
 
@@ -58,7 +58,7 @@ static const size_t http_resp_len = sizeof(http_response) - 1;
  * hand out, and every close path clears the entry of the fd it
  * frees, so a reused fd number starts clean.
  */
-#define MAX_TRACKED_FDS	2048
+#define MAX_TRACKED_FDS 2048
 static uint32_t resp_pending[MAX_TRACKED_FDS];
 
 static void drive_stack(void);
@@ -95,16 +95,20 @@ static int send_pending_response(int epfd, int fd, uint32_t base_events)
 	pending = resp_pending[fd];
 
 	while (pending > 0) {
-		n = send(fd, http_response + (http_resp_len - pending), pending, 0);
+		n = send(fd, http_response + (http_resp_len - pending), pending,
+			 0);
 		if (n > 0) {
 			pending -= (uint32_t)n;
 			continue;
 		}
 
-		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS || errno == EBUSY)) {
-			/* Drive network stack to poll completions and relieve netdev congestion */
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK ||
+			      errno == ENOBUFS || errno == EBUSY)) {
+			/* Drive network stack to poll completions and relieve
+			 * netdev congestion */
 			drive_stack();
-			n = send(fd, http_response + (http_resp_len - pending), pending, 0);
+			n = send(fd, http_response + (http_resp_len - pending),
+				 pending, 0);
 			if (n > 0) {
 				pending -= (uint32_t)n;
 				continue;
@@ -196,7 +200,8 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 		return 1;
 	}
 
-	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) <
+	    0) {
 		printf("[ERR] Failed to set SO_REUSEADDR: errno %d\n", errno);
 		close(server_fd);
 		return 1;
@@ -209,7 +214,8 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 	server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	server_addr.sin_port = htons(LISTEN_PORT);
 
-	if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+	if (bind(server_fd, (struct sockaddr *)&server_addr,
+		 sizeof(server_addr)) < 0) {
 		printf("[ERR] Failed to bind socket: errno %d\n", errno);
 		close(server_fd);
 		return 1;
@@ -231,7 +237,8 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 	ev.events = EPOLLIN;
 	ev.data.fd = server_fd;
 	if (epoll_ctl(epfd, EPOLL_CTL_ADD, server_fd, &ev) < 0) {
-		printf("[ERR] Failed to register listener on epoll: errno %d\n", errno);
+		printf("[ERR] Failed to register listener on epoll: errno %d\n",
+		       errno);
 		close(server_fd);
 		return 1;
 	}
@@ -262,12 +269,14 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 				/* Accept all pending connections */
 				for (;;) {
 					struct sockaddr_in client_addr;
-					socklen_t client_len = sizeof(client_addr);
+					socklen_t client_len =
+					    sizeof(client_addr);
 					int cfd;
 
-					cfd = accept4(server_fd,
-						       (struct sockaddr *)&client_addr,
-						       &client_len, SOCK_NONBLOCK);
+					cfd = accept4(
+					    server_fd,
+					    (struct sockaddr *)&client_addr,
+					    &client_len, SOCK_NONBLOCK);
 					if (cfd < 0)
 						break;
 
@@ -284,7 +293,8 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 				continue;
 			}
 
-			if (events[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
+			if (events[i].events &
+			    (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
 				/* Peer closed the connection or an error
 				 * happened: drop the connection. */
 				drop_connection(epfd, fd);
@@ -299,8 +309,8 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 				 * rest, otherwise wait for the next
 				 * EPOLLOUT. */
 				if (events[i].events & EPOLLOUT) {
-					if (send_pending_response(epfd, fd,
-								 base_events) < 0)
+					if (send_pending_response(
+						epfd, fd, base_events) < 0)
 						drop_connection(epfd, fd);
 				}
 
@@ -308,7 +318,8 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 			}
 
 			if (events[i].events & (EPOLLIN | EPOLLRDNORM)) {
-				ssize_t bytes_read = recv(fd, buffer, sizeof(buffer) - 1, 0);
+				ssize_t bytes_read =
+				    recv(fd, buffer, sizeof(buffer) - 1, 0);
 				if (bytes_read > 0) {
 					buffer[bytes_read] = '\0';
 
@@ -320,19 +331,29 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 					 * fires, so no byte of the
 					 * response is ever dropped. */
 					if (fd < MAX_TRACKED_FDS) {
-						resp_pending[fd] = (uint32_t)http_resp_len;
-						if (send_pending_response(epfd, fd,
-									base_events) < 0)
-							drop_connection(epfd, fd);
+						resp_pending[fd] =
+						    (uint32_t)http_resp_len;
+						if (send_pending_response(
+							epfd, fd, base_events) <
+						    0)
+							drop_connection(epfd,
+									fd);
 					} else {
-						send(fd, http_response, http_resp_len, 0);
+						send(fd, http_response,
+						     http_resp_len, 0);
 					}
 
-					if (strstr(buffer, "Connection: close") != NULL ||
-					    strstr(buffer, "connection: close") != NULL) {
+					if (strstr(buffer,
+						   "Connection: close") !=
+						NULL ||
+					    strstr(buffer,
+						   "connection: close") !=
+						NULL) {
 						drop_connection(epfd, fd);
 					}
-				} else if (bytes_read == 0 || (bytes_read < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+				} else if (bytes_read == 0 ||
+					   (bytes_read < 0 && errno != EAGAIN &&
+					    errno != EWOULDBLOCK)) {
 					drop_connection(epfd, fd);
 				}
 			}
