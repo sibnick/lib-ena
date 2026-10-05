@@ -802,6 +802,9 @@ enum mc_fd_op { MC_FD_OP_NONE = 0, MC_FD_OP_ACCEPT, MC_FD_OP_CLOSE,
 static volatile int mc_fd_op[MC_MAX_WORKERS];
 static volatile __nsec mc_fd_op_at[MC_MAX_WORKERS];
 static volatile int mc_fd_op_fd[MC_MAX_WORKERS];
+/* Return address of the call site that last acquired the lock, per core.
+ * Names which acquire site holds a stuck lock (the "unknown" holder). */
+static volatile unsigned long mc_fd_lock_acq_site[MC_MAX_WORKERS];
 
 static uint32_t mc_this_core(void)
 {
@@ -820,6 +823,8 @@ static void mc_fd_lock_acquire(void)
 						false, __ATOMIC_ACQUIRE,
 						__ATOMIC_RELAXED)) {
 			mc_fd_lock_acquired_at = ukplat_monotonic_clock();
+			mc_fd_lock_acq_site[want - 1] =
+				(unsigned long)__builtin_return_address(0);
 			return;
 		}
 
@@ -833,6 +838,9 @@ static void mc_fd_lock_acquire(void)
 			__nsec op_at = __atomic_load_n(&mc_fd_op_at[holder],
 						       __ATOMIC_RELAXED);
 			int ofd = mc_fd_op_fd[holder];
+			unsigned long acq = __atomic_load_n(
+				&mc_fd_lock_acq_site[holder],
+				__ATOMIC_RELAXED);
 			const char *opname =
 				(op == MC_FD_OP_ACCEPT) ? "accept4" :
 				(op == MC_FD_OP_CLOSE) ? "close" :
@@ -842,11 +850,12 @@ static void mc_fd_lock_acquire(void)
 			warned = 1;
 			printf("httpreply-mc: [WARN] core %u waiting on fd lock "
 			       "held by core %u for %lld ms; holder is in %s "
-			       "on fd %d for %lld ms\n",
+			       "on fd %d for %lld ms; acquired at 0x%lx\n",
 			       (unsigned)(want - 1), (unsigned)holder,
 			       (long long)(held / 1000000LL), opname, ofd,
 			       op_at ? (long long)((now - op_at) / 1000000LL)
-				     : -1LL);
+				     : -1LL,
+			       acq);
 		}
 		uk_sched_yield();
 	}
