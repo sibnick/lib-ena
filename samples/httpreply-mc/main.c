@@ -62,7 +62,7 @@ int uk_percore_heap_get(unsigned int i, __uptr *base, __sz *len);
 #include <uk/spinlock.h>
 #endif
 
-#define MC_MAX_WORKERS 2
+#define MC_MAX_WORKERS CONFIG_UKPLAT_CPU_MAXCOUNT
 #define MC_RECVBUF_SIZE 4096
 
 #ifndef TCP_NODELAY
@@ -385,23 +385,24 @@ static void mc_arp_adopt(unsigned int core_id, __nsec now)
 }
 
 /*
- * Get the scheduler that owns vCPU idx by walking uk_sched_head,
- * the linked list of all per-LCPU schedulers. Index 0 is the BSP
- * (vCPU 0) and index 1 is vCPU 1.
+ * Scheduler of each CPU, indexed by CPU index. A secondary core
+ * writes its own entry when it starts. uk_sched_head is in AP
+ * registration order, so a walk by position can hand worker i the
+ * scheduler of another CPU. Queue pair i then runs on two cores and
+ * the lock-free per-core heap corrupts. [Ticket f47bdd0ed1]
+ */
+static struct uk_sched *mc_cpu_sched[MC_MAX_WORKERS];
+
+/*
+ * Get the scheduler that owns CPU idx. NULL means that CPU never
+ * started a scheduler.
  */
 static struct uk_sched *mc_get_sched(int idx)
 {
-	struct uk_sched *s;
-	int i;
+	if (idx < 0 || idx >= MC_MAX_WORKERS)
+		return NULL;
 
-	s = uk_sched_head;
-	for (i = 0; i < idx; i++) {
-		if (s == NULL)
-			return NULL;
-		s = s->next;
-	}
-
-	return s;
+	return mc_cpu_sched[idx];
 }
 
 static void configure_socket_options(int fd)
@@ -917,7 +918,7 @@ static int mc_core_has_pcb(void)
  */
 static __noreturn void run_to_completion_worker(int core_id)
 {
-	mc_percore_alloc_selftest(core_id);
+	unsigned long cpu = uk_pcpuvar_current_get(uk_pcpuvar_cpu_idx);
 	struct worker_ctx *w = &mc_workers[core_id];
 	struct epoll_event events[MAX_EVENTS];
 	struct epoll_event ev;
@@ -926,6 +927,19 @@ static __noreturn void run_to_completion_worker(int core_id)
 	unsigned long rx_prev, tx_prev;
 	int server_fd;
 	int n, i;
+
+	/*
+	 * Queue pair core_id must stay on CPU core_id. Each per-core
+	 * heap is lock-free, so a worker on another CPU writes a free
+	 * list that its owner also writes. Report it at startup.
+	 * [Ticket f47bdd0ed1]
+	 */
+	if (cpu != (unsigned long)core_id)
+		printf("httpreply-mc: [ERR] worker %d runs on CPU %lu: "
+		       "queue pair %d is not single-owner\n",
+		       core_id, cpu, core_id);
+
+	mc_percore_alloc_selftest(core_id);
 
 	server_fd = create_core_listener(core_id);
 	if (server_fd < 0) {
@@ -1112,6 +1126,7 @@ static __noreturn void mc_secondary_entry(void *arg)
 	struct uk_lcpu *this_lcpu = (struct uk_lcpu *)arg;
 	struct uk_alloc *a = uk_alloc_get_default();
 	struct uk_sched *sec_s;
+	unsigned int cpu;
 	int r;
 
 	r = uk_lcpu_init(this_lcpu);
@@ -1123,6 +1138,18 @@ static __noreturn void mc_secondary_entry(void *arg)
 	sec_s = uk_schedcoop_create(a, a, a, a);
 	if (unlikely(!sec_s))
 		uk_lcpu_halt();
+
+	/*
+	 * Publish this scheduler under the CPU that runs it. Worker i
+	 * must run here, not on the core that registered first.
+	 * [Ticket f47bdd0ed1]
+	 */
+	cpu = (unsigned int)uk_pcpuvar_current_get(uk_pcpuvar_cpu_idx);
+	if (cpu < MC_MAX_WORKERS)
+		mc_cpu_sched[cpu] = sec_s;
+	else
+		printf("httpreply-mc: [ERR] cpu %u is outside the worker table (%d)\n",
+		       cpu, MC_MAX_WORKERS);
 
 	uk_sched_register(sec_s);
 	uk_sched_start(sec_s);
@@ -1190,16 +1217,15 @@ static void mc_boot_secondary_cores(void)
 				continue;
 			}
 
-			/* Wait for secondary scheduler to register on uk_sched_head */
+			/* Wait for the AP to publish its own scheduler */
 			for (spins = 0; spins < 200000000UL; spins++) {
-				unsigned int count = 0;
-				struct uk_sched *sch;
-				for (sch = uk_sched_head; sch != NULL; sch = sch->next)
-					count++;
-				if (count > (unsigned int)j + 1)
+				if (mc_cpu_sched[ap_idx[j]] != NULL)
 					break;
 				__asm__ __volatile__("pause");
 			}
+			if (mc_cpu_sched[ap_idx[j]] == NULL)
+				printf("httpreply-mc: [WARN] lcpu %u came online but published no scheduler\n",
+				       (unsigned)ap_idx[j]);
 		}
 	}
 #endif
@@ -1208,7 +1234,6 @@ static void mc_boot_secondary_cores(void)
 int main(int argc, char **argv)
 {
 	int i;
-	struct uk_sched *s;
 
 	(void)argc;
 	(void)argv;
@@ -1229,12 +1254,15 @@ int main(int argc, char **argv)
 
 	mc_boot_secondary_cores();
 
-	mc_nworkers = 0;
-	for (s = uk_sched_head; s != NULL && mc_nworkers < MC_MAX_WORKERS; s = s->next)
-		mc_nworkers++;
-
-	if (mc_nworkers < 1)
-		mc_nworkers = 1;
+	/*
+	 * Count the CPUs that published a scheduler. Worker i runs on
+	 * CPU i, so a CPU with no entry has no worker. [Ticket f47bdd0ed1]
+	 */
+	mc_nworkers = 1;
+	for (i = 1; i < MC_MAX_WORKERS && i < (int)CONFIG_UKPLAT_CPU_MAXCOUNT; i++) {
+		if (mc_get_sched(i) != NULL)
+			mc_nworkers++;
+	}
 
 	printf("httpreply-mc: detected %d worker cores\n", mc_nworkers);
 	if (netif_default) {
@@ -1303,7 +1331,7 @@ int main(int argc, char **argv)
 		}
 	}
 
-	for (i = 0; i < mc_nworkers; i++) {
+	for (i = 0; i < MC_MAX_WORKERS && i < (int)CONFIG_UKPLAT_CPU_MAXCOUNT; i++) {
 		mc_workers[i].worker_id = i;
 		mc_workers[i].epoll_fd = epoll_create1(0);
 		if (mc_workers[i].epoll_fd < 0) {
@@ -1317,12 +1345,22 @@ int main(int argc, char **argv)
 		mc_workers[i].byte_count = 0;
 	}
 
-	for (i = 1; i < mc_nworkers; i++) {
+	for (i = 1; i < MC_MAX_WORKERS && i < (int)CONFIG_UKPLAT_CPU_MAXCOUNT; i++) {
 		struct uk_sched *ws = mc_get_sched(i);
 		struct uk_thread *th;
 
-		if (ws == NULL)
+		if (ws == NULL) {
+			/*
+			 * Worker i polls queue pair i. On another CPU it
+			 * shares a lock-free per-core heap with that CPU's
+			 * worker. Say so now instead of faulting later.
+			 * [Ticket f47bdd0ed1]
+			 */
+			if (mc_core_has_percore_alloc(i))
+				printf("httpreply-mc: [WARN] core %d has no scheduler: "
+				       "worker %d will not run on its own CPU\n", i, i);
 			ws = uk_sched_current();
+		}
 
 		th = uk_sched_thread_create(ws, worker_thread, &mc_workers[i], "worker");
 		if (th == NULL) {

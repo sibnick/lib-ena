@@ -68,6 +68,18 @@ int ena_plat_msix_probe(void *pci_dev, uint32_t *num_vectors)
 	return 0;
 }
 
+static uint32_t s_mock_cpu_id = 0;
+
+void ena_plat_set_mock_cpu_id(uint32_t cpu_id)
+{
+	s_mock_cpu_id = cpu_id;
+}
+
+uint32_t ena_plat_cpu_id(void)
+{
+	return s_mock_cpu_id;
+}
+
 static void ena_log_emit(FILE *stream, const char *prefix, const char *fmt, va_list args)
 {
 	fprintf(stream, "%s ", prefix);
@@ -113,6 +125,9 @@ void ena_debug(const char *fmt, ...)
 #include <uk/intctlr.h>
 #ifdef CONFIG_LIBENA_MSIX
 #include <uk/intctlr/msix.h>
+#endif
+#if defined(CONFIG_LIBUKPCPUVAR) && CONFIG_LIBUKPCPUVAR
+#include <uk/pcpuvar.h>
 #endif
 #include <uk/plat/memory.h>
 #include <uk/plat/time.h>
@@ -655,6 +670,15 @@ void ena_delay_us(unsigned int us)
 	while (ukplat_monotonic_clock() < deadline) {
 		ena_pause();
 	}
+}
+
+uint32_t ena_plat_cpu_id(void)
+{
+#if defined(CONFIG_LIBUKPCPUVAR) && CONFIG_LIBUKPCPUVAR
+	return (uint32_t)uk_pcpuvar_current_get(uk_pcpuvar_cpu_idx);
+#else
+	return 0;
+#endif
 }
 
 #endif /* __Unikraft__ */

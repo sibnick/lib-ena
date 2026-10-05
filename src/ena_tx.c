@@ -114,6 +114,12 @@ int ena_tx_submit(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 	ring->tx_packets++;
 	ring->tx_bytes += pkt->len;
 
+	/* Remember the core that owns this ring. The completion path
+	 * frees the netbuf with the allocator stored in it, so a
+	 * completion reaped on another core writes a foreign heap.
+	 * [Ticket f47bdd0ed1] */
+	ring->tx_owner_cpu = ena_plat_cpu_id();
+
 	if (out_req_id)
 		*out_req_id = req_id;
 
@@ -131,12 +137,30 @@ void ena_tx_doorbell(struct ena_ring *ring)
 	ena_mb();
 }
 
+/* Report a TX ring whose completions are reaped on a core other than
+ * the one that transmits on it. The caller keeps this off the hot path:
+ * it runs only after a CPU compare failed. One line per ring.
+ * [Ticket f47bdd0ed1] */
+static void ena_tx_report_foreign_reaper(struct ena_ring *ring, uint32_t cpu)
+{
+	if (ring->tx_owner_cpu == ENA_CPU_ID_NONE)
+		return;
+	if (ring->tx_owner_warned)
+		return;
+
+	ring->tx_owner_warned = true;
+	ena_warn("tx q%u: completion reaped on cpu %u, last transmit on cpu %u",
+		 (unsigned int)ring->qid, (unsigned int)cpu,
+		 (unsigned int)ring->tx_owner_cpu);
+}
+
 int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 			    unsigned int *cleaned_count)
 {
 	const struct ena_eth_io_tx_cdesc *cdesc_ring;
 	const struct ena_eth_io_tx_cdesc *cdesc;
 	unsigned int cleaned = 0;
+	uint32_t cpu = ena_plat_cpu_id();
 	uint16_t req_id;
 
 	if (!ring || ring->ring_type != ENA_RING_TYPE_TX || !ring->cq_virt)
@@ -205,6 +229,11 @@ int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 
 		/* Update SQ head index acknowledged by controller */
 		ring->sq_head = ena_le16_to_cpu(cdesc->sq_head_idx) & (ring->sq_depth - 1);
+
+		/* One compare per completion. A mismatch means the free
+		 * below runs in another core's heap. [Ticket f47bdd0ed1] */
+		if (cpu != ring->tx_owner_cpu)
+			ena_tx_report_foreign_reaper(ring, cpu);
 
 		/* Reclaim transmitted packet buffer */
 		if (ring->buffers.tx_bufs) {

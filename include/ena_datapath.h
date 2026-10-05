@@ -40,6 +40,8 @@ struct ena_adapter;
 #define ENA_MAX_RING_DESC       4096
 #define ENA_DEFAULT_MTU         1500
 #define ENA_MIN_MTU_LEN         68
+/* No CPU has claimed a TX ring yet. */
+#define ENA_CPU_ID_NONE         0xFFFFFFFFu
 
 /* Ring Types */
 enum ena_ring_type {
@@ -225,6 +227,15 @@ struct ena_ring {
 	                            * ID is a no-op instead of a double push.
 	                            * [Ticket a9c6945c21] */
 	uint32_t ring_lock;        /* Atomic spinlock for ring access */
+
+	/* CPU that last submitted on this TX ring, or ENA_CPU_ID_NONE
+	 * before the first submit. The completion path compares it with
+	 * its own CPU. A TX netbuf is freed at completion with the
+	 * allocator of the core that sent it, and per-core heaps carry
+	 * no lock, so a foreign reaper corrupts a heap. The guard names
+	 * the first mismatch once per ring. [Ticket f47bdd0ed1] */
+	uint32_t tx_owner_cpu;
+	bool tx_owner_warned;
 
 	/* RX drop callback: return a dropped netbuf bounce slot to the pool
 	 * and free the buffer. Set by the netdev layer, called from ena_rx_poll */

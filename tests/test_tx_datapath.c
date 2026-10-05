@@ -332,6 +332,63 @@ static void test_tx_invalid_args(void)
 	printf("[PASS] test_tx_invalid_args passed\n");
 }
 
+static void test_tx_completion_cross_cpu_guard(void)
+{
+	printf("[TEST] Running test_tx_completion_cross_cpu_guard...\n");
+
+	struct mock_ena_hw hw;
+	struct ena_adapter adapter;
+	struct ena_ring *ring = NULL;
+	struct ena_tx_pkt pkt;
+	uint16_t req_id;
+	unsigned int cleaned;
+
+	assert(setup_adapter(&hw, &adapter) == 0);
+	assert(ena_ring_alloc(&adapter, 3, ENA_RING_TYPE_TX, 8, 8, &ring) == 0);
+	assert(ena_ring_create_hw(ring, 0) == 0);
+	assert(ring->tx_owner_cpu == ENA_CPU_ID_NONE);
+	assert(ring->tx_owner_warned == false);
+
+	memset(&pkt, 0, sizeof(pkt));
+	pkt.phys_addr = 0x1000;
+	pkt.len = 64;
+
+	/* CPU 1 submits and reaps. The ring keeps one owner, so the
+	 * guard stays silent. */
+	ena_plat_set_mock_cpu_id(1);
+	assert(ena_tx_submit(ring, &pkt, &req_id) == 0);
+	assert(ring->tx_owner_cpu == 1);
+	mock_ena_hw_emulate_tx(&hw, ring, 1);
+	assert(ena_tx_poll_completions(ring, 8, &cleaned) == 1);
+	assert(ring->tx_owner_warned == false);
+
+	/* CPU 1 submits, CPU 2 reaps. The netbuf free then runs in CPU
+	 * 1's heap, so the guard reports the ring once. */
+	assert(ena_tx_submit(ring, &pkt, &req_id) == 0);
+	ena_plat_set_mock_cpu_id(2);
+	mock_ena_hw_emulate_tx(&hw, ring, 1);
+	assert(ena_tx_poll_completions(ring, 8, &cleaned) == 1);
+	assert(ring->tx_owner_warned == true);
+
+	/* A second foreign completion does not log again. */
+	ena_plat_set_mock_cpu_id(1);
+	assert(ena_tx_submit(ring, &pkt, &req_id) == 0);
+	ena_plat_set_mock_cpu_id(2);
+	mock_ena_hw_emulate_tx(&hw, ring, 1);
+	assert(ena_tx_poll_completions(ring, 8, &cleaned) == 1);
+	assert(ring->tx_owner_warned == true);
+
+	/* The completion path still works after the report. */
+	assert(ena_tx_free_space(ring) == 8);
+
+	ena_plat_set_mock_cpu_id(0);
+	assert(ena_ring_destroy_hw(ring) == 0);
+	ena_ring_free(ring);
+	ena_admin_fini(&adapter);
+
+	printf("[PASS] test_tx_completion_cross_cpu_guard passed\n");
+}
+
 int main(void)
 {
 	printf("========================================\n");
@@ -345,9 +402,10 @@ int main(void)
 	test_tx_poll_completions();
 	test_tx_phase_flip_wrap();
 	test_tx_invalid_args();
+	test_tx_completion_cross_cpu_guard();
 
 	printf("========================================\n");
-	printf("ALL PHASE 5 TX TESTS PASSED (7/7)       \n");
+	printf("ALL PHASE 5 TX TESTS PASSED (8/8)       \n");
 	printf("========================================\n");
 	return 0;
 }
