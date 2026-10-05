@@ -19,7 +19,8 @@
  * of the queue. Mirrors reference/ena_eth_io_defs.h,
  * struct ena_eth_io_intr_reg. */
 #define ENA_ETH_IO_INTR_REG_INTR_UNMASK_SHIFT 30
-#define ENA_ETH_IO_INTR_REG_INTR_UNMASK_MASK  (1u << ENA_ETH_IO_INTR_REG_INTR_UNMASK_SHIFT)
+#define ENA_ETH_IO_INTR_REG_INTR_UNMASK_MASK                                   \
+	(1u << ENA_ETH_IO_INTR_REG_INTR_UNMASK_SHIFT)
 
 /* MSI-X Interrupt Vector descriptor */
 struct ena_irq_vector {
@@ -31,7 +32,8 @@ struct ena_irq_vector {
 	uint32_t intr_count;
 };
 
-typedef void (*ena_rx_handler_t)(void *arg, uint16_t qid, struct ena_rx_pkt *pkt);
+typedef void (*ena_rx_handler_t)(void *arg, uint16_t qid,
+				 struct ena_rx_pkt *pkt);
 
 /* Polling engine execution context */
 struct ena_poll_ctx {
@@ -122,10 +124,10 @@ int ena_intr_set_coalesce(struct ena_adapter *adapter, uint32_t vector_id,
  * Execute one non-blocking polling sweep across all active TX and RX queues.
  *
  * @param ctx Pointer to the polling engine execution context.
- * @param work_done Output pointer storing the total number of processed packets.
+ * @param work_done Output pointer storing the total number of processed
+ * packets.
  * @return 0 on success, or a negative errno value on error.
  */
 int ena_poll_step(struct ena_poll_ctx *ctx, unsigned int *work_done);
 
 #endif /* LIBENA_ENA_INTR_H */
-

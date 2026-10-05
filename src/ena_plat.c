@@ -80,7 +80,8 @@ uint32_t ena_plat_cpu_id(void)
 	return s_mock_cpu_id;
 }
 
-static void ena_log_emit(FILE *stream, const char *prefix, const char *fmt, va_list args)
+static void ena_log_emit(FILE *stream, const char *prefix, const char *fmt,
+			 va_list args)
 {
 	fprintf(stream, "%s ", prefix);
 	vfprintf(stream, fmt, args);
@@ -134,32 +135,27 @@ void ena_debug(const char *fmt, ...)
 #include <uk/arch/util.h>
 
 /* PCI config space access (same method as the probe path in ena_pci.c). */
-static uint32_t plat_pci_cfg_read(const struct pci_address *addr,
-				      uint32_t reg)
+static uint32_t plat_pci_cfg_read(const struct pci_address *addr, uint32_t reg)
 {
-	uint32_t config_addr = (1u << 31)
-		| ((uint32_t)addr->bus << 16)
-		| ((uint32_t)addr->devid << 11)
-		| ((uint32_t)addr->function << 8)
-		| (reg & 0xFC);
+	uint32_t config_addr = (1u << 31) | ((uint32_t)addr->bus << 16) |
+			       ((uint32_t)addr->devid << 11) |
+			       ((uint32_t)addr->function << 8) | (reg & 0xFC);
 	uk_arch_x86_64_outl(PCI_CONFIG_ADDR, config_addr);
 	return uk_arch_x86_64_inl(PCI_CONFIG_DATA);
 }
 
-static void plat_pci_cfg_write(const struct pci_address *addr,
-				     uint32_t reg, uint32_t val)
+static void plat_pci_cfg_write(const struct pci_address *addr, uint32_t reg,
+			       uint32_t val)
 {
-	uint32_t config_addr = (1u << 31)
-		| ((uint32_t)addr->bus << 16)
-		| ((uint32_t)addr->devid << 11)
-		| ((uint32_t)addr->function << 8)
-		| (reg & 0xFC);
+	uint32_t config_addr = (1u << 31) | ((uint32_t)addr->bus << 16) |
+			       ((uint32_t)addr->devid << 11) |
+			       ((uint32_t)addr->function << 8) | (reg & 0xFC);
 	uk_arch_x86_64_outl(PCI_CONFIG_ADDR, config_addr);
 	uk_arch_x86_64_outl(PCI_CONFIG_DATA, val);
 }
 
 /* PCI capability ID for MSI-X (PCI revision 3.x). */
-#define ENA_PLAT_PCI_CAP_ID_MSIX	0x11u
+#define ENA_PLAT_PCI_CAP_ID_MSIX 0x11u
 
 /*
  * Print the PCI config space from 0x000 to 0x3FF, 16 bytes per
@@ -177,16 +173,20 @@ static void msix_cfg_dump(const struct pci_address *addr)
 		uint32_t v3 = plat_pci_cfg_read(addr, off + 12u);
 
 		ena_info("cfg: %03x: %02x %02x %02x %02x %02x %02x %02x %02x "
-			"%02x %02x %02x %02x %02x %02x %02x %02x",
-			(unsigned)off,
-			(unsigned)(v0 & 0xFFu), (unsigned)((v0 >> 8) & 0xFFu),
-			(unsigned)((v0 >> 16) & 0xFFu), (unsigned)((v0 >> 24) & 0xFFu),
-			(unsigned)(v1 & 0xFFu), (unsigned)((v1 >> 8) & 0xFFu),
-			(unsigned)((v1 >> 16) & 0xFFu), (unsigned)((v1 >> 24) & 0xFFu),
-			(unsigned)(v2 & 0xFFu), (unsigned)((v2 >> 8) & 0xFFu),
-			(unsigned)((v2 >> 16) & 0xFFu), (unsigned)((v2 >> 24) & 0xFFu),
-			(unsigned)(v3 & 0xFFu), (unsigned)((v3 >> 8) & 0xFFu),
-			(unsigned)((v3 >> 16) & 0xFFu), (unsigned)((v3 >> 24) & 0xFFu));
+			 "%02x %02x %02x %02x %02x %02x %02x %02x",
+			 (unsigned)off, (unsigned)(v0 & 0xFFu),
+			 (unsigned)((v0 >> 8) & 0xFFu),
+			 (unsigned)((v0 >> 16) & 0xFFu),
+			 (unsigned)((v0 >> 24) & 0xFFu), (unsigned)(v1 & 0xFFu),
+			 (unsigned)((v1 >> 8) & 0xFFu),
+			 (unsigned)((v1 >> 16) & 0xFFu),
+			 (unsigned)((v1 >> 24) & 0xFFu), (unsigned)(v2 & 0xFFu),
+			 (unsigned)((v2 >> 8) & 0xFFu),
+			 (unsigned)((v2 >> 16) & 0xFFu),
+			 (unsigned)((v2 >> 24) & 0xFFu), (unsigned)(v3 & 0xFFu),
+			 (unsigned)((v3 >> 8) & 0xFFu),
+			 (unsigned)((v3 >> 16) & 0xFFu),
+			 (unsigned)((v3 >> 24) & 0xFFu));
 	}
 }
 
@@ -221,14 +221,18 @@ int ena_plat_msix_probe(void *pci_dev, uint32_t *num_vectors)
 		uint32_t msg_ctrl = (dw >> 16) & 0xFFFFu;
 
 		if (cap_id == ENA_PLAT_PCI_CAP_ID_MSIX) {
-			/* Table Size field (bits 10:0) encodes vectors minus one. */
+			/* Table Size field (bits 10:0) encodes vectors minus
+			 * one. */
 			uint32_t count = msg_ctrl & 0x7FFu;
 
 			if (!(msg_ctrl & 0x8000u))
-				ena_info("msix: capability is disabled at reset and the arm path will enable it");
+				ena_info(
+				    "msix: capability is disabled at reset and "
+				    "the arm path will enable it");
 
 			*num_vectors = count + 1u;
-			ena_info("msix: device exposes %u vectors", (unsigned)(count + 1u));
+			ena_info("msix: device exposes %u vectors",
+				 (unsigned)(count + 1u));
 			return 0;
 		}
 
@@ -239,7 +243,6 @@ int ena_plat_msix_probe(void *pci_dev, uint32_t *num_vectors)
 	msix_cfg_dump(addr);
 	return 0;
 }
-
 
 /*
  * The arm path needs the patched interrupt controller that provides
@@ -295,10 +298,11 @@ static int msix_find(const struct pci_address *addr, struct ena_msix_loc *loc)
 			loc->msgctl_off = cap + 2;
 			loc->count = (msg_ctrl & 0x7FFu) + 1u;
 
-			ena_info("msix: raw table_off=0x%08x (bir=%u off=0x%x) pba_off=0x%08x (bir=%u off=0x%x)",
+			ena_info("msix: raw table_off=0x%08x (bir=%u off=0x%x) "
+				 "pba_off=0x%08x (bir=%u off=0x%x)",
 				 table_off, (unsigned)(table_off & 0x7u),
-				 (unsigned)(table_off & ~0x7u),
-				 pba_off, (unsigned)(pba_off & 0x7u),
+				 (unsigned)(table_off & ~0x7u), pba_off,
+				 (unsigned)(pba_off & 0x7u),
 				 (unsigned)(pba_off & ~0x7u));
 
 			/*
@@ -311,10 +315,14 @@ static int msix_find(const struct pci_address *addr, struct ena_msix_loc *loc)
 			bar = table_off & 0x7u;
 			bar_reg = 0x10 + 4 * bar;
 			bar_lo = plat_pci_cfg_read(addr, bar_reg) & ~0x0Fu;
-			if ((plat_pci_cfg_read(addr, bar_reg) & 0x06u) == 0x04u) {
-				/* 64-bit memory BAR: the high part is the next dword. */
-				bar_base = (uint64_t)bar_lo
-					| ((uint64_t)plat_pci_cfg_read(addr, bar_reg + 4) << 32);
+			if ((plat_pci_cfg_read(addr, bar_reg) & 0x06u) ==
+			    0x04u) {
+				/* 64-bit memory BAR: the high part is the next
+				 * dword. */
+				bar_base = (uint64_t)bar_lo |
+					   ((uint64_t)plat_pci_cfg_read(
+						addr, bar_reg + 4)
+					    << 32);
 			} else {
 				bar_base = bar_lo;
 			}
@@ -332,7 +340,6 @@ static int msix_find(const struct pci_address *addr, struct ena_msix_loc *loc)
 
 	return -ENODEV;
 }
-
 
 /* One trampoline argument per armed vector. */
 struct msix_tramp_ctx {
@@ -418,12 +425,11 @@ int ena_plat_msix_arm(const struct ena_msix_req *req)
 		__u64 maddr;
 		__u32 mdata;
 
-		ret = uk_intctlr_msix_alloc(req->lcpu[i],
-						 &s_msix.irqs[i],
-						 &maddr, &mdata);
+		ret = uk_intctlr_msix_alloc(req->lcpu[i], &s_msix.irqs[i],
+					    &maddr, &mdata);
 		if (ret) {
-			ena_err("msix: vector %d allocation failed (%d)",
-				      i, ret);
+			ena_err("msix: vector %d allocation failed (%d)", i,
+				ret);
 			goto err_free;
 		}
 
@@ -436,9 +442,10 @@ int ena_plat_msix_arm(const struct ena_msix_req *req)
 		table[4 * i + 3] = 0;
 
 		ret = uk_intctlr_irq_register(s_msix.irqs[i], msix_tramp,
-					&s_msix.ctx[i]);
+					      &s_msix.ctx[i]);
 		if (ret) {
-			ena_err("msix: handler %d register failed (%d)", i, ret);
+			ena_err("msix: handler %d register failed (%d)", i,
+				ret);
 			uk_intctlr_msix_free(s_msix.irqs[i]);
 			goto err_free;
 		}
@@ -455,16 +462,19 @@ int ena_plat_msix_arm(const struct ena_msix_req *req)
 		uint32_t msg_ctrl = (dw >> 16) & 0xFFFFu;
 		uint32_t new_ctrl;
 
-		/* Enable MSI-X (bit 15) and clear the function mask (bit 14). */
+		/* Enable MSI-X (bit 15) and clear the function mask (bit 14).
+		 */
 		new_ctrl = (msg_ctrl & ~0x4000u) | 0x8000u;
 		plat_pci_cfg_write(s_msix.loc.pci_dev, base,
-			       (dw & 0xFFFFu) | (new_ctrl << 16));
+				   (dw & 0xFFFFu) | (new_ctrl << 16));
 
-		ena_info("msix: msgctl before=0x%04x en=%u mask=%u after=0x%04x en=%u mask=%u",
-			 (unsigned)msg_ctrl, (unsigned)((msg_ctrl >> 15) & 0x1u),
-			 (unsigned)((msg_ctrl >> 14) & 0x1u),
-			 (unsigned)new_ctrl, (unsigned)((new_ctrl >> 15) & 0x1u),
-			 (unsigned)((new_ctrl >> 14) & 0x1u));
+		ena_info(
+		    "msix: msgctl before=0x%04x en=%u mask=%u after=0x%04x "
+		    "en=%u mask=%u",
+		    (unsigned)msg_ctrl, (unsigned)((msg_ctrl >> 15) & 0x1u),
+		    (unsigned)((msg_ctrl >> 14) & 0x1u), (unsigned)new_ctrl,
+		    (unsigned)((new_ctrl >> 15) & 0x1u),
+		    (unsigned)((new_ctrl >> 14) & 0x1u));
 	}
 
 	s_msix.armed = 1;
@@ -479,7 +489,6 @@ err_free:
 	}
 	return ret;
 }
-
 
 /*
  * Release all armed vectors and disable the capability. Safe to
@@ -505,7 +514,8 @@ void ena_plat_msix_disarm(void)
 		uint32_t dw = plat_pci_cfg_read(s_msix.loc.pci_dev, base);
 
 		plat_pci_cfg_write(s_msix.loc.pci_dev, base,
-			       (dw & 0xFFFFu) | ((dw >> 16) & ~0x8000u) << 16);
+				   (dw & 0xFFFFu) | ((dw >> 16) & ~0x8000u)
+							<< 16);
 	}
 	s_msix.armed = 0;
 	s_msix.nvec = 0;
@@ -538,9 +548,9 @@ uint32_t ena_plat_msix_state(void)
  * PBA dword. The heartbeat prints these so the boot-time arm log
  * does not have to survive the console capture limit.
  */
-void ena_plat_msix_diag(uint32_t *msgctl, uint32_t *t1_addr,
-		       uint32_t *t1_data, uint32_t *t1_ctrl, uint32_t *pba0,
-		       uint32_t *irr, uint32_t *isr)
+void ena_plat_msix_diag(uint32_t *msgctl, uint32_t *t1_addr, uint32_t *t1_data,
+			uint32_t *t1_ctrl, uint32_t *pba0, uint32_t *irr,
+			uint32_t *isr)
 {
 	volatile uint32_t *table;
 	volatile uint32_t *pba;
@@ -598,9 +608,7 @@ int ena_plat_msix_arm(const struct ena_msix_req *req)
 	return -ENOTSUP;
 }
 
-void ena_plat_msix_disarm(void)
-{
-}
+void ena_plat_msix_disarm(void) {}
 
 uint32_t ena_plat_msix_vector_count(uint32_t vector)
 {
@@ -618,9 +626,9 @@ uint32_t ena_plat_msix_state(void)
 	return 0;
 }
 
-void ena_plat_msix_diag(uint32_t *msgctl, uint32_t *t1_addr,
-		       uint32_t *t1_data, uint32_t *t1_ctrl, uint32_t *pba0,
-		       uint32_t *irr, uint32_t *isr)
+void ena_plat_msix_diag(uint32_t *msgctl, uint32_t *t1_addr, uint32_t *t1_data,
+			uint32_t *t1_ctrl, uint32_t *pba0, uint32_t *irr,
+			uint32_t *isr)
 {
 	*msgctl = 0;
 	*t1_addr = 0;
@@ -667,9 +675,8 @@ void ena_dma_free(void *virt, uint64_t phys)
 void ena_delay_us(unsigned int us)
 {
 	__nsec deadline = ukplat_monotonic_clock() + ((__nsec)us * 1000ULL);
-	while (ukplat_monotonic_clock() < deadline) {
+	while (ukplat_monotonic_clock() < deadline)
 		ena_pause();
-	}
 }
 
 uint32_t ena_plat_cpu_id(void)

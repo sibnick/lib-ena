@@ -143,15 +143,16 @@ int ena_admin_init(struct ena_adapter *adapter, uint16_t aq_depth,
 		return -ENOMEM;
 	}
 
-	acq = ena_dma_alloc((size_t)acq_depth * sizeof(struct ena_admin_acq_entry),
-			    &acq_phys);
+	acq = ena_dma_alloc(
+	    (size_t)acq_depth * sizeof(struct ena_admin_acq_entry), &acq_phys);
 	if (!acq) {
 		ena_err("admin init: ACQ alloc failed");
 		ena_dma_free(aq, aq_phys);
 		return -ENOMEM;
 	}
 
-	aenq = ena_dma_alloc((size_t)aenq_depth * sizeof(struct ena_admin_aenq_entry),
+	aenq = ena_dma_alloc((size_t)aenq_depth *
+				 sizeof(struct ena_admin_aenq_entry),
 			     &aenq_phys);
 	if (!aenq) {
 		ena_err("admin init: AENQ alloc failed");
@@ -162,7 +163,8 @@ int ena_admin_init(struct ena_adapter *adapter, uint16_t aq_depth,
 
 	memset(aq, 0, (size_t)aq_depth * sizeof(struct ena_admin_aq_entry));
 	memset(acq, 0, (size_t)acq_depth * sizeof(struct ena_admin_acq_entry));
-	memset(aenq, 0, (size_t)aenq_depth * sizeof(struct ena_admin_aenq_entry));
+	memset(aenq, 0,
+	       (size_t)aenq_depth * sizeof(struct ena_admin_aenq_entry));
 
 	adapter->aq_base = aq;
 	adapter->aq_phys = aq_phys;
@@ -189,15 +191,18 @@ int ena_admin_init(struct ena_adapter *adapter, uint16_t aq_depth,
 	/* CAPS registers pack the queue depth in bits 15:0 and the entry
 	 * size in bytes in bits 31:16. The entry size is derived from the
 	 * actual wire descriptor structs. */
-	uint32_t aq_caps = ((uint32_t)sizeof(struct ena_admin_aq_entry)
-			    << ENA_REGS_AQ_CAPS_AQ_ENTRY_SIZE_SHIFT)
-			   | (uint32_t)(aq_depth & ENA_REGS_AQ_CAPS_AQ_DEPTH_MASK);
-	uint32_t acq_caps = ((uint32_t)sizeof(struct ena_admin_acq_entry)
-			     << ENA_REGS_ACQ_CAPS_ACQ_ENTRY_SIZE_SHIFT)
-			    | (uint32_t)(acq_depth & ENA_REGS_ACQ_CAPS_ACQ_DEPTH_MASK);
-	uint32_t aenq_caps = ((uint32_t)sizeof(struct ena_admin_aenq_entry)
-			      << ENA_REGS_AENQ_CAPS_AENQ_ENTRY_SIZE_SHIFT)
-			     | (uint32_t)(aenq_depth & ENA_REGS_AENQ_CAPS_AENQ_DEPTH_MASK);
+	uint32_t aq_caps =
+	    ((uint32_t)sizeof(struct ena_admin_aq_entry)
+	     << ENA_REGS_AQ_CAPS_AQ_ENTRY_SIZE_SHIFT) |
+	    (uint32_t)(aq_depth & ENA_REGS_AQ_CAPS_AQ_DEPTH_MASK);
+	uint32_t acq_caps =
+	    ((uint32_t)sizeof(struct ena_admin_acq_entry)
+	     << ENA_REGS_ACQ_CAPS_ACQ_ENTRY_SIZE_SHIFT) |
+	    (uint32_t)(acq_depth & ENA_REGS_ACQ_CAPS_ACQ_DEPTH_MASK);
+	uint32_t aenq_caps =
+	    ((uint32_t)sizeof(struct ena_admin_aenq_entry)
+	     << ENA_REGS_AENQ_CAPS_AENQ_ENTRY_SIZE_SHIFT) |
+	    (uint32_t)(aenq_depth & ENA_REGS_AENQ_CAPS_AENQ_DEPTH_MASK);
 
 	/* Publish the ring bases, depths, and entry sizes to the device. */
 	ena_wmb();
@@ -307,26 +312,29 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 	idx = adapter->aq_tail & aq_mask;
 	entry = (struct ena_admin_aq_entry *)adapter->aq_base + idx;
 
-	/* Command ids occupy a 12-bit space (1..4095). Skip 0 before assigning. */
+	/* Command ids occupy a 12-bit space (1..4095). Skip 0 before assigning.
+	 */
 	if (adapter->next_command_id == 0)
 		adapter->next_command_id = 1;
 	command_id = adapter->next_command_id;
-	adapter->next_command_id =
-		(uint16_t)((adapter->next_command_id + 1) &
-			   ENA_ADMIN_COMMAND_ID_MASK);
+	adapter->next_command_id = (uint16_t)((adapter->next_command_id + 1) &
+					      ENA_ADMIN_COMMAND_ID_MASK);
 	if (adapter->next_command_id == 0)
 		adapter->next_command_id = 1;
 
 	memset(entry, 0, sizeof(*entry));
 
-	/* Copy the request payload. If caller passed full 64-byte command struct,
-	 * copy starting from offset 0, otherwise copy into inline data area. */
+	/* Copy the request payload. If caller passed full 64-byte command
+	 * struct, copy starting from offset 0, otherwise copy into inline data
+	 * area. */
 	if (req && req_len > 0) {
 		if (req_len >= sizeof(struct ena_admin_aq_entry)) {
 			memcpy(entry, req, sizeof(struct ena_admin_aq_entry));
-			flags = entry->aq_common_desc.flags & (uint8_t)~ENA_ADMIN_AQ_PHASE_MASK;
+			flags = entry->aq_common_desc.flags &
+				(uint8_t)~ENA_ADMIN_AQ_PHASE_MASK;
 		} else {
-			memcpy((uint8_t *)entry + sizeof(struct ena_admin_aq_common_desc),
+			memcpy((uint8_t *)entry +
+				   sizeof(struct ena_admin_aq_common_desc),
 			       req, req_len);
 		}
 	}
@@ -335,18 +343,23 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 	entry->aq_common_desc.opcode = opcode;
 	if (entry->u.control_buffer.length > 0)
 		flags |= ENA_ADMIN_AQ_COMMON_DESC_CTRL_DATA_INDIRECT_MASK;
-	entry->aq_common_desc.flags = (uint8_t)(flags | (adapter->aq_phase & ENA_ADMIN_AQ_PHASE_MASK));
+	entry->aq_common_desc.flags =
+	    (uint8_t)(flags | (adapter->aq_phase & ENA_ADMIN_AQ_PHASE_MASK));
 
 	/* Prepare the ACQ entry pointer. */
 	acq = (struct ena_admin_acq_entry *)adapter->acq_base +
 	      (adapter->acq_head & acq_mask);
 
 	if (command_id == 1 && adapter->acq_head > 0) {
-		/* When next_command_id wraps back to 1, reset expected ACQ phase
-		 * and update ACQ tail register to current head. Invalidate the ACQ
-		 * entry so a late completion from an earlier cycle cannot match. */
+		/* When next_command_id wraps back to 1, reset expected ACQ
+		 * phase and update ACQ tail register to current head.
+		 * Invalidate the ACQ entry so a late completion from an earlier
+		 * cycle cannot match. */
 		if (adapter->acq_depth > 0)
-			adapter->acq_phase = (uint8_t)(1 ^ ((adapter->acq_head / adapter->acq_depth) & 1));
+			adapter->acq_phase =
+			    (uint8_t)(1 ^ ((adapter->acq_head /
+					    adapter->acq_depth) &
+					   1));
 		ena_wmb();
 		ena_reg_write32(adapter->bar0_base + ENA_REGS_ACQ_TAIL_OFF,
 				adapter->acq_head);
@@ -363,8 +376,9 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 
 	for (unsigned int i = 0; i < max_polls; i++) {
 		volatile const uint8_t *flags_ptr =
-			(volatile const uint8_t *)&acq->acq_common_desc.flags;
-		if ((*flags_ptr & ENA_ADMIN_ACQ_PHASE_MASK) == adapter->acq_phase) {
+		    (volatile const uint8_t *)&acq->acq_common_desc.flags;
+		if ((*flags_ptr & ENA_ADMIN_ACQ_PHASE_MASK) ==
+		    adapter->acq_phase) {
 			ena_rmb();
 			found = true;
 			break;
@@ -375,7 +389,8 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 	if (!found) {
 		int reset_ret;
 
-		ena_err("exec_cmd: timeout after %u polls (resetting device)", max_polls);
+		ena_err("exec_cmd: timeout after %u polls (resetting device)",
+			max_polls);
 		adapter->state = ENA_STATE_ERROR;
 		/* The reset destroys every IO queue on the device. Invalidate
 		 * the driver-side rings now so the data path stops touching
@@ -386,9 +401,12 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 		reset_ret = ena_device_wait_reset_complete(adapter, 1000);
 		ena_admin_lock_take(&adapter->admin_lock);
 		if (reset_ret == 0) {
-			uint16_t aq_d = adapter->aq_depth ? adapter->aq_depth : 32;
-			uint16_t acq_d = adapter->acq_depth ? adapter->acq_depth : 32;
-			uint16_t aenq_d = adapter->aenq_depth ? adapter->aenq_depth : 32;
+			uint16_t aq_d =
+			    adapter->aq_depth ? adapter->aq_depth : 32;
+			uint16_t acq_d =
+			    adapter->acq_depth ? adapter->acq_depth : 32;
+			uint16_t aenq_d =
+			    adapter->aenq_depth ? adapter->aenq_depth : 32;
 			ena_admin_init(adapter, aq_d, acq_d, aenq_d);
 			/* The reset cleared the AENQ configuration.
 			 * Restore it so keep-alive events resume.
@@ -424,7 +442,7 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 	/* Capture the response. */
 	if (out_command_id)
 		*out_command_id =
-			acq->acq_common_desc.command & ENA_ADMIN_COMMAND_ID_MASK;
+		    acq->acq_common_desc.command & ENA_ADMIN_COMMAND_ID_MASK;
 
 	if (resp && resp_cap > 0) {
 		size_t n = sizeof(acq->response_specific_data);
@@ -436,17 +454,20 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 
 	if (acq->acq_common_desc.status != 0) {
 		if (opcode == ENA_ADMIN_GET_FEATURE &&
-		    acq->acq_common_desc.status == ENA_ADMIN_UNSUPPORTED_OPCODE) {
-			ena_debug("exec_cmd: feature not supported (status %u) for opcode %u command %u",
-				acq->acq_common_desc.status,
-				opcode,
-				acq->acq_common_desc.command & ENA_ADMIN_COMMAND_ID_MASK);
+		    acq->acq_common_desc.status ==
+			ENA_ADMIN_UNSUPPORTED_OPCODE) {
+			ena_debug("exec_cmd: feature not supported (status %u) "
+				  "for opcode %u command %u",
+				  acq->acq_common_desc.status, opcode,
+				  acq->acq_common_desc.command &
+				      ENA_ADMIN_COMMAND_ID_MASK);
 		} else {
-			ena_err("exec_cmd: device status %u, ext_status %u for opcode %u command %u",
-				 acq->acq_common_desc.status,
-				 acq->acq_common_desc.extended_status,
-				 opcode,
-				 acq->acq_common_desc.command & ENA_ADMIN_COMMAND_ID_MASK);
+			ena_err("exec_cmd: device status %u, ext_status %u for "
+				"opcode %u command %u",
+				acq->acq_common_desc.status,
+				acq->acq_common_desc.extended_status, opcode,
+				acq->acq_common_desc.command &
+				    ENA_ADMIN_COMMAND_ID_MASK);
 		}
 		return -(int)acq->acq_common_desc.status;
 	}
@@ -506,7 +527,8 @@ int ena_admin_aenq_poll(struct ena_adapter *adapter, unsigned int max_events)
 
 		idx = adapter->aenq_head & aenq_mask;
 		entry = (struct ena_admin_aenq_entry *)adapter->aenq_base + idx;
-		flags_ptr = (volatile const uint8_t *)&entry->aenq_common_desc.flags;
+		flags_ptr =
+		    (volatile const uint8_t *)&entry->aenq_common_desc.flags;
 
 		if ((*flags_ptr & ENA_ADMIN_AENQ_PHASE_MASK) !=
 		    adapter->aenq_phase)
@@ -608,7 +630,8 @@ int ena_aenq_default_handler(void *arg, uint16_t group, uint16_t syndrome,
 		return 0;
 
 	case ENA_ADMIN_NOTIFICATION:
-		ena_info("aenq: notification (syndrome %u)", (unsigned)syndrome);
+		ena_info("aenq: notification (syndrome %u)",
+			 (unsigned)syndrome);
 		return 0;
 
 	case ENA_ADMIN_KEEP_ALIVE: {
@@ -622,12 +645,11 @@ int ena_aenq_default_handler(void *arg, uint16_t group, uint16_t syndrome,
 		uint32_t tx_hi = entry ? entry->inline_data_w4[3] : 0;
 
 		adapter->aen_keepalives++;
-		adapter->aen_rx_drops =
-			((uint64_t)rx_hi << 32) | rx_lo;
-		adapter->aen_tx_drops =
-			((uint64_t)tx_hi << 32) | tx_lo;
+		adapter->aen_rx_drops = ((uint64_t)rx_hi << 32) | rx_lo;
+		adapter->aen_tx_drops = ((uint64_t)tx_hi << 32) | tx_lo;
 		if ((adapter->aen_keepalives & 0x7) == 1)
-			ena_info("aenq: keep alive #%u (rx_drops %llu, tx_drops %llu)",
+			ena_info("aenq: keep alive #%u (rx_drops %llu, "
+				 "tx_drops %llu)",
 				 adapter->aen_keepalives,
 				 (unsigned long long)adapter->aen_rx_drops,
 				 (unsigned long long)adapter->aen_tx_drops);
@@ -666,10 +688,8 @@ int ena_admin_get_device_attr(struct ena_adapter *adapter,
 	req.feat_common.feature_id = ENA_ADMIN_DEVICE_ATTRIBUTES;
 
 	memset(resp, 0, sizeof(resp));
-	ret = ena_admin_exec_cmd(adapter, ENA_ADMIN_GET_FEATURE,
-				 &req, sizeof(req),
-				 resp, sizeof(resp),
-				 &cmd_id, 100);
+	ret = ena_admin_exec_cmd(adapter, ENA_ADMIN_GET_FEATURE, &req,
+				 sizeof(req), resp, sizeof(resp), &cmd_id, 100);
 	if (ret)
 		return ret;
 

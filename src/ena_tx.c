@@ -77,8 +77,8 @@ int ena_tx_submit(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 
 	/* Word 0: len_ctrl */
 	len_ctrl = (pkt->len & ENA_ETH_IO_TX_DESC_LENGTH_MASK);
-	len_ctrl |= (((uint32_t)(req_id >> 10) & 0x3Fu) <<
-		     ENA_ETH_IO_TX_DESC_REQ_ID_HI_SHIFT);
+	len_ctrl |= (((uint32_t)(req_id >> 10) & 0x3Fu)
+		     << ENA_ETH_IO_TX_DESC_REQ_ID_HI_SHIFT);
 	if (ring->sq_phase)
 		len_ctrl |= ENA_ETH_IO_TX_DESC_PHASE_MASK;
 	len_ctrl |= ENA_ETH_IO_TX_DESC_FIRST_MASK |
@@ -87,11 +87,11 @@ int ena_tx_submit(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 	desc->len_ctrl = ena_cpu_to_le32(len_ctrl);
 
 	/* Word 1: meta_ctrl */
-	meta_ctrl = (((uint32_t)req_id & 0x03FFu) <<
-		     ENA_ETH_IO_TX_DESC_REQ_ID_LO_SHIFT);
+	meta_ctrl = (((uint32_t)req_id & 0x03FFu)
+		     << ENA_ETH_IO_TX_DESC_REQ_ID_LO_SHIFT);
 	meta_ctrl |= (pkt->l3_proto & ENA_ETH_IO_TX_DESC_L3_PROTO_IDX_MASK);
-	meta_ctrl |= (((uint32_t)pkt->l4_proto & 0x1Fu) <<
-		      ENA_ETH_IO_TX_DESC_L4_PROTO_IDX_SHIFT);
+	meta_ctrl |= (((uint32_t)pkt->l4_proto & 0x1Fu)
+		      << ENA_ETH_IO_TX_DESC_L4_PROTO_IDX_SHIFT);
 	if (pkt->l3_csum_en)
 		meta_ctrl |= ENA_ETH_IO_TX_DESC_L3_CSUM_EN_MASK;
 	if (pkt->l4_csum_en)
@@ -104,7 +104,8 @@ int ena_tx_submit(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 
 	/* Word 2 & 3: buffer physical address */
 	desc->buff_addr_lo = ena_cpu_to_le32((uint32_t)pkt->phys_addr);
-	desc->buff_addr_hi_hdr_sz = ena_cpu_to_le32((uint32_t)((pkt->phys_addr >> 32) & 0xFFFFu));
+	desc->buff_addr_hi_hdr_sz =
+	    ena_cpu_to_le32((uint32_t)((pkt->phys_addr >> 32) & 0xFFFFu));
 
 	/* Advance producer tail index (monotonic unmasked counter) */
 	ring->sq_tail++;
@@ -193,8 +194,12 @@ int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 	while (cleaned < budget) {
 		volatile const uint8_t *flags_ptr;
 
-		flags_ptr = (volatile const uint8_t *)&cdesc_ring[ring->cq_head & (ring->cq_depth - 1)].flags;
-		if ((*flags_ptr & ENA_ETH_IO_TX_CDESC_PHASE_MASK) != ring->cq_phase)
+		flags_ptr =
+		    (volatile const uint8_t *)&cdesc_ring[ring->cq_head &
+							  (ring->cq_depth - 1)]
+			.flags;
+		if ((*flags_ptr & ENA_ETH_IO_TX_CDESC_PHASE_MASK) !=
+		    ring->cq_phase)
 			break;
 
 		ena_rmb();
@@ -202,7 +207,8 @@ int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 
 		req_id = ena_le16_to_cpu(cdesc->req_id);
 		if (req_id >= ring->sq_depth) {
-			ena_err("tx poll: invalid req_id %u from device", req_id);
+			ena_err("tx poll: invalid req_id %u from device",
+				req_id);
 			break;
 		}
 
@@ -223,12 +229,14 @@ int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 
 		/* Reclaim this request's resources at completion time. The
 		 * netdev layer returns the matching bounce slot through the
-		 * callback, so it never scans the whole map. [Ticket 292e049bf4] */
+		 * callback, so it never scans the whole map. [Ticket
+		 * 292e049bf4] */
 		if (ring->tx_complete_cb)
 			ring->tx_complete_cb(ring->tx_complete_arg, req_id);
 
 		/* Update SQ head index acknowledged by controller */
-		ring->sq_head = ena_le16_to_cpu(cdesc->sq_head_idx) & (ring->sq_depth - 1);
+		ring->sq_head =
+		    ena_le16_to_cpu(cdesc->sq_head_idx) & (ring->sq_depth - 1);
 
 		/* One compare per completion. A mismatch means the free
 		 * below runs in another core's heap. [Ticket f47bdd0ed1] */
@@ -237,10 +245,12 @@ int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 
 		/* Reclaim transmitted packet buffer */
 		if (ring->buffers.tx_bufs) {
-			struct ena_tx_buffer *tx_buf = &ring->buffers.tx_bufs[req_id];
+			struct ena_tx_buffer *tx_buf =
+			    &ring->buffers.tx_bufs[req_id];
 #ifdef __Unikraft__
 			if (tx_buf->netbuf)
-				uk_netbuf_free((struct uk_netbuf *)tx_buf->netbuf);
+				uk_netbuf_free(
+				    (struct uk_netbuf *)tx_buf->netbuf);
 #endif
 			tx_buf->netbuf = NULL;
 		}
@@ -248,7 +258,8 @@ int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 		/* Return request ID to free pool */
 		ena_ring_req_id_free(ring, req_id);
 
-		/* Advance CQ consumer head index (monotonic unmasked counter) */
+		/* Advance CQ consumer head index (monotonic unmasked counter)
+		 */
 		ring->cq_head++;
 		if ((ring->cq_head & (ring->cq_depth - 1)) == 0)
 			ring->cq_phase ^= 1;

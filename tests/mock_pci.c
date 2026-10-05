@@ -67,14 +67,13 @@ void mock_ena_hw_init(struct mock_ena_hw *hw)
 	/* Phase 3: default emulated device attributes */
 	hw->dev_impl_id = 0x1D0F;
 	hw->dev_device_version = 0x00020000;
-	hw->dev_supported_features = (1u << ENA_ADMIN_DEVICE_ATTRIBUTES) |
-				     (1u << ENA_ADMIN_MAX_QUEUES_NUM) |
-				     (1u << ENA_ADMIN_MTU) |
-				     (1u << ENA_ADMIN_HOST_ATTR_CONFIG) |
-				     (1u << ENA_ADMIN_LLQ) |
-				     (1u << ENA_ADMIN_RSS_HASH_FUNCTION) |
-				     (1u << ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG) |
-				     (1u << ENA_ADMIN_RSS_HASH_INPUT);
+	hw->dev_supported_features =
+	    (1u << ENA_ADMIN_DEVICE_ATTRIBUTES) |
+	    (1u << ENA_ADMIN_MAX_QUEUES_NUM) | (1u << ENA_ADMIN_MTU) |
+	    (1u << ENA_ADMIN_HOST_ATTR_CONFIG) | (1u << ENA_ADMIN_LLQ) |
+	    (1u << ENA_ADMIN_RSS_HASH_FUNCTION) |
+	    (1u << ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG) |
+	    (1u << ENA_ADMIN_RSS_HASH_INPUT);
 	hw->dev_capabilities = 1; /* ENA_ADMIN_ENI_STATS */
 	hw->dev_phys_addr_width = 48;
 	hw->dev_virt_addr_width = 48;
@@ -142,13 +141,15 @@ void mock_ena_hw_init(struct mock_ena_hw *hw)
 	}
 
 	/* Default hardware version and controller values */
-	mock_ena_hw_set_reg32(hw, ENA_REGS_VERSION_OFF, (2 << 8) | 0); /* v2.0 */
+	mock_ena_hw_set_reg32(hw, ENA_REGS_VERSION_OFF,
+			      (2 << 8) | 0); /* v2.0 */
 	mock_ena_hw_set_reg32(hw, ENA_REGS_CONTROLLER_VERSION_OFF, 0x00020800);
 	mock_ena_hw_set_reg32(hw, ENA_REGS_CAPS_OFF, 0x00040000);
 	mock_ena_hw_set_reg32(hw, ENA_REGS_DEV_STS_OFF, ENA_DEV_STS_READY_MASK);
 }
 
-void mock_ena_hw_set_reg32(struct mock_ena_hw *hw, uint32_t offset, uint32_t value)
+void mock_ena_hw_set_reg32(struct mock_ena_hw *hw, uint32_t offset,
+			   uint32_t value)
 {
 	if (!hw || offset + sizeof(uint32_t) > MOCK_BAR0_SIZE)
 		return;
@@ -171,7 +172,8 @@ void mock_ena_hw_trigger_reset_completion(struct mock_ena_hw *hw)
 
 	hw->reset_count++;
 	mock_ena_hw_set_reg32(hw, ENA_REGS_DEV_STS_OFF,
-			      ENA_DEV_STS_RESET_FIN_MASK | ENA_DEV_STS_READY_MASK);
+			      ENA_DEV_STS_RESET_FIN_MASK |
+				  ENA_DEV_STS_READY_MASK);
 }
 
 void mock_ena_hw_reset_poll_hook(void *cookie)
@@ -198,7 +200,7 @@ void mock_ena_hw_reset_poll_hook(void *cookie)
 		hw->drv_acq_head = 0;
 		mock_ena_hw_set_reg32(hw, ENA_REGS_DEV_STS_OFF,
 				      ENA_DEV_STS_RESET_FIN_MASK |
-				      ENA_DEV_STS_READY_MASK);
+					  ENA_DEV_STS_READY_MASK);
 	}
 }
 
@@ -228,11 +230,12 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 	if (status == 0) {
 		if (req->aq_common_desc.opcode == ENA_ADMIN_CREATE_CQ) {
 			const struct ena_admin_aq_create_cq_cmd *cmd =
-				(const struct ena_admin_aq_create_cq_cmd *)req;
+			    (const struct ena_admin_aq_create_cq_cmd *)req;
 			struct ena_admin_acq_create_cq_resp_desc *resp =
-				(struct ena_admin_acq_create_cq_resp_desc *)comp;
+			    (struct ena_admin_acq_create_cq_resp_desc *)comp;
 
-			if (cmd->cq_depth == 0 || (cmd->cq_depth & (cmd->cq_depth - 1)) != 0 ||
+			if (cmd->cq_depth == 0 ||
+			    (cmd->cq_depth & (cmd->cq_depth - 1)) != 0 ||
 			    cmd->cq_depth > hw->dev_max_cq_depth) {
 				status = ENA_ADMIN_ILLEGAL_PARAMETER;
 			} else {
@@ -247,14 +250,14 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 				resp->cq_idx = cq_idx;
 				resp->cq_actual_depth = cmd->cq_depth;
 				resp->cq_head_db_register_offset =
-					hw->inject_bad_db_offset ?
-					hw->bad_db_offset : 0x30;
+				    hw->inject_bad_db_offset ? hw->bad_db_offset
+							     : 0x30;
 				/* Each CQ gets its own interrupt unmask
 				 * register, one 32-bit word per queue, in a
 				 * region of BAR0 clear of the doorbells and
 				 * the global INTR_MASK register (0x4C). */
 				resp->cq_interrupt_unmask_register_offset =
-					0x400 + (uint32_t)cq_idx * 4;
+				    0x400 + (uint32_t)cq_idx * 4;
 				filled = 1;
 			}
 		} else if (req->aq_common_desc.opcode == ENA_ADMIN_DESTROY_CQ) {
@@ -262,16 +265,19 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 			filled = 1;
 		} else if (req->aq_common_desc.opcode == ENA_ADMIN_CREATE_SQ) {
 			const struct ena_admin_aq_create_sq_cmd *cmd =
-				(const struct ena_admin_aq_create_sq_cmd *)req;
+			    (const struct ena_admin_aq_create_sq_cmd *)req;
 			struct ena_admin_acq_create_sq_resp_desc *resp =
-				(struct ena_admin_acq_create_sq_resp_desc *)comp;
+			    (struct ena_admin_acq_create_sq_resp_desc *)comp;
 
-			if (cmd->sq_depth == 0 || (cmd->sq_depth & (cmd->sq_depth - 1)) != 0 ||
+			if (cmd->sq_depth == 0 ||
+			    (cmd->sq_depth & (cmd->sq_depth - 1)) != 0 ||
 			    cmd->sq_depth > hw->dev_max_sq_depth) {
 				status = ENA_ADMIN_ILLEGAL_PARAMETER;
 			} else {
-				uint8_t placement = (uint8_t)(cmd->sq_caps_2 & 0x0Fu);
-				uint8_t direction = (cmd->sq_identity >> 5) & 0x7;
+				uint8_t placement =
+				    (uint8_t)(cmd->sq_caps_2 & 0x0Fu);
+				uint8_t direction =
+				    (cmd->sq_identity >> 5) & 0x7;
 
 				hw->sq_created_count++;
 				hw->last_sq_depth = cmd->sq_depth;
@@ -284,38 +290,48 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 				else
 					resp->sq_idx = hw->next_sq_id_tx++;
 				resp->sq_doorbell_offset =
-					hw->inject_bad_db_offset ?
-					hw->bad_db_offset : 0x2C;
+				    hw->inject_bad_db_offset ? hw->bad_db_offset
+							     : 0x2C;
 
 				/* Device-placement queues live in the LLQ
 				 * BAR2. The response returns the BAR2
 				 * offsets of the descriptor ring and the
 				 * header ring. */
-				if (placement == ENA_ADMIN_PLACEMENT_POLICY_DEV) {
+				if (placement ==
+				    ENA_ADMIN_PLACEMENT_POLICY_DEV) {
 					size_t descs_area;
 					size_t headers_area;
 
 					if (!(hw->dev_supported_features &
 					      (1u << ENA_ADMIN_LLQ)) ||
 					    hw->dev_llq_bar_size == 0) {
-						status = ENA_ADMIN_ILLEGAL_PARAMETER;
+						status =
+						    ENA_ADMIN_ILLEGAL_PARAMETER;
 					} else {
-						descs_area = (size_t)cmd->sq_depth * 128;
-						headers_area = (size_t)cmd->sq_depth * 128;
+						descs_area =
+						    (size_t)cmd->sq_depth * 128;
+						headers_area =
+						    (size_t)cmd->sq_depth * 128;
 
 						if ((size_t)hw->llq_next_off +
-						    descs_area + headers_area >
+							descs_area +
+							headers_area >
 						    hw->dev_llq_bar_size) {
-							status = ENA_ADMIN_ILLEGAL_PARAMETER;
+							status =
+							    ENA_ADMIN_ILLEGAL_PARAMETER;
 						} else {
-							uint32_t descs_off = hw->llq_next_off;
+							uint32_t descs_off =
+							    hw->llq_next_off;
 
-							resp->llq_descriptors_offset = descs_off;
+							resp->llq_descriptors_offset =
+							    descs_off;
 							resp->llq_headers_offset =
-								descs_off + (uint32_t)descs_area;
+							    descs_off +
+							    (uint32_t)
+								descs_area;
 							hw->llq_next_off +=
-								(uint32_t)(descs_area +
-									     headers_area);
+							    (uint32_t)(descs_area +
+								       headers_area);
 						}
 					}
 				}
@@ -325,200 +341,285 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 		} else if (req->aq_common_desc.opcode == ENA_ADMIN_DESTROY_SQ) {
 			hw->sq_destroyed_count++;
 			filled = 1;
-		} else if (req->aq_common_desc.opcode == ENA_ADMIN_GET_FEATURE ||
-			   req->aq_common_desc.opcode == ENA_ADMIN_SET_FEATURE) {
+		} else if (req->aq_common_desc.opcode ==
+			       ENA_ADMIN_GET_FEATURE ||
+			   req->aq_common_desc.opcode ==
+			       ENA_ADMIN_SET_FEATURE) {
 
-		feat = (const struct mock_get_set_feat_inline *)
-		       req->u.inline_data_w1;
-		hw->last_feat_flags = feat->flags;
+			feat = (const struct mock_get_set_feat_inline *)
+				   req->u.inline_data_w1;
+			hw->last_feat_flags = feat->flags;
 
-		if (feat->ctrl_len > 0 &&
-		    !(req->aq_common_desc.flags & ENA_ADMIN_AQ_COMMON_DESC_CTRL_DATA_INDIRECT_MASK)) {
-			status = ENA_ADMIN_ILLEGAL_PARAMETER;
-		} else if (req->aq_common_desc.opcode == ENA_ADMIN_GET_FEATURE) {
-			switch (feat->feature_id) {
-			case ENA_ADMIN_DEVICE_ATTRIBUTES: {
-				struct ena_admin_device_attr_feature_desc *attr;
-
-				attr = (struct ena_admin_device_attr_feature_desc *)
-				       comp->response_specific_data;
-				attr->impl_id = hw->dev_impl_id;
-				attr->device_version = hw->dev_device_version;
-				attr->supported_features =
-					hw->dev_supported_features;
-				attr->capabilities = hw->dev_capabilities;
-				attr->phys_addr_width = hw->dev_phys_addr_width;
-				attr->virt_addr_width = hw->dev_virt_addr_width;
-				memcpy(attr->mac_addr, hw->dev_mac, 6);
-				attr->reserved7[0] = 0;
-				attr->reserved7[1] = 0;
-				attr->max_mtu = hw->dev_max_mtu;
-				hw->attrs_read = 1;
-				filled = 1;
-				break;
-			}
-			case ENA_ADMIN_MAX_QUEUES_NUM: {
-				struct ena_admin_queue_feature_desc *q;
-
-				q = (struct ena_admin_queue_feature_desc *)
-				    comp->response_specific_data;
-				q->max_sq_num = hw->dev_max_sq_num;
-				q->max_sq_depth = hw->dev_max_sq_depth;
-				q->max_cq_num = hw->dev_max_cq_num;
-				q->max_cq_depth = hw->dev_max_cq_depth;
-				q->max_legacy_llq_num = 0;
-				q->max_legacy_llq_depth = 0;
-				q->max_header_size = 512;
-				q->max_packet_tx_descs = 8;
-				q->max_packet_rx_descs = 8;
-				hw->attrs_read = 1;
-				filled = 1;
-				break;
-			}
-			case ENA_ADMIN_LLQ: {
-				struct ena_admin_feature_llq_desc *llq;
-
-				llq = (struct ena_admin_feature_llq_desc *)
-				      comp->response_specific_data;
-				memset(llq, 0, sizeof(*llq));
-				llq->max_llq_num = 16;
-				llq->max_llq_depth = 1024;
-				llq->header_location_ctrl_supported = 1;
-				llq->entry_size_ctrl_supported = 1;
-				hw->attrs_read = 1;
-				filled = 1;
-				break;
-			}
-			case ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG: {
-				struct ena_admin_feature_rss_ind_table *ind;
-				uint32_t log_size = 0;
-
-				ind = (struct ena_admin_feature_rss_ind_table *)
-				      comp->response_specific_data;
-				memset(ind, 0, sizeof(*ind));
-				/* The emulated device supports 16 to 256 entries
-				 * (2^4..2^8), matching the Linux driver limits. */
-				ind->min_size = 4;
-				ind->max_size = 8;
-				if (hw->rss_ind_table_size) {
-					uint32_t n = hw->rss_ind_table_size;
-
-					while ((1u << log_size) < n)
-						log_size++;
-				}
-				ind->size = (uint16_t)log_size;
-				hw->rss_get_ind_count++;
-				hw->rss_get_ind_min_size = ind->min_size;
-				hw->rss_get_ind_max_size = ind->max_size;
-				filled = 1;
-				break;
-			}
-			case 0:
-				/* Legacy request without inline data */
-				break;
-			default:
+			if (feat->ctrl_len > 0 &&
+			    !(req->aq_common_desc.flags &
+			      ENA_ADMIN_AQ_COMMON_DESC_CTRL_DATA_INDIRECT_MASK)) {
 				status = ENA_ADMIN_ILLEGAL_PARAMETER;
-				break;
-			}
-		} else { /* ENA_ADMIN_SET_FEATURE */
-			if (hw->require_attrs_first && !hw->attrs_read) {
-				status = ENA_ADMIN_ILLEGAL_PARAMETER;
-			} else if (feat->feature_id == ENA_ADMIN_MTU) {
-				uint32_t mtu = feat->raw[0];
+			} else if (req->aq_common_desc.opcode ==
+				   ENA_ADMIN_GET_FEATURE) {
+				switch (feat->feature_id) {
+				case ENA_ADMIN_DEVICE_ATTRIBUTES: {
+					struct
+					    ena_admin_device_attr_feature_desc
+						*attr;
 
-				if (mtu < ENA_INIT_MTU_MIN ||
-				    mtu > hw->dev_max_mtu) {
-					status = ENA_ADMIN_ILLEGAL_PARAMETER;
-				} else {
-					hw->negotiated_mtu = mtu;
-				}
-			} else if (feat->feature_id == ENA_ADMIN_HOST_ATTR_CONFIG) {
-				uint64_t os_phys =
-					(uint64_t)feat->raw[0] |
-					((uint64_t)(feat->raw[1] & 0xFFFFu) << 32);
-
-				if (os_phys != 0) {
-					hw->host_info_base =
-						(uint8_t *)(uintptr_t)os_phys;
-					hw->host_info_debug_size = feat->raw[4];
-				}
-			} else if (feat->feature_id == ENA_ADMIN_LLQ) {
-				filled = 1;
-			} else if (feat->feature_id == ENA_ADMIN_RSS_HASH_FUNCTION) {
-				uint64_t ctrl_phys = (uint64_t)feat->ctrl_lo |
-						     ((uint64_t)feat->ctrl_hi << 32);
-				const struct ena_admin_feature_rss_flow_hash_control *ctrl =
-					(const struct ena_admin_feature_rss_flow_hash_control *)(uintptr_t)ctrl_phys;
-				const struct ena_admin_feature_rss_flow_hash_function *func =
-					(const struct ena_admin_feature_rss_flow_hash_function *)feat->raw;
-
-				if (func->selected_func != (1u << ENA_ADMIN_TOEPLITZ)) {
-					status = ENA_ADMIN_ILLEGAL_PARAMETER;
-				} else {
-					hw->rss_hash_func = func->selected_func;
-					if (ctrl && feat->ctrl_len >= sizeof(*ctrl)) {
-						memcpy(hw->rss_hash_key, ctrl->key, sizeof(hw->rss_hash_key));
-						hw->rss_set_key_count++;
-					}
+					attr =
+					    (struct
+					     ena_admin_device_attr_feature_desc
+						 *)comp->response_specific_data;
+					attr->impl_id = hw->dev_impl_id;
+					attr->device_version =
+					    hw->dev_device_version;
+					attr->supported_features =
+					    hw->dev_supported_features;
+					attr->capabilities =
+					    hw->dev_capabilities;
+					attr->phys_addr_width =
+					    hw->dev_phys_addr_width;
+					attr->virt_addr_width =
+					    hw->dev_virt_addr_width;
+					memcpy(attr->mac_addr, hw->dev_mac, 6);
+					attr->reserved7[0] = 0;
+					attr->reserved7[1] = 0;
+					attr->max_mtu = hw->dev_max_mtu;
+					hw->attrs_read = 1;
 					filled = 1;
+					break;
 				}
-			} else if (feat->feature_id == ENA_ADMIN_RSS_HASH_INPUT) {
-				uint64_t ctrl_phys = (uint64_t)feat->ctrl_lo |
-						     ((uint64_t)feat->ctrl_hi << 32);
-				const struct ena_admin_feature_rss_hash_control *ctrl =
-					(const struct ena_admin_feature_rss_hash_control *)(uintptr_t)ctrl_phys;
+				case ENA_ADMIN_MAX_QUEUES_NUM: {
+					struct ena_admin_queue_feature_desc *q;
 
-				if (ctrl && feat->ctrl_len >= sizeof(*ctrl)) {
-					hw->rss_tcp4_fields = ctrl->selected_fields[ENA_ADMIN_RSS_TCP4].fields;
-					hw->rss_udp4_fields = ctrl->selected_fields[ENA_ADMIN_RSS_UDP4].fields;
-					hw->rss_ip4_fields = ctrl->selected_fields[ENA_ADMIN_RSS_IP4].fields;
-					hw->rss_set_ctrl_count++;
+					q = (struct ena_admin_queue_feature_desc
+						 *)comp->response_specific_data;
+					q->max_sq_num = hw->dev_max_sq_num;
+					q->max_sq_depth = hw->dev_max_sq_depth;
+					q->max_cq_num = hw->dev_max_cq_num;
+					q->max_cq_depth = hw->dev_max_cq_depth;
+					q->max_legacy_llq_num = 0;
+					q->max_legacy_llq_depth = 0;
+					q->max_header_size = 512;
+					q->max_packet_tx_descs = 8;
+					q->max_packet_rx_descs = 8;
+					hw->attrs_read = 1;
+					filled = 1;
+					break;
 				}
-				filled = 1;
-			} else if (feat->feature_id == ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG) {
-				uint64_t ctrl_phys = (uint64_t)feat->ctrl_lo |
-						     ((uint64_t)feat->ctrl_hi << 32);
-				const struct ena_admin_feature_rss_ind_table *ind_req =
-					(const struct ena_admin_feature_rss_ind_table *)feat->raw;
-				const struct ena_admin_rss_ind_table_entry *tbl =
-					(const struct ena_admin_rss_ind_table_entry *)(uintptr_t)ctrl_phys;
-				uint32_t k;
+				case ENA_ADMIN_LLQ: {
+					struct ena_admin_feature_llq_desc *llq;
 
-				if (ind_req->size > 7) {
-					status = ENA_ADMIN_ILLEGAL_PARAMETER;
-				} else {
-					uint32_t count = 1u << ind_req->size;
-					uint8_t out_of_range = 0;
+					llq =
+					    (struct ena_admin_feature_llq_desc
+						 *)comp->response_specific_data;
+					memset(llq, 0, sizeof(*llq));
+					llq->max_llq_num = 16;
+					llq->max_llq_depth = 1024;
+					llq->header_location_ctrl_supported = 1;
+					llq->entry_size_ctrl_supported = 1;
+					hw->attrs_read = 1;
+					filled = 1;
+					break;
+				}
+				case ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG: {
+					struct ena_admin_feature_rss_ind_table
+					    *ind;
+					uint32_t log_size = 0;
 
-					/* The firmware resolves each entry in the RX
-					 * space. An index at or above the number of
-					 * created RX queues is invalid. */
-					if (tbl) {
-						for (k = 0; k < count; k++) {
-							if (tbl[k].sq_idx >= hw->next_sq_id_rx) {
-								out_of_range = 1;
-								break;
-							}
-						}
+					ind =
+					    (struct
+					     ena_admin_feature_rss_ind_table *)
+						comp->response_specific_data;
+					memset(ind, 0, sizeof(*ind));
+					/* The emulated device supports 16 to
+					 * 256 entries (2^4..2^8), matching the
+					 * Linux driver limits. */
+					ind->min_size = 4;
+					ind->max_size = 8;
+					if (hw->rss_ind_table_size) {
+						uint32_t n =
+						    hw->rss_ind_table_size;
+
+						while ((1u << log_size) < n)
+							log_size++;
 					}
+					ind->size = (uint16_t)log_size;
+					hw->rss_get_ind_count++;
+					hw->rss_get_ind_min_size =
+					    ind->min_size;
+					hw->rss_get_ind_max_size =
+					    ind->max_size;
+					filled = 1;
+					break;
+				}
+				case 0:
+					/* Legacy request without inline data */
+					break;
+				default:
+					status = ENA_ADMIN_ILLEGAL_PARAMETER;
+					break;
+				}
+			} else { /* ENA_ADMIN_SET_FEATURE */
+				if (hw->require_attrs_first &&
+				    !hw->attrs_read) {
+					status = ENA_ADMIN_ILLEGAL_PARAMETER;
+				} else if (feat->feature_id == ENA_ADMIN_MTU) {
+					uint32_t mtu = feat->raw[0];
 
-					if (out_of_range) {
-						status = ENA_ADMIN_ILLEGAL_PARAMETER;
+					if (mtu < ENA_INIT_MTU_MIN ||
+					    mtu > hw->dev_max_mtu) {
+						status =
+						    ENA_ADMIN_ILLEGAL_PARAMETER;
 					} else {
-						if (tbl) {
-							hw->rss_ind_table_size = (uint16_t)count;
-							for (k = 0; k < count; k++)
-								hw->rss_ind_table[k] = tbl[k].sq_idx;
-							hw->rss_set_ind_count++;
+						hw->negotiated_mtu = mtu;
+					}
+				} else if (feat->feature_id ==
+					   ENA_ADMIN_HOST_ATTR_CONFIG) {
+					uint64_t os_phys =
+					    (uint64_t)feat->raw[0] |
+					    ((uint64_t)(feat->raw[1] & 0xFFFFu)
+					     << 32);
+
+					if (os_phys != 0) {
+						hw->host_info_base =
+						    (uint8_t *)(uintptr_t)
+							os_phys;
+						hw->host_info_debug_size =
+						    feat->raw[4];
+					}
+				} else if (feat->feature_id == ENA_ADMIN_LLQ) {
+					filled = 1;
+				} else if (feat->feature_id ==
+					   ENA_ADMIN_RSS_HASH_FUNCTION) {
+					uint64_t ctrl_phys =
+					    (uint64_t)feat->ctrl_lo |
+					    ((uint64_t)feat->ctrl_hi << 32);
+					const struct
+					    ena_admin_feature_rss_flow_hash_control
+						*ctrl =
+						    (const struct
+						     ena_admin_feature_rss_flow_hash_control
+							 *)(uintptr_t)ctrl_phys;
+					const struct
+					    ena_admin_feature_rss_flow_hash_function
+						*func =
+						    (const struct
+						     ena_admin_feature_rss_flow_hash_function
+							 *)feat->raw;
+
+					if (func->selected_func !=
+					    (1u << ENA_ADMIN_TOEPLITZ)) {
+						status =
+						    ENA_ADMIN_ILLEGAL_PARAMETER;
+					} else {
+						hw->rss_hash_func =
+						    func->selected_func;
+						if (ctrl && feat->ctrl_len >=
+								sizeof(*ctrl)) {
+							memcpy(
+							    hw->rss_hash_key,
+							    ctrl->key,
+							    sizeof(
+								hw->rss_hash_key));
+							hw->rss_set_key_count++;
 						}
 						filled = 1;
 					}
+				} else if (feat->feature_id ==
+					   ENA_ADMIN_RSS_HASH_INPUT) {
+					uint64_t ctrl_phys =
+					    (uint64_t)feat->ctrl_lo |
+					    ((uint64_t)feat->ctrl_hi << 32);
+					const struct
+					    ena_admin_feature_rss_hash_control
+						*ctrl =
+						    (const struct
+						     ena_admin_feature_rss_hash_control
+							 *)(uintptr_t)ctrl_phys;
+
+					if (ctrl &&
+					    feat->ctrl_len >= sizeof(*ctrl)) {
+						hw->rss_tcp4_fields =
+						    ctrl->selected_fields
+							[ENA_ADMIN_RSS_TCP4]
+							    .fields;
+						hw->rss_udp4_fields =
+						    ctrl->selected_fields
+							[ENA_ADMIN_RSS_UDP4]
+							    .fields;
+						hw->rss_ip4_fields =
+						    ctrl->selected_fields
+							[ENA_ADMIN_RSS_IP4]
+							    .fields;
+						hw->rss_set_ctrl_count++;
+					}
+					filled = 1;
+				} else if (
+				    feat->feature_id ==
+				    ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG) {
+					uint64_t ctrl_phys =
+					    (uint64_t)feat->ctrl_lo |
+					    ((uint64_t)feat->ctrl_hi << 32);
+					const struct ena_admin_feature_rss_ind_table
+					    *ind_req =
+						(const struct
+						 ena_admin_feature_rss_ind_table
+						     *)feat->raw;
+					const struct
+					    ena_admin_rss_ind_table_entry *tbl =
+						(const struct
+						 ena_admin_rss_ind_table_entry
+						     *)(uintptr_t)ctrl_phys;
+					uint32_t k;
+
+					if (ind_req->size > 7) {
+						status =
+						    ENA_ADMIN_ILLEGAL_PARAMETER;
+					} else {
+						uint32_t count =
+						    1u << ind_req->size;
+						uint8_t out_of_range = 0;
+
+						/* The firmware resolves each
+						 * entry in the RX space. An
+						 * index at or above the number
+						 * of created RX queues is
+						 * invalid. */
+						if (tbl) {
+							for (k = 0; k < count;
+							     k++) {
+								if (tbl[k]
+									.sq_idx >=
+								    hw->next_sq_id_rx) {
+									out_of_range =
+									    1;
+									break;
+								}
+							}
+						}
+
+						if (out_of_range) {
+							status =
+							    ENA_ADMIN_ILLEGAL_PARAMETER;
+						} else {
+							if (tbl) {
+								hw->rss_ind_table_size =
+								    (uint16_t)
+									count;
+								for (k = 0;
+								     k < count;
+								     k++)
+									hw->rss_ind_table
+									    [k] =
+									    tbl[k]
+										.sq_idx;
+								hw->rss_set_ind_count++;
+							}
+							filled = 1;
+						}
+					}
+				} else {
+					status = ENA_ADMIN_ILLEGAL_PARAMETER;
 				}
-			} else {
-				status = ENA_ADMIN_ILLEGAL_PARAMETER;
 			}
 		}
-	}
 	}
 
 	comp->acq_common_desc.status = status;
@@ -527,7 +628,8 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 	if (status == 0 && !filled) {
 		/* Default success payload */
 		for (i = 0; i < 14; i++)
-			comp->response_specific_data[i] = 0x5E5E0000u | (uint32_t)i;
+			comp->response_specific_data[i] =
+			    0x5E5E0000u | (uint32_t)i;
 	}
 }
 
@@ -542,15 +644,18 @@ uint16_t mock_ena_hw_settle_acq_head(struct mock_ena_hw *hw)
 	if (!hw)
 		return 0;
 
-	depth = (uint16_t)(mock_ena_hw_get_reg32(hw, ENA_REGS_ACQ_CAPS_OFF) & 0xFFFFu);
+	depth = (uint16_t)(mock_ena_hw_get_reg32(hw, ENA_REGS_ACQ_CAPS_OFF) &
+			   0xFFFFu);
 	if (depth == 0)
 		depth = 8;
 
 	mask = depth - 1;
-	reg = (uint16_t)(mock_ena_hw_get_reg32(hw, ENA_REGS_ACQ_TAIL_OFF) & mask);
+	reg =
+	    (uint16_t)(mock_ena_hw_get_reg32(hw, ENA_REGS_ACQ_TAIL_OFF) & mask);
 
 	if (reg != hw->last_acq_tail_reg) {
-		delta = (uint16_t)((reg + depth - hw->last_acq_tail_reg) & mask);
+		delta =
+		    (uint16_t)((reg + depth - hw->last_acq_tail_reg) & mask);
 		if (delta == 0)
 			delta = depth;
 		hw->drv_acq_head = (uint16_t)(hw->drv_acq_head + delta);
@@ -585,8 +690,10 @@ void mock_ena_hw_aq_doorbell_hook(void *cookie, uint16_t tail)
 				  ENA_REGS_ACQ_BASE_HI_OFF);
 	hw->dev_aq_base = (uint8_t *)(uintptr_t)aq_phys;
 	hw->dev_acq_base = (uint8_t *)(uintptr_t)acq_phys;
-	hw->dev_aq_depth = (uint16_t)mock_ena_hw_get_reg32(hw, ENA_REGS_AQ_CAPS_OFF);
-	hw->dev_acq_depth = (uint16_t)mock_ena_hw_get_reg32(hw, ENA_REGS_ACQ_CAPS_OFF);
+	hw->dev_aq_depth =
+	    (uint16_t)mock_ena_hw_get_reg32(hw, ENA_REGS_AQ_CAPS_OFF);
+	hw->dev_acq_depth =
+	    (uint16_t)mock_ena_hw_get_reg32(hw, ENA_REGS_ACQ_CAPS_OFF);
 
 	if (!hw->dev_aq_base || !hw->dev_acq_base)
 		return;
@@ -595,18 +702,19 @@ void mock_ena_hw_aq_doorbell_hook(void *cookie, uint16_t tail)
 
 	/* Consume requested AQ entry */
 	aq_idx = (tail - 1) & (hw->dev_aq_depth - 1);
-	req = (const struct ena_admin_aq_entry *)
-	      (hw->dev_aq_base + (size_t)aq_idx * sizeof(*req));
+	req =
+	    (const struct ena_admin_aq_entry *)(hw->dev_aq_base +
+						(size_t)aq_idx * sizeof(*req));
 	hw->last_opcode = req->aq_common_desc.opcode;
 	hw->last_command_id = req->aq_common_desc.command_id & 0x0FFF;
 
 	/* Write ACQ completion at device tail */
 	acq_idx = hw->dev_acq_tail & (hw->dev_acq_depth - 1);
-	comp = (struct ena_admin_acq_entry *)
-	       (hw->dev_acq_base + (size_t)acq_idx * sizeof(*comp));
+	comp = (struct ena_admin_acq_entry *)(hw->dev_acq_base +
+					      (size_t)acq_idx * sizeof(*comp));
 	memset(comp, 0, sizeof(*comp));
 	comp->acq_common_desc.command =
-		hw->inject_bad_cmd_id ? hw->bad_cmd_id : hw->last_command_id;
+	    hw->inject_bad_cmd_id ? hw->bad_cmd_id : hw->last_command_id;
 	comp->acq_common_desc.flags = hw->dev_acq_phase;
 	comp->acq_common_desc.sq_head_indx = 0;
 
@@ -678,7 +786,8 @@ void mock_ena_hw_clear_fake_req_id(struct mock_ena_hw *hw)
 		hw->inject_fake_req_id = 0;
 }
 
-void mock_pci_inject_fault(struct mock_ena_hw *hw, enum mock_pci_fault_type type, uint64_t arg)
+void mock_pci_inject_fault(struct mock_ena_hw *hw,
+			   enum mock_pci_fault_type type, uint64_t arg)
 {
 	if (!hw)
 		return;
@@ -755,14 +864,14 @@ void mock_ena_hw_inject_aenq_payload(struct mock_ena_hw *hw, uint16_t group,
 				   ENA_REGS_AENQ_BASE_HI_OFF);
 	hw->dev_aenq_base = (uint8_t *)(uintptr_t)aenq_phys;
 	hw->dev_aenq_depth =
-		(uint16_t)mock_ena_hw_get_reg32(hw, ENA_REGS_AENQ_CAPS_OFF);
+	    (uint16_t)mock_ena_hw_get_reg32(hw, ENA_REGS_AENQ_CAPS_OFF);
 
 	if (!hw->dev_aenq_base || hw->dev_aenq_depth == 0)
 		return;
 
 	aenq_idx = hw->dev_aenq_tail & (hw->dev_aenq_depth - 1);
-	ev = (struct ena_admin_aenq_entry *)
-	     (hw->dev_aenq_base + (size_t)aenq_idx * sizeof(*ev));
+	ev = (struct ena_admin_aenq_entry *)(hw->dev_aenq_base +
+					     (size_t)aenq_idx * sizeof(*ev));
 	memset(ev, 0, sizeof(*ev));
 	ev->aenq_common_desc.group = group;
 	ev->aenq_common_desc.syndrome = syndrome;
@@ -813,20 +922,24 @@ void mock_ena_hw_emulate_tx(struct mock_ena_hw *hw, struct ena_ring *ring,
 		sq_idx = (ring->sq_head + (uint16_t)i) & (ring->sq_depth - 1);
 
 		if (ring->is_llq && ring->push_buf_virt) {
-			size_t entry_size = ring->llq_entry_size ?
-				ring->llq_entry_size : 128;
+			size_t entry_size =
+			    ring->llq_entry_size ? ring->llq_entry_size : 128;
 
-			slot_desc = (const struct ena_eth_io_tx_desc *)
-				((const uint8_t *)ring->push_buf_virt +
-				 (size_t)sq_idx * entry_size);
-		} else {
 			slot_desc =
-				&((struct ena_eth_io_tx_desc *)ring->sq_virt)[sq_idx];
+			    (const struct ena_eth_io_tx_desc
+				 *)((const uint8_t *)ring->push_buf_virt +
+				    (size_t)sq_idx * entry_size);
+		} else {
+			slot_desc = &(
+			    (struct ena_eth_io_tx_desc *)ring->sq_virt)[sq_idx];
 		}
 
-		req_id = (uint16_t)(((slot_desc->len_ctrl & ENA_ETH_IO_TX_DESC_REQ_ID_HI_MASK) >>
-				     ENA_ETH_IO_TX_DESC_REQ_ID_HI_SHIFT) << 10 |
-				    ((slot_desc->meta_ctrl & ENA_ETH_IO_TX_DESC_REQ_ID_LO_MASK) >>
+		req_id = (uint16_t)(((slot_desc->len_ctrl &
+				      ENA_ETH_IO_TX_DESC_REQ_ID_HI_MASK) >>
+				     ENA_ETH_IO_TX_DESC_REQ_ID_HI_SHIFT)
+					<< 10 |
+				    ((slot_desc->meta_ctrl &
+				      ENA_ETH_IO_TX_DESC_REQ_ID_LO_MASK) >>
 				     ENA_ETH_IO_TX_DESC_REQ_ID_LO_SHIFT));
 
 		if (hw->inject_fake_req_id)
@@ -838,10 +951,12 @@ void mock_ena_hw_emulate_tx(struct mock_ena_hw *hw, struct ena_ring *ring,
 		cq_descs[cq_idx].status = 0;
 		cq_descs[cq_idx].flags = hw->io_tx_cq_state[qid].cq_phase;
 		cq_descs[cq_idx].sub_qid = ena_cpu_to_le16(ring->qid);
-		cq_descs[cq_idx].sq_head_idx = ena_cpu_to_le16((sq_idx + 1) & (ring->sq_depth - 1));
+		cq_descs[cq_idx].sq_head_idx =
+		    ena_cpu_to_le16((sq_idx + 1) & (ring->sq_depth - 1));
 
 		hw->io_tx_cq_state[qid].cq_tail++;
-		if ((hw->io_tx_cq_state[qid].cq_tail & (ring->cq_depth - 1)) == 0)
+		if ((hw->io_tx_cq_state[qid].cq_tail & (ring->cq_depth - 1)) ==
+		    0)
 			hw->io_tx_cq_state[qid].cq_phase ^= 1;
 	}
 }
@@ -879,23 +994,30 @@ void mock_ena_hw_emulate_rx(struct mock_ena_hw *hw, struct ena_ring *ring,
 		cq_idx = hw->io_rx_cq_state[qid].cq_tail & (ring->cq_depth - 1);
 		memset(&cq_descs[cq_idx], 0, sizeof(cq_descs[cq_idx]));
 
-		uint32_t first_last_flags = (status_flags & (ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK | ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK));
+		uint32_t first_last_flags =
+		    (status_flags & (ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK |
+				     ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK));
 		if (first_last_flags == 0)
-			first_last_flags = ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK | ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK;
+			first_last_flags = ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK |
+					   ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK;
 
-		status = ((uint32_t)hw->io_rx_cq_state[qid].cq_phase << ENA_ETH_IO_RX_CDESC_BASE_PHASE_SHIFT);
+		status = ((uint32_t)hw->io_rx_cq_state[qid].cq_phase
+			  << ENA_ETH_IO_RX_CDESC_BASE_PHASE_SHIFT);
 		status |= first_last_flags | status_flags;
 
 		cq_descs[cq_idx].status = ena_cpu_to_le32(status);
-		cq_descs[cq_idx].length = ena_cpu_to_le16(hw->inject_corrupt_len ? hw->corrupt_len : pkt_len);
+		cq_descs[cq_idx].length = ena_cpu_to_le16(
+		    hw->inject_corrupt_len ? hw->corrupt_len : pkt_len);
 		cq_descs[cq_idx].req_id = ena_cpu_to_le16(req_id);
 		cq_descs[cq_idx].hash = ena_cpu_to_le32(hash);
 		cq_descs[cq_idx].sub_qid = ena_cpu_to_le16(ring->qid);
 
 		hw->io_rx_cq_state[qid].cq_tail++;
-		if ((hw->io_rx_cq_state[qid].cq_tail & (ring->cq_depth - 1)) == 0)
+		if ((hw->io_rx_cq_state[qid].cq_tail & (ring->cq_depth - 1)) ==
+		    0)
 			hw->io_rx_cq_state[qid].cq_phase ^= 1;
 	}
 
-	ring->sq_head = (uint16_t)((ring->sq_head + (uint16_t)count) & (ring->sq_depth - 1));
+	ring->sq_head = (uint16_t)((ring->sq_head + (uint16_t)count) &
+				   (ring->sq_depth - 1));
 }

@@ -23,7 +23,8 @@
 #include <uk/netbuf.h>
 #else
 struct uk_netbuf;
-typedef uint16_t (*uk_netdev_alloc_rxpkts)(void *argp, struct uk_netbuf *pkts[], uint16_t count);
+typedef uint16_t (*uk_netdev_alloc_rxpkts)(void *argp, struct uk_netbuf *pkts[],
+					   uint16_t count);
 #endif
 
 struct uk_netdev_rx_queue {
@@ -80,8 +81,7 @@ struct ena_uk_device {
 	uint16_t uid;
 };
 
-#define to_enadevice(ndev) \
-	__containerof(ndev, struct ena_uk_device, netdev)
+#define to_enadevice(ndev) __containerof(ndev, struct ena_uk_device, netdev)
 
 extern const struct uk_netdev_ops ena_ops;
 
@@ -91,9 +91,11 @@ extern const struct uk_netdev_ops ena_ops;
  * @param dev Pointer to the network device.
  * @param queue Pointer to the RX queue structure.
  * @param pkt Pointer where the received network buffer is stored.
- * @return Positive status flag on packet receipt, 0 if queue is empty, or negative errno on error.
+ * @return Positive status flag on packet receipt, 0 if queue is empty, or
+ * negative errno on error.
  */
-int ena_netdev_rx_one(struct uk_netdev *dev, struct uk_netdev_rx_queue *queue, struct uk_netbuf **pkt);
+int ena_netdev_rx_one(struct uk_netdev *dev, struct uk_netdev_rx_queue *queue,
+		      struct uk_netbuf **pkt);
 
 /**
  * Transmit a single packet on the specified TX queue (Unikraft native mode).
@@ -103,7 +105,8 @@ int ena_netdev_rx_one(struct uk_netdev *dev, struct uk_netdev_rx_queue *queue, s
  * @param pkt Pointer to the network buffer to transmit.
  * @return 0 on success, or a negative errno value on error.
  */
-int ena_netdev_tx_one(struct uk_netdev *dev, struct uk_netdev_tx_queue *queue, struct uk_netbuf *pkt);
+int ena_netdev_tx_one(struct uk_netdev *dev, struct uk_netdev_tx_queue *queue,
+		      struct uk_netbuf *pkt);
 
 /**
  * Get the current link state from the AENQ LINK_CHANGE events.
@@ -146,12 +149,13 @@ void ena_pci_remove_dev(struct pci_device *pdev);
 /* Network device operating states */
 enum uk_netdev_state {
 	UK_NETDEV_UNCONFIGURED = 0,
-	UK_NETDEV_CONFIGURED   = 1,
-	UK_NETDEV_RUNNING      = 2,
-	UK_NETDEV_STOPPED      = 3,
+	UK_NETDEV_CONFIGURED = 1,
+	UK_NETDEV_RUNNING = 2,
+	UK_NETDEV_STOPPED = 3,
 };
 
 /* Feature flags */
+// clang-format off
 #define UK_NETDEV_F_RXQ_INTR       (1UL << 0)
 #define UK_NETDEV_F_TXQ_INTR       (1UL << 1)
 #define UK_NETDEV_F_PARTIAL_CSUM   (1UL << 2)
@@ -161,12 +165,13 @@ enum uk_netdev_state {
 #define UK_NETBUF_F_DATA_VALID     (1 << 0)
 #define UK_NETBUF_F_PARTIAL_CSUM   (1 << 1)
 #define UK_NETBUF_F_GSO_TCPV4      (1 << 2)
+// clang-format on
 
 #ifndef UK_NETDEV_STATUS_SUCCESS
-#define UK_NETDEV_STATUS_SUCCESS  (0x1)
+#define UK_NETDEV_STATUS_SUCCESS (0x1)
 #endif
 #ifndef UK_NETDEV_STATUS_MORE
-#define UK_NETDEV_STATUS_MORE     (0x2)
+#define UK_NETDEV_STATUS_MORE (0x2)
 #endif
 #ifndef UK_NETDEV_STATUS_UNDERRUN
 #define UK_NETDEV_STATUS_UNDERRUN (0x4)
@@ -179,7 +184,7 @@ struct uk_netdev_info {
 	uint16_t max_mtu;
 	uint16_t min_mtu;
 	uint16_t mtu;
-	uint8_t  hwaddr[UK_NETDEV_MAC_ADDR_LEN];
+	uint8_t hwaddr[UK_NETDEV_MAC_ADDR_LEN];
 	uint32_t features;
 };
 
@@ -187,7 +192,7 @@ struct uk_netdev_info {
 struct uk_netdev_conf {
 	uint16_t nb_rx_queues;
 	uint16_t nb_tx_queues;
-	uint8_t  lro;
+	uint8_t lro;
 };
 
 /* Queue configuration */
@@ -224,15 +229,20 @@ struct uk_netdev;
 /* Unikraft netdev driver operations */
 struct uk_netdev_ops {
 	int (*info_get)(struct uk_netdev *dev, struct uk_netdev_info *info);
-	int (*configure)(struct uk_netdev *dev, const struct uk_netdev_conf *conf);
+	int (*configure)(struct uk_netdev *dev,
+			 const struct uk_netdev_conf *conf);
 	int (*rxq_configure)(struct uk_netdev *dev, uint16_t queue_id,
-			     uint16_t nb_desc, const struct uk_netdev_rxqueue_conf *conf);
+			     uint16_t nb_desc,
+			     const struct uk_netdev_rxqueue_conf *conf);
 	int (*txq_configure)(struct uk_netdev *dev, uint16_t queue_id,
-			     uint16_t nb_desc, const struct uk_netdev_txqueue_conf *conf);
+			     uint16_t nb_desc,
+			     const struct uk_netdev_txqueue_conf *conf);
 	int (*dev_start)(struct uk_netdev *dev);
 	int (*dev_stop)(struct uk_netdev *dev);
-	int (*rxq_recv)(struct uk_netdev *dev, uint16_t queue_id, struct uk_netbuf **pkt);
-	int (*txq_xmit)(struct uk_netdev *dev, uint16_t queue_id, struct uk_netbuf *pkt);
+	int (*rxq_recv)(struct uk_netdev *dev, uint16_t queue_id,
+			struct uk_netbuf **pkt);
+	int (*txq_xmit)(struct uk_netdev *dev, uint16_t queue_id,
+			struct uk_netbuf *pkt);
 	int (*link_state_get)(struct uk_netdev *dev);
 };
 
@@ -253,7 +263,8 @@ struct uk_netdev {
  * Allocate and initialize a network device structure for an ENA adapter.
  *
  * @param adapter Pointer to the master ENA adapter.
- * @return Pointer to the allocated network device, or NULL on allocation failure.
+ * @return Pointer to the allocated network device, or NULL on allocation
+ * failure.
  */
 struct uk_netdev *ena_netdev_alloc(struct ena_adapter *adapter);
 
@@ -330,10 +341,9 @@ void ena_netdev_aen_report(struct uk_netdev *dev, uint32_t *count,
  * @param eni_valid Set to 1 when eni holds values (may be NULL).
  * @return 0 on success, or a negative errno value on error.
  */
-int ena_netdev_dev_stats(struct uk_netdev *dev,
-			 uint64_t *rx_drops, uint64_t *tx_drops,
-			 uint64_t *rx_pkts, uint64_t *tx_pkts,
-			 uint64_t *eni, int *eni_valid);
+int ena_netdev_dev_stats(struct uk_netdev *dev, uint64_t *rx_drops,
+			 uint64_t *tx_drops, uint64_t *rx_pkts,
+			 uint64_t *tx_pkts, uint64_t *eni, int *eni_valid);
 
 uint64_t ena_netdev_rx_refill_err(struct uk_netdev *dev, uint16_t qid);
 uint64_t ena_netdev_rx_dropped(struct uk_netdev *dev, uint16_t qid);
@@ -360,4 +370,3 @@ void ena_netdev_rearm_cq_intr(struct uk_netdev *dev, uint16_t qid);
 unsigned long ena_netdev_txq_pkts(struct uk_netdev *dev, uint16_t qid);
 
 #endif /* LIBENA_ENA_NETDEV_H */
-

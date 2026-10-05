@@ -8,16 +8,19 @@
 #define LIBENA_ENA_REGS_H
 
 /* Amazon PCI Vendor ID */
-#define ENA_PCI_VENDOR_ID                   0x1D0Fu
+#define ENA_PCI_VENDOR_ID 0x1D0Fu
 
 /* Supported ENA PCI Device IDs */
+// clang-format off
 #define ENA_PCI_DEV_ID_RESERVED             0x0051u
 #define ENA_PCI_DEV_ID_PF                   0x0EC2u
 #define ENA_PCI_DEV_ID_LLQ_PF               0x1EC2u
 #define ENA_PCI_DEV_ID_VF                   0xEC20u
 #define ENA_PCI_DEV_ID_LLQ_VF               0xEC21u
+// clang-format on
 
 /* ENA MMIO BAR0 Register Offsets */
+// clang-format off
 #define ENA_REGS_VERSION_OFF                0x00u
 #define ENA_REGS_CONTROLLER_VERSION_OFF     0x04u
 #define ENA_REGS_CAPS_OFF                   0x08u
@@ -43,35 +46,40 @@
 #define ENA_REGS_MMIO_RESP_HI_OFF           0x64u
 #define ENA_REGS_RSS_IND_ENTRY_UPDATE_OFF   0x68u
 #define ENA_REGS_PHC_DB_OFF                 0x100u
+// clang-format on
 
 /* AQ CAPS register: bits 15:0 depth, bits 31:16 entry size in bytes. */
-#define ENA_REGS_AQ_CAPS_AQ_DEPTH_MASK            0x0000FFFFu
-#define ENA_REGS_AQ_CAPS_AQ_ENTRY_SIZE_SHIFT      16
-#define ENA_REGS_AQ_CAPS_AQ_ENTRY_SIZE_MASK       0xFFFF0000u
+#define ENA_REGS_AQ_CAPS_AQ_DEPTH_MASK 0x0000FFFFu
+#define ENA_REGS_AQ_CAPS_AQ_ENTRY_SIZE_SHIFT 16
+#define ENA_REGS_AQ_CAPS_AQ_ENTRY_SIZE_MASK 0xFFFF0000u
 
 /* ACQ CAPS register: bits 15:0 depth, bits 31:16 entry size in bytes. */
-#define ENA_REGS_ACQ_CAPS_ACQ_DEPTH_MASK          0x0000FFFFu
-#define ENA_REGS_ACQ_CAPS_ACQ_ENTRY_SIZE_SHIFT    16
-#define ENA_REGS_ACQ_CAPS_ACQ_ENTRY_SIZE_MASK     0xFFFF0000u
+#define ENA_REGS_ACQ_CAPS_ACQ_DEPTH_MASK 0x0000FFFFu
+#define ENA_REGS_ACQ_CAPS_ACQ_ENTRY_SIZE_SHIFT 16
+#define ENA_REGS_ACQ_CAPS_ACQ_ENTRY_SIZE_MASK 0xFFFF0000u
 
 /* AENQ CAPS register: bits 15:0 depth, bits 31:16 entry size in bytes. */
-#define ENA_REGS_AENQ_CAPS_AENQ_DEPTH_MASK        0x0000FFFFu
-#define ENA_REGS_AENQ_CAPS_AENQ_ENTRY_SIZE_SHIFT  16
-#define ENA_REGS_AENQ_CAPS_AENQ_ENTRY_SIZE_MASK   0xFFFF0000u
+#define ENA_REGS_AENQ_CAPS_AENQ_DEPTH_MASK 0x0000FFFFu
+#define ENA_REGS_AENQ_CAPS_AENQ_ENTRY_SIZE_SHIFT 16
+#define ENA_REGS_AENQ_CAPS_AENQ_ENTRY_SIZE_MASK 0xFFFF0000u
 
 /* Device Control Register Masks */
+// clang-format off
 #define ENA_DEV_CTL_DEV_RESET_MASK          0x00000001u
 #define ENA_DEV_CTL_AQ_RESTART_MASK         0x00000002u
 #define ENA_DEV_CTL_QUIESCENT_MASK          0x00000004u
 #define ENA_DEV_CTL_RESET_REASON_SHIFT      28
 #define ENA_DEV_CTL_RESET_REASON_MASK       0xF0000000u
+// clang-format on
 
 /* Device Status Register Masks */
-#define ENA_DEV_STS_READY_MASK              0x00000001u
+#define ENA_DEV_STS_READY_MASK 0x00000001u
 #define ENA_DEV_STS_AQ_RESTART_IN_PROG_MASK 0x00000002u
+// clang-format off
 #define ENA_DEV_STS_AQ_RESTART_FIN_MASK     0x00000004u
 #define ENA_DEV_STS_RESET_IN_PROG_MASK      0x00000008u
 #define ENA_DEV_STS_RESET_FIN_MASK          0x00000010u
 #define ENA_DEV_STS_FATAL_ERROR_MASK        0x00000020u
+// clang-format on
 
 #endif /* LIBENA_ENA_REGS_H */

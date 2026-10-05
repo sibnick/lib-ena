@@ -25,7 +25,8 @@ static int setup_adapter(struct mock_ena_hw *hw, struct ena_adapter *adapter)
 	return ena_admin_init(adapter, 8, 8, 8);
 }
 
-static void *mock_alloc_netbuf_helper(void *arg, uint64_t *phys_out, uint32_t *len_out)
+static void *mock_alloc_netbuf_helper(void *arg, uint64_t *phys_out,
+				      uint32_t *len_out)
 {
 	static uint64_t next_phys = 0x1000000;
 	(void)arg;
@@ -46,10 +47,12 @@ static void test_rx_submit_one_basic(void)
 	const struct ena_eth_io_rx_desc *desc;
 
 	memset(&adapter, 0, sizeof(adapter));
-	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 16, 16, &ring) == 0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 16, 16, &ring) ==
+	       0);
 	assert(ena_rx_free_space(ring) == 16);
 
-	assert(ena_rx_submit_one(ring, (void *)0xCAFEBABE, 0x0000000240008000ULL, 2048, &req_id) == 0);
+	assert(ena_rx_submit_one(ring, (void *)0xCAFEBABE,
+				 0x0000000240008000ULL, 2048, &req_id) == 0);
 	assert(req_id == 0);
 	assert(ring->sq_tail == 1);
 	assert(ena_rx_free_space(ring) == 15);
@@ -86,7 +89,8 @@ static void test_rx_refill_batch(void)
 	memset(&adapter, 0, sizeof(adapter));
 	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 8, 8, &ring) == 0);
 
-	assert(ena_rx_refill(ring, 8, mock_alloc_netbuf_helper, NULL, &refilled) == 8);
+	assert(ena_rx_refill(ring, 8, mock_alloc_netbuf_helper, NULL,
+			     &refilled) == 8);
 	assert(refilled == 8);
 	assert(ring->sq_tail == 8);
 	assert((ring->sq_tail & (ring->sq_depth - 1)) == 0);
@@ -94,7 +98,8 @@ static void test_rx_refill_batch(void)
 	assert(ena_rx_free_space(ring) == 0);
 
 	/* Further refill returns 0 (ring full) */
-	assert(ena_rx_refill(ring, 8, mock_alloc_netbuf_helper, NULL, &refilled) == 0);
+	assert(ena_rx_refill(ring, 8, mock_alloc_netbuf_helper, NULL,
+			     &refilled) == 0);
 	assert(refilled == 0);
 
 	ena_ring_free(ring);
@@ -111,7 +116,8 @@ static void test_rx_doorbell(void)
 	uint16_t req_id;
 
 	assert(setup_adapter(&hw, &adapter) == 0);
-	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 16, 16, &ring) == 0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 16, 16, &ring) ==
+	       0);
 	assert(ena_ring_create_hw(ring, 0) == 0);
 
 	/* Submit 5 buffers */
@@ -148,7 +154,8 @@ static void test_rx_poll_completions(void)
 	assert(ena_ring_create_hw(ring, 0) == 0);
 
 	/* Populate 4 buffers */
-	assert(ena_rx_refill(ring, 4, mock_alloc_netbuf_helper, NULL, &refilled) == 4);
+	assert(ena_rx_refill(ring, 4, mock_alloc_netbuf_helper, NULL,
+			     &refilled) == 4);
 	assert(ena_rx_free_space(ring) == 4);
 
 	/* Mock receives 2 packets */
@@ -210,10 +217,12 @@ static void test_rx_checksum_and_frag_flags(void)
 	assert(ena_ring_create_hw(ring, 0) == 0);
 
 	/* Populate 3 buffers */
-	assert(ena_rx_refill(ring, 3, mock_alloc_netbuf_helper, NULL, &refilled) == 3);
+	assert(ena_rx_refill(ring, 3, mock_alloc_netbuf_helper, NULL,
+			     &refilled) == 3);
 
 	/* Packet 1: Checksum checked and OK */
-	mock_ena_hw_emulate_rx(&hw, ring, 1, 64, 0, ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK);
+	mock_ena_hw_emulate_rx(&hw, ring, 1, 64, 0,
+			       ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK);
 	assert(ena_rx_poll(ring, pkts, 1) == 1);
 	assert(pkts[0].l4_csum_checked == true);
 	assert(pkts[0].l4_csum_err == false);
@@ -221,10 +230,11 @@ static void test_rx_checksum_and_frag_flags(void)
 	assert(pkts[0].frag == false);
 
 	/* Packet 2: L3 & L4 Checksum error */
-	mock_ena_hw_emulate_rx(&hw, ring, 1, 128, 0,
-			       ENA_ETH_IO_RX_CDESC_BASE_L3_CSUM_ERR_MASK |
-			       ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_ERR_MASK |
-			       ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK);
+	mock_ena_hw_emulate_rx(
+	    &hw, ring, 1, 128, 0,
+	    ENA_ETH_IO_RX_CDESC_BASE_L3_CSUM_ERR_MASK |
+		ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_ERR_MASK |
+		ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK);
 	assert(ena_rx_poll(ring, pkts, 1) == 1);
 	assert(pkts[0].l3_csum_err == true);
 	assert(pkts[0].l4_csum_err == true);
@@ -232,7 +242,8 @@ static void test_rx_checksum_and_frag_flags(void)
 	assert(pkts[0].frag == false);
 
 	/* Packet 3: Fragmented packet */
-	mock_ena_hw_emulate_rx(&hw, ring, 1, 256, 0, ENA_ETH_IO_RX_CDESC_BASE_IPV4_FRAG_MASK);
+	mock_ena_hw_emulate_rx(&hw, ring, 1, 256, 0,
+			       ENA_ETH_IO_RX_CDESC_BASE_IPV4_FRAG_MASK);
 	assert(ena_rx_poll(ring, pkts, 1) == 1);
 	assert(pkts[0].frag == true);
 
@@ -259,7 +270,8 @@ static void test_rx_phase_flip_multicycle(void)
 	assert(ena_ring_create_hw(ring, 0) == 0);
 
 	/* Cycle 1: Submit 4 buffers (phase = 1) */
-	assert(ena_rx_refill(ring, 4, mock_alloc_netbuf_helper, NULL, &refilled) == 4);
+	assert(ena_rx_refill(ring, 4, mock_alloc_netbuf_helper, NULL,
+			     &refilled) == 4);
 	assert(ring->sq_tail == 4);
 	assert((ring->sq_tail & (ring->sq_depth - 1)) == 0);
 	assert(ring->sq_phase == 0); /* flipped */
@@ -272,7 +284,8 @@ static void test_rx_phase_flip_multicycle(void)
 	assert(ring->cq_phase == 0); /* flipped */
 
 	/* Cycle 2: Submit 4 buffers (phase = 0) */
-	assert(ena_rx_refill(ring, 4, mock_alloc_netbuf_helper, NULL, &refilled) == 4);
+	assert(ena_rx_refill(ring, 4, mock_alloc_netbuf_helper, NULL,
+			     &refilled) == 4);
 	desc = (const struct ena_eth_io_rx_desc *)ring->sq_virt;
 	assert(!(desc[0].ctrl & ENA_ETH_IO_RX_DESC_PHASE_MASK)); /* Phase 0 */
 	assert(ring->sq_tail == 8);
@@ -304,20 +317,28 @@ static void test_rx_invalid_args(void)
 	uint16_t req_id;
 
 	memset(&adapter, 0, sizeof(adapter));
-	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8, &tx_ring) == 0);
-	assert(ena_ring_alloc(&adapter, 1, ENA_RING_TYPE_RX, 8, 8, &rx_ring) == 0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8, &tx_ring) ==
+	       0);
+	assert(ena_ring_alloc(&adapter, 1, ENA_RING_TYPE_RX, 8, 8, &rx_ring) ==
+	       0);
 
 	/* Null ring or buffer */
-	assert(ena_rx_submit_one(NULL, (void *)1, 0x1000, 1500, &req_id) == -EINVAL);
-	assert(ena_rx_submit_one(rx_ring, NULL, 0x1000, 1500, &req_id) == -EINVAL);
+	assert(ena_rx_submit_one(NULL, (void *)1, 0x1000, 1500, &req_id) ==
+	       -EINVAL);
+	assert(ena_rx_submit_one(rx_ring, NULL, 0x1000, 1500, &req_id) ==
+	       -EINVAL);
 
 	/* Invalid length */
-	assert(ena_rx_submit_one(rx_ring, (void *)1, 0x1000, 0, &req_id) == -EINVAL);
-	assert(ena_rx_submit_one(rx_ring, (void *)1, 0x1000, 0x10000, &req_id) == -EINVAL);
+	assert(ena_rx_submit_one(rx_ring, (void *)1, 0x1000, 0, &req_id) ==
+	       -EINVAL);
+	assert(ena_rx_submit_one(rx_ring, (void *)1, 0x1000, 0x10000,
+				 &req_id) == -EINVAL);
 
 	/* Wrong ring type */
-	assert(ena_rx_submit_one(tx_ring, (void *)1, 0x1000, 1500, &req_id) == -EINVAL);
-	assert(ena_rx_refill(tx_ring, 4, mock_alloc_netbuf_helper, NULL, NULL) == -EINVAL);
+	assert(ena_rx_submit_one(tx_ring, (void *)1, 0x1000, 1500, &req_id) ==
+	       -EINVAL);
+	assert(ena_rx_refill(tx_ring, 4, mock_alloc_netbuf_helper, NULL,
+			     NULL) == -EINVAL);
 	assert(ena_rx_poll(tx_ring, pkts, 4) == -EINVAL);
 
 	ena_ring_free(tx_ring);
@@ -340,16 +361,19 @@ static void test_rx_multi_descriptor_flags(void)
 	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 8, 8, &ring) == 0);
 	assert(ena_ring_create_hw(ring, 0) == 0);
 
-	assert(ena_rx_refill(ring, 2, mock_alloc_netbuf_helper, NULL, &refilled) == 2);
+	assert(ena_rx_refill(ring, 2, mock_alloc_netbuf_helper, NULL,
+			     &refilled) == 2);
 
 	/* First segment of multi-descriptor packet */
-	mock_ena_hw_emulate_rx(&hw, ring, 1, 1500, 0, ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK);
+	mock_ena_hw_emulate_rx(&hw, ring, 1, 1500, 0,
+			       ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK);
 	assert(ena_rx_poll(ring, pkts, 1) == 1);
 	assert(pkts[0].first == true);
 	assert(pkts[0].last == false);
 
 	/* Last segment of multi-descriptor packet */
-	mock_ena_hw_emulate_rx(&hw, ring, 1, 500, 0, ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK);
+	mock_ena_hw_emulate_rx(&hw, ring, 1, 500, 0,
+			       ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK);
 	assert(ena_rx_poll(ring, pkts, 1) == 1);
 	assert(pkts[0].first == false);
 	assert(pkts[0].last == true);
@@ -363,7 +387,8 @@ static void test_rx_multi_descriptor_flags(void)
 
 static void test_rx_doorbell_rearm_across_wrap_and_idle(void)
 {
-	printf("[TEST] Running test_rx_doorbell_rearm_across_wrap_and_idle...\n");
+	printf(
+	    "[TEST] Running test_rx_doorbell_rearm_across_wrap_and_idle...\n");
 
 	struct mock_ena_hw hw;
 	struct ena_adapter adapter;
@@ -376,7 +401,8 @@ static void test_rx_doorbell_rearm_across_wrap_and_idle(void)
 	assert(ena_ring_create_hw(ring, 0) == 0);
 
 	/* Fill the ring. The doorbell must carry the submission pointer. */
-	assert(ena_rx_refill(ring, 8, mock_alloc_netbuf_helper, NULL, &refilled) == 8);
+	assert(ena_rx_refill(ring, 8, mock_alloc_netbuf_helper, NULL,
+			     &refilled) == 8);
 	assert(ring->sq_tail == 8);
 	assert(mock_ena_hw_get_reg32(&hw, ring->sq_db_offset) == 8);
 
@@ -384,7 +410,8 @@ static void test_rx_doorbell_rearm_across_wrap_and_idle(void)
 	 * doorbell value tracks the unmasked submission pointer. */
 	mock_ena_hw_emulate_rx(&hw, ring, 8, 100, 0, 0);
 	assert(ena_rx_poll(ring, pkts, 8) == 8);
-	assert(ena_rx_refill(ring, 8, mock_alloc_netbuf_helper, NULL, &refilled) == 8);
+	assert(ena_rx_refill(ring, 8, mock_alloc_netbuf_helper, NULL,
+			     &refilled) == 8);
 	assert(ring->sq_tail == 16);
 	assert(ring->sq_phase == 1);
 	assert(mock_ena_hw_get_reg32(&hw, ring->sq_db_offset) == 16);
@@ -394,7 +421,8 @@ static void test_rx_doorbell_rearm_across_wrap_and_idle(void)
 	 * device never re-arms its RX fetch after the idle period.
 	 * The sentinel shows whether a doorbell write happened. */
 	mock_ena_hw_set_reg32(&hw, ring->sq_db_offset, 0xDEADBEEFu);
-	assert(ena_rx_refill(ring, 0, mock_alloc_netbuf_helper, NULL, &refilled) == 0);
+	assert(ena_rx_refill(ring, 0, mock_alloc_netbuf_helper, NULL,
+			     &refilled) == 0);
 	assert(refilled == 0);
 	assert(mock_ena_hw_get_reg32(&hw, ring->sq_db_offset) == ring->sq_tail);
 
@@ -403,7 +431,8 @@ static void test_rx_doorbell_rearm_across_wrap_and_idle(void)
 	 * submission pointer. */
 	mock_ena_hw_emulate_rx(&hw, ring, 1, 120, 0, 0);
 	assert(ena_rx_poll(ring, pkts, 1) == 1);
-	assert(ena_rx_refill(ring, 1, mock_alloc_netbuf_helper, NULL, &refilled) == 1);
+	assert(ena_rx_refill(ring, 1, mock_alloc_netbuf_helper, NULL,
+			     &refilled) == 1);
 	assert(ring->sq_tail == 17);
 	assert(mock_ena_hw_get_reg32(&hw, ring->sq_db_offset) == 17);
 

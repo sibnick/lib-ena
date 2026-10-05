@@ -26,21 +26,21 @@ struct ena_adapter;
 /* RSS hash functions (reference/ena_admin_defs.h). */
 enum ena_admin_hash_functions {
 	ENA_ADMIN_TOEPLITZ = 1,
-	ENA_ADMIN_CRC32    = 2,
+	ENA_ADMIN_CRC32 = 2,
 };
 
 /* RSS flow hash protocols (reference/ena_admin_defs.h). */
 enum ena_admin_flow_hash_proto {
-	ENA_ADMIN_RSS_TCP4      = 0,
-	ENA_ADMIN_RSS_UDP4      = 1,
-	ENA_ADMIN_RSS_TCP6      = 2,
-	ENA_ADMIN_RSS_UDP6      = 3,
-	ENA_ADMIN_RSS_IP4       = 4,
-	ENA_ADMIN_RSS_IP6       = 5,
-	ENA_ADMIN_RSS_IP4_FRAG  = 6,
-	ENA_ADMIN_RSS_NOT_IP    = 7,
-	ENA_ADMIN_RSS_TCP6_EX   = 8,
-	ENA_ADMIN_RSS_IP6_EX    = 9,
+	ENA_ADMIN_RSS_TCP4 = 0,
+	ENA_ADMIN_RSS_UDP4 = 1,
+	ENA_ADMIN_RSS_TCP6 = 2,
+	ENA_ADMIN_RSS_UDP6 = 3,
+	ENA_ADMIN_RSS_IP4 = 4,
+	ENA_ADMIN_RSS_IP6 = 5,
+	ENA_ADMIN_RSS_IP4_FRAG = 6,
+	ENA_ADMIN_RSS_NOT_IP = 7,
+	ENA_ADMIN_RSS_TCP6_EX = 8,
+	ENA_ADMIN_RSS_IP6_EX = 9,
 	ENA_ADMIN_RSS_PROTO_NUM = 16,
 };
 
@@ -76,8 +76,8 @@ struct ena_admin_feature_rss_flow_hash_input {
 	uint16_t enabled_input_sort;
 };
 
-#define ENA_ADMIN_FEATURE_RSS_FLOW_HASH_INPUT_L3_SORT_MASK	0x02
-#define ENA_ADMIN_FEATURE_RSS_FLOW_HASH_INPUT_L4_SORT_MASK	0x04
+#define ENA_ADMIN_FEATURE_RSS_FLOW_HASH_INPUT_L3_SORT_MASK 0x02
+#define ENA_ADMIN_FEATURE_RSS_FLOW_HASH_INPUT_L4_SORT_MASK 0x04
 
 /* Flow hash field entry per protocol. */
 struct ena_admin_proto_input {
@@ -149,7 +149,8 @@ void ena_rss_fini(struct ena_adapter *adapter);
  * @param key_len Length of key in bytes (must be 40 bytes if key != NULL).
  * @return 0 on success, or a negative errno value on error.
  */
-int ena_rss_set_hash_key(struct ena_adapter *adapter, const uint8_t *key, size_t key_len);
+int ena_rss_set_hash_key(struct ena_adapter *adapter, const uint8_t *key,
+			 size_t key_len);
 
 /**
  * Program the flow hash fields (4-tuple for TCP/IPv4) to the device.
@@ -169,7 +170,8 @@ int ena_rss_set_hash_ctrl(struct ena_adapter *adapter);
 int ena_rss_set_ind_table(struct ena_adapter *adapter, uint16_t num_queues);
 
 /**
- * Run full RSS configuration sequence (hash key, hash fields, indirection table).
+ * Run full RSS configuration sequence (hash key, hash fields, indirection
+ * table).
  *
  * @param adapter Pointer to the master ENA adapter structure.
  * @param num_queues Number of active RX queues to distribute over.

@@ -30,7 +30,10 @@ ENA_SRCS_P9 = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena
 ENA_SRCS_ALL = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena_init.c src/ena_datapath.c src/ena_tx.c src/ena_rx.c src/ena_netdev.c src/ena_intr.c src/ena_llq.c src/ena_rss.c
 ENA_HDRS = include/ena.h include/ena_regs.h include/ena_plat.h include/ena_admin.h include/ena_init.h include/ena_datapath.h include/ena_netdev.h include/ena_intr.h include/ena_llq.h include/ena_rss.h
 
-.PHONY: all test sanitize test-sanitize clean
+CLANG_FORMAT ?= clang-format
+FORMAT_SRCS = $(shell find src include tests -name '*.c' -o -name '*.h' | sort)
+
+.PHONY: all test sanitize test-sanitize format format-check clean
 
 all: test
 
@@ -102,6 +105,16 @@ $(TEST11): tests/test_spsc.c samples/httpreply-mc/spsc.h
 $(TEST12): tests/test_idlebackoff.c samples/httpreply-mc/idlebackoff.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -Isamples/httpreply-mc -o $@ tests/test_idlebackoff.c
+
+# Rewrite the C sources in place with the style in .clang-format at the repo
+# root. Aligned #define tables sit inside "clang-format off" guards, so the
+# formatter keeps their column layout.
+format:
+	$(CLANG_FORMAT) -i $(FORMAT_SRCS)
+
+# Fail when a source file does not match the style. Use this in CI.
+format-check:
+	$(CLANG_FORMAT) --dry-run --Werror $(FORMAT_SRCS)
 
 clean:
 	rm -rf $(BUILD)

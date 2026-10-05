@@ -65,8 +65,8 @@ int ena_init_get_device_attributes(struct ena_adapter *adapter)
 }
 
 #define ENA_SPEC_MAX_QUEUES 256
-#define ENA_SPEC_MAX_DEPTH  4096
-#define ENA_SPEC_MIN_DEPTH  4
+#define ENA_SPEC_MAX_DEPTH 4096
+#define ENA_SPEC_MIN_DEPTH 4
 
 static uint16_t clamp_queue_depth(uint32_t raw_depth)
 {
@@ -139,9 +139,12 @@ int ena_init_get_queue_limits(struct ena_adapter *adapter)
 	if (clamp_queue_depth(raw_cq_depth) < max_rx_depth)
 		max_rx_depth = clamp_queue_depth(raw_cq_depth);
 
-	if (raw_sq_num > ENA_SPEC_MAX_QUEUES || raw_cq_num > ENA_SPEC_MAX_QUEUES ||
-	    raw_sq_depth > ENA_SPEC_MAX_DEPTH || raw_cq_depth > ENA_SPEC_MAX_DEPTH) {
-		ena_info("queue limits clamped from raw sq_num=%u cq_num=%u sq_depth=%u cq_depth=%u",
+	if (raw_sq_num > ENA_SPEC_MAX_QUEUES ||
+	    raw_cq_num > ENA_SPEC_MAX_QUEUES ||
+	    raw_sq_depth > ENA_SPEC_MAX_DEPTH ||
+	    raw_cq_depth > ENA_SPEC_MAX_DEPTH) {
+		ena_info("queue limits clamped from raw sq_num=%u cq_num=%u "
+			 "sq_depth=%u cq_depth=%u",
 			 raw_sq_num, raw_cq_num, raw_sq_depth, raw_cq_depth);
 	}
 
@@ -153,7 +156,8 @@ int ena_init_get_queue_limits(struct ena_adapter *adapter)
 	adapter->max_packet_tx_descs = q->max_packet_tx_descs;
 	adapter->max_packet_rx_descs = q->max_packet_rx_descs;
 
-	ena_info("queue feature: max_tx_q=%u max_rx_q=%u max_tx_depth=%u max_rx_depth=%u",
+	ena_info("queue feature: max_tx_q=%u max_rx_q=%u max_tx_depth=%u "
+		 "max_rx_depth=%u",
 		 max_tx_q, max_rx_q, max_tx_depth, max_rx_depth);
 
 	return 0;
@@ -182,18 +186,17 @@ int ena_init_set_host_info(struct ena_adapter *adapter)
 	ena_copy_str((char *)info->kernel_ver_str, sizeof(info->kernel_ver_str),
 		     ENA_INIT_DRIVER_NAME);
 	info->driver_version = ENA_INIT_PACK_DRIVER_VERSION(
-		ENA_INIT_DRIVER_VERSION_MAJOR, ENA_INIT_DRIVER_VERSION_MINOR,
-		ENA_INIT_DRIVER_VERSION_SUBMINOR, ENA_INIT_DRIVER_MODULE_TYPE);
+	    ENA_INIT_DRIVER_VERSION_MAJOR, ENA_INIT_DRIVER_VERSION_MINOR,
+	    ENA_INIT_DRIVER_VERSION_SUBMINOR, ENA_INIT_DRIVER_MODULE_TYPE);
 	info->ena_spec_version = ENA_INIT_ENA_SPEC_VERSION;
 	info->num_cpus = 1;
 
 	memset(&req, 0, sizeof(req));
 	req.feat_common.flags = ENA_ADMIN_FEAT_SELECT_CURRENT;
 	req.feat_common.feature_id = ENA_ADMIN_HOST_ATTR_CONFIG;
-	req.host_attr.os_info_ba.mem_addr_low =
-		(uint32_t)(phys & 0xFFFFFFFFu);
+	req.host_attr.os_info_ba.mem_addr_low = (uint32_t)(phys & 0xFFFFFFFFu);
 	req.host_attr.os_info_ba.mem_addr_high =
-		(uint16_t)((phys >> 32) & 0xFFFFu);
+	    (uint16_t)((phys >> 32) & 0xFFFFu);
 
 	ret = ena_init_exec(adapter, ENA_ADMIN_SET_FEATURE, &req, sizeof(req),
 			    NULL, 0);
@@ -270,7 +273,7 @@ int ena_llq_select_params(const struct ena_admin_feature_llq_desc *desc,
 
 	*entry_size_out = 128;
 	*header_len_out =
-		(uint16_t)(128 - 2 * (uint16_t)sizeof(struct ena_eth_io_tx_desc));
+	    (uint16_t)(128 - 2 * (uint16_t)sizeof(struct ena_eth_io_tx_desc));
 	return 0;
 }
 
@@ -296,8 +299,8 @@ int ena_init_config_llq(struct ena_adapter *adapter)
 	get_req.feat_common.flags = ENA_ADMIN_FEAT_SELECT_CURRENT;
 	get_req.feat_common.feature_id = ENA_ADMIN_LLQ;
 
-	ret = ena_init_exec(adapter, ENA_ADMIN_GET_FEATURE, &get_req, sizeof(get_req),
-			    &llq, sizeof(llq));
+	ret = ena_init_exec(adapter, ENA_ADMIN_GET_FEATURE, &get_req,
+			    sizeof(get_req), &llq, sizeof(llq));
 	if (ret) {
 		ena_info("LLQ: not supported by device (%d)", ret);
 		return 0;
@@ -310,16 +313,19 @@ int ena_init_config_llq(struct ena_adapter *adapter)
 	ena_info("LLQ: disabled (post-idle TX loss), using standard SQ path");
 	return 0;
 
-	ena_info("LLQ: max_llq_num=%u max_llq_depth=%u header_loc=0x%x entry_size=0x%x",
+	ena_info("LLQ: max_llq_num=%u max_llq_depth=%u header_loc=0x%x "
+		 "entry_size=0x%x",
 		 llq.max_llq_num, llq.max_llq_depth,
-		 llq.header_location_ctrl_supported, llq.entry_size_ctrl_supported);
+		 llq.header_location_ctrl_supported,
+		 llq.entry_size_ctrl_supported);
 
 	if (llq.max_llq_num == 0)
 		return 0;
 
 	ret = ena_llq_select_params(&llq, &entry_size, &header_len);
 	if (ret) {
-		ena_info("LLQ: required layout not supported by device (%d)", ret);
+		ena_info("LLQ: required layout not supported by device (%d)",
+			 ret);
 		return 0;
 	}
 
@@ -342,10 +348,10 @@ int ena_init_config_llq(struct ena_adapter *adapter)
 		set_req.llq.desc_num_before_header_enabled = 1;
 	if (set_req.llq.descriptors_stride_ctrl_supported & 1)
 		set_req.llq.descriptors_stride_ctrl_enabled =
-			ENA_LLQ_SINGLE_DESC_PER_ENTRY;
+		    ENA_LLQ_SINGLE_DESC_PER_ENTRY;
 
-	ret = ena_init_exec(adapter, ENA_ADMIN_SET_FEATURE, &set_req, sizeof(set_req),
-			    NULL, 0);
+	ret = ena_init_exec(adapter, ENA_ADMIN_SET_FEATURE, &set_req,
+			    sizeof(set_req), NULL, 0);
 	if (ret) {
 		ena_warn("LLQ: set feature failed (%d)", ret);
 		return 0;
@@ -358,7 +364,8 @@ int ena_init_config_llq(struct ena_adapter *adapter)
 	adapter->llq_info.entry_size = entry_size;
 	adapter->llq_info.header_len = header_len;
 
-	ena_info("LLQ: enabled (entry_size=%u header_len=%u)", entry_size, header_len);
+	ena_info("LLQ: enabled (entry_size=%u header_len=%u)", entry_size,
+		 header_len);
 	return 0;
 }
 
@@ -376,8 +383,10 @@ int ena_init_config_aenq(struct ena_adapter *adapter)
 
 	/* The feature must appear in the device supported_features
 	 * bitmap. Real ENA devices on EC2 advertise it. */
-	if ((adapter->supported_features & (1u << ENA_ADMIN_AENQ_CONFIG)) == 0) {
-		ena_info("aenq: device does not advertise AENQ_CONFIG, events stay disabled");
+	if ((adapter->supported_features & (1u << ENA_ADMIN_AENQ_CONFIG)) ==
+	    0) {
+		ena_info("aenq: device does not advertise AENQ_CONFIG, events "
+			 "stay disabled");
 		return 0;
 	}
 
@@ -389,7 +398,8 @@ int ena_init_config_aenq(struct ena_adapter *adapter)
 	ret = ena_init_exec(adapter, ENA_ADMIN_GET_FEATURE, &get_req,
 			    sizeof(get_req), resp, sizeof(resp));
 	if (ret) {
-		ena_warn("aenq: get config failed (%d), events stay disabled", ret);
+		ena_warn("aenq: get config failed (%d), events stay disabled",
+			 ret);
 		return 0;
 	}
 
@@ -409,7 +419,8 @@ int ena_init_config_aenq(struct ena_adapter *adapter)
 	ret = ena_init_exec(adapter, ENA_ADMIN_SET_FEATURE, &set_req,
 			    sizeof(set_req), NULL, 0);
 	if (ret) {
-		ena_warn("aenq: set config failed (%d), events stay disabled", ret);
+		ena_warn("aenq: set config failed (%d), events stay disabled",
+			 ret);
 		return 0;
 	}
 

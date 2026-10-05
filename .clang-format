@@ -1,0 +1,17 @@
+# Style matches upstream Unikraft: https://www.kernel.org/doc/Documentation/CodingStyle
+# This file is kept in sync with .unikraft/unikraft/.clang-format.
+BasedOnStyle: LLVM
+IndentWidth: 8
+UseTab: Always
+AlignAfterOpenBracket: Align
+BreakBeforeBraces: Linux
+BreakBeforeBinaryOperators: None
+ColumnLimit: 80
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: false
+IndentCaseLabels: false
+IndentGotoLabels: false
+RemoveBracesLLVM: true
+SortIncludes: false
+SpaceBeforeParens: ControlStatements
+TabWidth: 8

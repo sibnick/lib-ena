@@ -49,7 +49,8 @@ static void *mock_rx_alloc_cb(void *arg, uint64_t *phys_out, uint32_t *len_out)
 	return nb;
 }
 
-static void *mock_rx_alloc_fail_cb(void *arg, uint64_t *phys_out, uint32_t *len_out)
+static void *mock_rx_alloc_fail_cb(void *arg, uint64_t *phys_out,
+				   uint32_t *len_out)
 {
 	(void)arg;
 	(void)phys_out;
@@ -57,7 +58,9 @@ static void *mock_rx_alloc_fail_cb(void *arg, uint64_t *phys_out, uint32_t *len_
 	return NULL;
 }
 
-static int setup_test_adapter(struct mock_ena_hw *hw, struct ena_adapter *adapter, uint16_t mtu, uint32_t max_mtu)
+static int setup_test_adapter(struct mock_ena_hw *hw,
+			      struct ena_adapter *adapter, uint16_t mtu,
+			      uint32_t max_mtu)
 {
 	mock_ena_hw_init(hw);
 	if (max_mtu > 0)
@@ -76,27 +79,27 @@ static int setup_test_adapter(struct mock_ena_hw *hw, struct ena_adapter *adapte
 	if (ret)
 		return ret;
 
-	adapter->rx_rings = test_calloc(adapter->max_rx_queues, sizeof(struct ena_ring *));
-	adapter->tx_rings = test_calloc(adapter->max_tx_queues, sizeof(struct ena_ring *));
+	adapter->rx_rings =
+	    test_calloc(adapter->max_rx_queues, sizeof(struct ena_ring *));
+	adapter->tx_rings =
+	    test_calloc(adapter->max_tx_queues, sizeof(struct ena_ring *));
 	return 0;
 }
 
 static void teardown_test_adapter(struct ena_adapter *adapter)
 {
 	if (adapter->rx_rings) {
-		for (uint16_t i = 0; i < adapter->max_rx_queues; i++) {
+		for (uint16_t i = 0; i < adapter->max_rx_queues; i++)
 			if (adapter->rx_rings[i])
 				ena_ring_free(adapter->rx_rings[i]);
-		}
 		test_free(adapter->rx_rings);
 		adapter->rx_rings = NULL;
 	}
 
 	if (adapter->tx_rings) {
-		for (uint16_t i = 0; i < adapter->max_tx_queues; i++) {
+		for (uint16_t i = 0; i < adapter->max_tx_queues; i++)
 			if (adapter->tx_rings[i])
 				ena_ring_free(adapter->tx_rings[i]);
-		}
 		test_free(adapter->tx_rings);
 		adapter->tx_rings = NULL;
 	}
@@ -116,7 +119,8 @@ static void test_validation_t3_nano_profile(void)
 	assert(netdev != NULL);
 	assert(netdev->ops->info_get(netdev, &info) == 0);
 
-	/* Verify t3.nano characteristics: standard MTU 1500 and checksum offloads */
+	/* Verify t3.nano characteristics: standard MTU 1500 and checksum
+	 * offloads */
 	assert(info.mtu == 1500);
 	assert(info.max_rx_queues >= 1);
 	assert(info.max_tx_queues >= 1);
@@ -149,7 +153,8 @@ static void test_validation_end_to_end_throughput(void)
 	const unsigned int total_packets = 500;
 	unsigned int sent = 0;
 	unsigned int cleaned = 0;
-	struct uk_netbuf *tx_bufs = test_calloc(total_packets, sizeof(*tx_bufs));
+	struct uk_netbuf *tx_bufs =
+	    test_calloc(total_packets, sizeof(*tx_bufs));
 	assert(tx_bufs != NULL);
 
 	while (sent < total_packets) {
@@ -161,9 +166,11 @@ static void test_validation_end_to_end_throughput(void)
 
 		/* Emulate device completions periodically */
 		if (sent % 16 == 0) {
-			mock_ena_hw_emulate_tx(&g_hw, g_adapter.tx_rings[0], 16);
+			mock_ena_hw_emulate_tx(&g_hw, g_adapter.tx_rings[0],
+					       16);
 			unsigned int count = 0;
-			ena_tx_poll_completions(g_adapter.tx_rings[0], 32, &count);
+			ena_tx_poll_completions(g_adapter.tx_rings[0], 32,
+						&count);
 			cleaned += count;
 		}
 	}
@@ -207,7 +214,8 @@ static void test_validation_latency_roundtrip(void)
 	assert(netdev->ops->dev_start(netdev) == 0);
 
 	/* Refill RX queue */
-	assert(ena_rx_refill(g_adapter.rx_rings[0], 16, mock_rx_alloc_cb, NULL, &refilled) == 16);
+	assert(ena_rx_refill(g_adapter.rx_rings[0], 16, mock_rx_alloc_cb, NULL,
+			     &refilled) == 16);
 
 	/* Simulate 50 ping-pong transactions */
 	for (int i = 0; i < 50; i++) {
@@ -218,12 +226,14 @@ static void test_validation_latency_roundtrip(void)
 
 		mock_ena_hw_emulate_tx(&g_hw, g_adapter.tx_rings[0], 1);
 		unsigned int count = 0;
-		assert(ena_tx_poll_completions(g_adapter.tx_rings[0], 4, &count) == 1);
+		assert(ena_tx_poll_completions(g_adapter.tx_rings[0], 4,
+					       &count) == 1);
 		assert(count == 1);
 
 		/* Emulate response packet on RX path */
-		mock_ena_hw_emulate_rx(&g_hw, g_adapter.rx_rings[0], 1, 64, 0x12345678,
-				       ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK);
+		mock_ena_hw_emulate_rx(
+		    &g_hw, g_adapter.rx_rings[0], 1, 64, 0x12345678,
+		    ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK);
 
 		struct uk_netbuf *rx_nb = NULL;
 		assert(netdev->ops->rxq_recv(netdev, 0, &rx_nb) == 1);
@@ -232,13 +242,15 @@ static void test_validation_latency_roundtrip(void)
 		test_free(rx_nb);
 
 		/* Replenish consumed slot */
-		ena_rx_refill(g_adapter.rx_rings[0], 1, mock_rx_alloc_cb, NULL, &refilled);
+		ena_rx_refill(g_adapter.rx_rings[0], 1, mock_rx_alloc_cb, NULL,
+			      &refilled);
 	}
 
 	assert(netdev->ops->dev_stop(netdev) == 0);
 	for (int i = 0; i < g_adapter.rx_rings[0]->sq_depth; i++) {
 		if (g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf) {
-			test_free(g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf);
+			test_free(
+			    g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf);
 			g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf = NULL;
 		}
 	}
@@ -256,7 +268,8 @@ static void test_validation_latency_roundtrip(void)
 static struct uk_netbuf *g_jumbo_netbufs[16];
 static uint16_t g_jumbo_netbuf_count = 0;
 
-static void *mock_rx_alloc_jumbo_cb(void *arg, uint64_t *phys_out, uint32_t *len_out)
+static void *mock_rx_alloc_jumbo_cb(void *arg, uint64_t *phys_out,
+				    uint32_t *len_out)
 {
 	static uint64_t next_phys = 0xB000000;
 	struct uk_netbuf *nb = test_calloc(1, sizeof(*nb));
@@ -308,7 +321,8 @@ static void test_validation_jumbo_rx_dropped(void)
 	rx_ring = g_adapter.rx_rings[0];
 
 	/* Offer one 2048-byte buffer per descriptor, as the driver does. */
-	assert(ena_rx_refill(rx_ring, 8, mock_rx_alloc_jumbo_cb, NULL, &refilled) == 8);
+	assert(ena_rx_refill(rx_ring, 8, mock_rx_alloc_jumbo_cb, NULL,
+			     &refilled) == 8);
 	assert(rx_ring->free_req_count == 8);
 
 	/* Jumbo TX from one large direct-DMA buffer completes. */
@@ -344,27 +358,25 @@ static void test_validation_jumbo_rx_dropped(void)
 	assert(rx_nb != NULL);
 	assert(rx_nb->len == 64);
 	test_free(rx_nb);
-	for (j = 0; j < g_jumbo_netbuf_count; j++) {
+	for (j = 0; j < g_jumbo_netbuf_count; j++)
 		if (g_jumbo_netbufs[j] == rx_nb)
 			g_jumbo_netbufs[j] = NULL;
-	}
 
 	assert(netdev->ops->dev_stop(netdev) == 0);
 	for (i = 0; i < rx_ring->sq_depth; i++) {
 		if (rx_ring->buffers.rx_bufs[i].netbuf) {
-			for (j = 0; j < g_jumbo_netbuf_count; j++) {
-				if (g_jumbo_netbufs[j] == rx_ring->buffers.rx_bufs[i].netbuf)
+			for (j = 0; j < g_jumbo_netbuf_count; j++)
+				if (g_jumbo_netbufs[j] ==
+				    rx_ring->buffers.rx_bufs[i].netbuf)
 					g_jumbo_netbufs[j] = NULL;
-			}
 			test_free(rx_ring->buffers.rx_bufs[i].netbuf);
 			rx_ring->buffers.rx_bufs[i].netbuf = NULL;
 		}
 	}
 	/* Free the netbuf orphaned by the dropped completion. */
-	for (i = 0; i < g_jumbo_netbuf_count; i++) {
+	for (i = 0; i < g_jumbo_netbuf_count; i++)
 		if (g_jumbo_netbufs[i])
 			test_free(g_jumbo_netbufs[i]);
-	}
 	test_free(tx_buf);
 	teardown_test_adapter(&g_adapter);
 	ena_netdev_free(netdev);
@@ -407,7 +419,8 @@ static void test_validation_multi_queue_load(void)
 	for (uint16_t q = 0; q < 2; q++) {
 		mock_ena_hw_emulate_tx(&g_hw, g_adapter.tx_rings[q], 10);
 		unsigned int count = 0;
-		int n = ena_tx_poll_completions(g_adapter.tx_rings[q], 16, &count);
+		int n =
+		    ena_tx_poll_completions(g_adapter.tx_rings[q], 16, &count);
 		assert(n == 10);
 		assert(count == 10);
 	}
@@ -431,7 +444,8 @@ static void test_validation_llq_vs_standard_perf(void)
 
 	mock_ena_hw_init(&g_hw);
 	ena_admin_set_db_hook(mock_ena_hw_aq_doorbell_hook, &g_hw);
-	assert(ena_device_init_scaffold(&g_adapter, g_hw.bar0, sizeof(g_hw.bar0)) == 0);
+	assert(ena_device_init_scaffold(&g_adapter, g_hw.bar0,
+					sizeof(g_hw.bar0)) == 0);
 	g_adapter.bar2_base = bar2_memory;
 	g_adapter.bar2_size = sizeof(bar2_memory);
 
@@ -441,11 +455,13 @@ static void test_validation_llq_vs_standard_perf(void)
 	assert(g_adapter.llq_info.enabled == true);
 
 	/* Allocate standard ring */
-	assert(ena_ring_alloc(&g_adapter, 0, ENA_RING_TYPE_TX, 16, 16, &std_ring) == 0);
+	assert(ena_ring_alloc(&g_adapter, 0, ENA_RING_TYPE_TX, 16, 16,
+			      &std_ring) == 0);
 	assert(ena_ring_create_hw(std_ring, 0) == 0);
 
 	/* Allocate LLQ ring */
-	assert(ena_ring_alloc(&g_adapter, 1, ENA_RING_TYPE_TX, 16, 16, &llq_ring) == 0);
+	assert(ena_ring_alloc(&g_adapter, 1, ENA_RING_TYPE_TX, 16, 16,
+			      &llq_ring) == 0);
 	assert(ena_ring_create_hw(llq_ring, 1) == 0);
 	llq_ring->is_llq = true;
 	llq_ring->push_buf_virt = bar2_memory;
@@ -465,7 +481,8 @@ static void test_validation_llq_vs_standard_perf(void)
 	memset(&pkt_llq, 0, sizeof(pkt_llq));
 	pkt_llq.phys_addr = 0x6000000;
 	pkt_llq.len = 128;
-	assert(ena_llq_tx_push(llq_ring, &pkt_llq, header_buf, sizeof(header_buf), &req_id_llq) == 0);
+	assert(ena_llq_tx_push(llq_ring, &pkt_llq, header_buf,
+			       sizeof(header_buf), &req_id_llq) == 0);
 	ena_tx_doorbell(llq_ring);
 
 	/* Verify doorbell registers updated for both rings */
@@ -516,31 +533,38 @@ static void test_validation_audit_security_fixes(void)
 
 	mock_ena_hw_init(&g_hw);
 	ena_admin_set_db_hook(mock_ena_hw_aq_doorbell_hook, &g_hw);
-	assert(ena_device_init_scaffold(&g_adapter, g_hw.bar0, sizeof(g_hw.bar0)) == 0);
+	assert(ena_device_init_scaffold(&g_adapter, g_hw.bar0,
+					sizeof(g_hw.bar0)) == 0);
 	assert(ena_admin_init(&g_adapter, 8, 8, 8) == 0);
 
 	/* Doorbell offset out of bounds rejected */
 	mock_pci_inject_fault(&g_hw, MOCK_PCI_FAULT_BAD_DB_OFFSET, 0x5000);
-	assert(ena_admin_create_cq(&g_adapter, 8, 0x1000, 0, 2, &cq_idx, &cq_db, NULL) == -EINVAL);
+	assert(ena_admin_create_cq(&g_adapter, 8, 0x1000, 0, 2, &cq_idx, &cq_db,
+				   NULL) == -EINVAL);
 
 	/* Valid CQ creation */
 	mock_pci_clear_faults(&g_hw);
-	assert(ena_admin_create_cq(&g_adapter, 8, 0x1000, 0, 2, &cq_idx, &cq_db, NULL) == 0);
+	assert(ena_admin_create_cq(&g_adapter, 8, 0x1000, 0, 2, &cq_idx, &cq_db,
+				   NULL) == 0);
 
 	/* RX completion length exceeding buffer rejected */
-	assert(ena_ring_alloc(&g_adapter, 0, ENA_RING_TYPE_RX, 8, 8, &rx_ring) == 0);
+	assert(ena_ring_alloc(&g_adapter, 0, ENA_RING_TYPE_RX, 8, 8,
+			      &rx_ring) == 0);
 	assert(ena_ring_create_hw(rx_ring, 0) == 0);
-	assert(ena_rx_submit_one(rx_ring, buffer, 0x1000, sizeof(buffer), NULL) == 0);
+	assert(ena_rx_submit_one(rx_ring, buffer, 0x1000, sizeof(buffer),
+				 NULL) == 0);
 
 	rcdesc = (struct ena_eth_io_rx_cdesc_base *)rx_ring->cq_virt;
 	memset(rcdesc, 0, sizeof(*rcdesc));
 	rcdesc->req_id = ena_cpu_to_le16(0);
 	rcdesc->length = ena_cpu_to_le16(1024);
-	rcdesc->status = ena_cpu_to_le32((1u << ENA_ETH_IO_RX_CDESC_BASE_PHASE_SHIFT));
+	rcdesc->status =
+	    ena_cpu_to_le32((1u << ENA_ETH_IO_RX_CDESC_BASE_PHASE_SHIFT));
 	assert(ena_rx_poll(rx_ring, &rx_pkt, 1) == 0);
 
 	/* TX completion with unsubmitted req_id dropped */
-	assert(ena_ring_alloc(&g_adapter, 0, ENA_RING_TYPE_TX, 8, 8, &tx_ring) == 0);
+	assert(ena_ring_alloc(&g_adapter, 0, ENA_RING_TYPE_TX, 8, 8,
+			      &tx_ring) == 0);
 	assert(ena_ring_create_hw(tx_ring, 0) == 0);
 	tcdesc = (struct ena_eth_io_tx_cdesc *)tx_ring->cq_virt;
 	memset(tcdesc, 0, sizeof(*tcdesc));
@@ -554,7 +578,8 @@ static void test_validation_audit_security_fixes(void)
 	/* LLQ header length > 96 rejected */
 	memset(&tx_pkt, 0, sizeof(tx_pkt));
 	tx_pkt.len = 200;
-	assert(ena_llq_tx_push(tx_ring, &tx_pkt, huge_hdr, 110, NULL) == -EINVAL);
+	assert(ena_llq_tx_push(tx_ring, &tx_pkt, huge_hdr, 110, NULL) ==
+	       -EINVAL);
 
 	ena_ring_destroy_hw(rx_ring);
 	ena_ring_free(rx_ring);
@@ -573,20 +598,24 @@ static void test_validation_boundary_unaligned_doorbell_offsets(void)
 
 	mock_ena_hw_init(&g_hw);
 	ena_admin_set_db_hook(mock_ena_hw_aq_doorbell_hook, &g_hw);
-	assert(ena_device_init_scaffold(&g_adapter, g_hw.bar0, sizeof(g_hw.bar0)) == 0);
+	assert(ena_device_init_scaffold(&g_adapter, g_hw.bar0,
+					sizeof(g_hw.bar0)) == 0);
 	assert(ena_admin_init(&g_adapter, 8, 8, 8) == 0);
 
 	/* Inject unaligned CQ doorbell offset */
 	mock_pci_inject_fault(&g_hw, MOCK_PCI_FAULT_UNALIGNED_DB_OFFSET, 0x30);
-	assert(ena_admin_create_cq(&g_adapter, 8, 0x1000, 0, 2, &cq_idx, &cq_db, NULL) == -EINVAL);
+	assert(ena_admin_create_cq(&g_adapter, 8, 0x1000, 0, 2, &cq_idx, &cq_db,
+				   NULL) == -EINVAL);
 
 	/* Clear and create valid CQ */
 	mock_pci_clear_faults(&g_hw);
-	assert(ena_admin_create_cq(&g_adapter, 8, 0x1000, 0, 2, &cq_idx, &cq_db, NULL) == 0);
+	assert(ena_admin_create_cq(&g_adapter, 8, 0x1000, 0, 2, &cq_idx, &cq_db,
+				   NULL) == 0);
 
 	/* Inject unaligned SQ doorbell offset */
 	mock_pci_inject_fault(&g_hw, MOCK_PCI_FAULT_UNALIGNED_DB_OFFSET, 0x2C);
-	assert(ena_admin_create_sq(&g_adapter, 8, 0x2000, 0, cq_idx, 1, &sq_idx, &sq_db) == -EINVAL);
+	assert(ena_admin_create_sq(&g_adapter, 8, 0x2000, 0, cq_idx, 1, &sq_idx,
+				   &sq_db) == -EINVAL);
 
 	mock_pci_clear_faults(&g_hw);
 	ena_admin_fini(&g_adapter);
@@ -649,7 +678,8 @@ static void test_validation_boundary_llq_header_lengths(void)
 	pkt.len = 256;
 
 	assert(setup_test_adapter(&g_hw, &g_adapter, 1500, 1500) == 0);
-	assert(ena_ring_alloc(&g_adapter, 0, ENA_RING_TYPE_TX, 8, 8, &ring) == 0);
+	assert(ena_ring_alloc(&g_adapter, 0, ENA_RING_TYPE_TX, 8, 8, &ring) ==
+	       0);
 
 	/* Lengths above 96 must fail with -EINVAL */
 	assert(ena_llq_tx_push(ring, &pkt, hdr_buf, 97, &req_id) == -EINVAL);
@@ -687,7 +717,8 @@ static void test_validation_boundary_dev_stop_teardown(void)
 
 	/* Cycle 1: Start and transmit */
 	assert(netdev->ops->dev_start(netdev) == 0);
-	assert(ena_rx_refill(g_adapter.rx_rings[0], 4, mock_rx_alloc_cb, NULL, &refilled) == 4);
+	assert(ena_rx_refill(g_adapter.rx_rings[0], 4, mock_rx_alloc_cb, NULL,
+			     &refilled) == 4);
 
 	tx_buf->phys_addr = 0x7000000;
 	tx_buf->len = 128;
@@ -709,7 +740,8 @@ static void test_validation_boundary_dev_stop_teardown(void)
 	assert(netdev->ops->dev_stop(netdev) == 0);
 	for (int i = 0; i < g_adapter.rx_rings[0]->sq_depth; i++) {
 		if (g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf) {
-			test_free(g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf);
+			test_free(
+			    g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf);
 			g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf = NULL;
 		}
 	}
@@ -725,11 +757,13 @@ static void test_validation_boundary_rx_allocation_failures(void)
 	unsigned int refilled = 0;
 
 	assert(setup_test_adapter(&g_hw, &g_adapter, 1500, 1500) == 0);
-	assert(ena_ring_alloc(&g_adapter, 0, ENA_RING_TYPE_RX, 8, 8, &rx_ring) == 0);
+	assert(ena_ring_alloc(&g_adapter, 0, ENA_RING_TYPE_RX, 8, 8,
+			      &rx_ring) == 0);
 	assert(ena_ring_create_hw(rx_ring, 0) == 0);
 
 	/* Allocation failure callback returns 0 refilled packets */
-	int count = ena_rx_refill(rx_ring, 4, mock_rx_alloc_fail_cb, NULL, &refilled);
+	int count =
+	    ena_rx_refill(rx_ring, 4, mock_rx_alloc_fail_cb, NULL, &refilled);
 	assert(count == 0);
 	assert(refilled == 0);
 	assert(rx_ring->free_req_count == 8);
@@ -756,7 +790,8 @@ static void test_validation_boundary_post_timeout_admin_recovery(void)
 {
 	mock_ena_hw_init(&g_hw);
 	ena_admin_set_db_hook(mock_ena_hw_aq_doorbell_hook, &g_hw);
-	assert(ena_device_init_scaffold(&g_adapter, g_hw.bar0, sizeof(g_hw.bar0)) == 0);
+	assert(ena_device_init_scaffold(&g_adapter, g_hw.bar0,
+					sizeof(g_hw.bar0)) == 0);
 	assert(ena_admin_init(&g_adapter, 8, 8, 8) == 0);
 
 	/* Inject admin hang fault */
@@ -771,7 +806,8 @@ static void test_validation_boundary_post_timeout_admin_recovery(void)
 	ena_admin_fini(&g_adapter);
 	mock_ena_hw_init(&g_hw);
 	ena_admin_set_db_hook(mock_ena_hw_aq_doorbell_hook, &g_hw);
-	assert(ena_device_init_scaffold(&g_adapter, g_hw.bar0, sizeof(g_hw.bar0)) == 0);
+	assert(ena_device_init_scaffold(&g_adapter, g_hw.bar0,
+					sizeof(g_hw.bar0)) == 0);
 	assert(ena_admin_init(&g_adapter, 8, 8, 8) == 0);
 	ret = ena_init_get_device_attributes(&g_adapter);
 	assert(ret == 0);
@@ -785,11 +821,13 @@ static void test_validation_boundary_corrupted_acq_completions(void)
 {
 	mock_ena_hw_init(&g_hw);
 	ena_admin_set_db_hook(mock_ena_hw_aq_doorbell_hook, &g_hw);
-	assert(ena_device_init_scaffold(&g_adapter, g_hw.bar0, sizeof(g_hw.bar0)) == 0);
+	assert(ena_device_init_scaffold(&g_adapter, g_hw.bar0,
+					sizeof(g_hw.bar0)) == 0);
 	assert(ena_admin_init(&g_adapter, 8, 8, 8) == 0);
 
 	/* Inject illegal admin status response */
-	mock_pci_inject_fault(&g_hw, MOCK_PCI_FAULT_ADMIN_STATUS, ENA_ADMIN_ILLEGAL_PARAMETER);
+	mock_pci_inject_fault(&g_hw, MOCK_PCI_FAULT_ADMIN_STATUS,
+			      ENA_ADMIN_ILLEGAL_PARAMETER);
 	int ret = ena_init_get_device_attributes(&g_adapter);
 	assert(ret == -(int)ENA_ADMIN_ILLEGAL_PARAMETER);
 
@@ -804,7 +842,8 @@ static void test_validation_boundary_corrupted_acq_completions(void)
 	mock_ena_hw_init(&g_hw);
 	ena_admin_set_db_hook(mock_ena_hw_aq_doorbell_hook, &g_hw);
 	ena_admin_fini(&g_adapter);
-	assert(ena_device_init_scaffold(&g_adapter, g_hw.bar0, sizeof(g_hw.bar0)) == 0);
+	assert(ena_device_init_scaffold(&g_adapter, g_hw.bar0,
+					sizeof(g_hw.bar0)) == 0);
 	assert(ena_admin_init(&g_adapter, 8, 8, 8) == 0);
 	ret = ena_init_get_device_attributes(&g_adapter);
 	assert(ret == 0);
@@ -840,7 +879,8 @@ static void test_validation_concurrency_stress_queues(void)
 
 	/* Refill all 4 RX queues */
 	for (uint16_t q = 0; q < 4; q++)
-		assert(ena_rx_refill(g_adapter.rx_rings[q], 8, mock_rx_alloc_cb, NULL, &refilled) == 8);
+		assert(ena_rx_refill(g_adapter.rx_rings[q], 8, mock_rx_alloc_cb,
+				     NULL, &refilled) == 8);
 
 	uint8_t raw_payloads[80][256];
 	memset(raw_payloads, 0, sizeof(raw_payloads));
@@ -859,14 +899,16 @@ static void test_validation_concurrency_stress_queues(void)
 		assert(netdev->ops->txq_xmit(netdev, q, &tx_bufs[i]) == 0);
 
 		if (i % 20 == 19)
-			mock_ena_hw_inject_aenq(&g_hw, ENA_ADMIN_WARNING, (uint16_t)i);
+			mock_ena_hw_inject_aenq(&g_hw, ENA_ADMIN_WARNING,
+						(uint16_t)i);
 	}
 
 	/* Complete and poll across all queues */
 	for (uint16_t q = 0; q < 4; q++) {
 		mock_ena_hw_emulate_tx(&g_hw, g_adapter.tx_rings[q], 20);
 		unsigned int count = 0;
-		int n = ena_tx_poll_completions(g_adapter.tx_rings[q], 20, &count);
+		int n =
+		    ena_tx_poll_completions(g_adapter.tx_rings[q], 20, &count);
 		assert(n == 20);
 		assert(count == 20);
 	}
@@ -879,8 +921,12 @@ static void test_validation_concurrency_stress_queues(void)
 	for (uint16_t q = 0; q < 4; q++) {
 		for (int i = 0; i < g_adapter.rx_rings[q]->sq_depth; i++) {
 			if (g_adapter.rx_rings[q]->buffers.rx_bufs[i].netbuf) {
-				test_free(g_adapter.rx_rings[q]->buffers.rx_bufs[i].netbuf);
-				g_adapter.rx_rings[q]->buffers.rx_bufs[i].netbuf = NULL;
+				test_free(g_adapter.rx_rings[q]
+					      ->buffers.rx_bufs[i]
+					      .netbuf);
+				g_adapter.rx_rings[q]
+				    ->buffers.rx_bufs[i]
+				    .netbuf = NULL;
 			}
 		}
 	}
@@ -933,7 +979,8 @@ static void test_validation_fault_tx_fake_req_id(void)
 	fake_id = (uint16_t)((in_flight_id + 1) & (tx_ring->sq_depth - 1));
 	assert(fake_id != in_flight_id);
 
-	mock_pci_inject_fault(&g_hw, MOCK_PCI_FAULT_FAKE_REQ_ID, (uint64_t)fake_id);
+	mock_pci_inject_fault(&g_hw, MOCK_PCI_FAULT_FAKE_REQ_ID,
+			      (uint64_t)fake_id);
 	mock_ena_hw_emulate_tx(&g_hw, tx_ring, 1);
 
 	/* Fake completion is consumed but completes nothing */
@@ -958,11 +1005,13 @@ static void test_validation_fault_tx_fake_req_id(void)
 	ena_netdev_free(netdev);
 }
 
-/* Records netbufs from mock_rx_alloc_corrupt_cb so the test can free any the driver orphans */
+/* Records netbufs from mock_rx_alloc_corrupt_cb so the test can free any the
+ * driver orphans */
 static struct uk_netbuf *g_corrupt_netbufs[16];
 static uint16_t g_corrupt_netbuf_count = 0;
 
-static void *mock_rx_alloc_corrupt_cb(void *arg, uint64_t *phys_out, uint32_t *len_out)
+static void *mock_rx_alloc_corrupt_cb(void *arg, uint64_t *phys_out,
+				      uint32_t *len_out)
 {
 	static uint64_t next_phys = 0xC000000;
 	struct uk_netbuf *nb = test_calloc(1, sizeof(*nb));
@@ -1006,14 +1055,16 @@ static void test_validation_fault_rx_corrupt_length(void)
 	assert(netdev->ops->dev_start(netdev) == 0);
 
 	rx_ring = g_adapter.rx_rings[0];
-	assert(ena_rx_refill(rx_ring, 4, mock_rx_alloc_corrupt_cb, NULL, &refilled) == 4);
+	assert(ena_rx_refill(rx_ring, 4, mock_rx_alloc_corrupt_cb, NULL,
+			     &refilled) == 4);
 
 	mock_pci_inject_fault(&g_hw, MOCK_PCI_FAULT_CORRUPT_LENGTH, 0xFFFF);
 	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 512, 0xAABBCCDD,
 			       ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK);
 	memset(&rx_pkt, 0, sizeof(rx_pkt));
 
-	/* Corrupted completion is dropped: no packet, slot cleared, id returned */
+	/* Corrupted completion is dropped: no packet, slot cleared, id returned
+	 */
 	assert(ena_rx_poll(rx_ring, &rx_pkt, 1) == 0);
 	assert(rx_ring->rx_packets == 0);
 	assert(rx_ring->buffers.rx_bufs[0].netbuf == NULL);
@@ -1031,19 +1082,18 @@ static void test_validation_fault_rx_corrupt_length(void)
 	assert(netdev->ops->dev_stop(netdev) == 0);
 	for (i = 0; i < rx_ring->sq_depth; i++) {
 		if (rx_ring->buffers.rx_bufs[i].netbuf) {
-			for (j = 0; j < g_corrupt_netbuf_count; j++) {
-				if (g_corrupt_netbufs[j] == rx_ring->buffers.rx_bufs[i].netbuf)
+			for (j = 0; j < g_corrupt_netbuf_count; j++)
+				if (g_corrupt_netbufs[j] ==
+				    rx_ring->buffers.rx_bufs[i].netbuf)
 					g_corrupt_netbufs[j] = NULL;
-			}
 			test_free(rx_ring->buffers.rx_bufs[i].netbuf);
 			rx_ring->buffers.rx_bufs[i].netbuf = NULL;
 		}
 	}
 	/* Free any netbuf orphaned by the dropped completion */
-	for (i = 0; i < g_corrupt_netbuf_count; i++) {
+	for (i = 0; i < g_corrupt_netbuf_count; i++)
 		if (g_corrupt_netbufs[i])
 			test_free(g_corrupt_netbufs[i]);
-	}
 	teardown_test_adapter(&g_adapter);
 	ena_netdev_free(netdev);
 }
@@ -1111,7 +1161,8 @@ static void test_validation_aenq_runtime_wiring(void)
 	assert(mock_ena_hw_get_reg32(&g_hw, ENA_REGS_DEV_STS_OFF) &
 	       ENA_DEV_STS_RESET_FIN_MASK);
 
-	/* The admin queues were re-initialized and the handler re-registered. */
+	/* The admin queues were re-initialized and the handler re-registered.
+	 */
 	assert(g_adapter.state == ENA_STATE_ADMIN_READY);
 	assert(g_adapter.aenq_handler == ena_aenq_default_handler);
 
@@ -1123,7 +1174,8 @@ static void test_validation_aenq_runtime_wiring(void)
 	assert(netdev->ops->dev_stop(netdev) == 0);
 	for (int i = 0; i < g_adapter.rx_rings[0]->sq_depth; i++) {
 		if (g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf) {
-			test_free(g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf);
+			test_free(
+			    g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf);
 			g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf = NULL;
 		}
 	}
@@ -1153,7 +1205,8 @@ static void test_validation_rss_configuration(void)
 		assert(netdev->ops->txq_configure(netdev, q, 32, NULL) == 0);
 	}
 
-	/* Starting device triggers hardware queue creation and RSS configuration */
+	/* Starting device triggers hardware queue creation and RSS
+	 * configuration */
 	ret = netdev->ops->dev_start(netdev);
 	assert(ret == 0);
 
@@ -1174,11 +1227,14 @@ static void test_validation_rss_configuration(void)
 	assert(g_hw.rss_set_key_count == 1);
 	assert(g_hw.rss_hash_func == (1u << ENA_ADMIN_TOEPLITZ));
 	assert(g_hw.rss_set_ctrl_count == 1);
-	assert(g_hw.rss_tcp4_fields == (ENA_ADMIN_RSS_L3_SA | ENA_ADMIN_RSS_L3_DA |
-					ENA_ADMIN_RSS_L4_SP | ENA_ADMIN_RSS_L4_DP));
-	assert(g_hw.rss_udp4_fields == (ENA_ADMIN_RSS_L3_SA | ENA_ADMIN_RSS_L3_DA |
-					ENA_ADMIN_RSS_L4_SP | ENA_ADMIN_RSS_L4_DP));
-	assert(g_hw.rss_ip4_fields == (ENA_ADMIN_RSS_L3_SA | ENA_ADMIN_RSS_L3_DA));
+	assert(g_hw.rss_tcp4_fields ==
+	       (ENA_ADMIN_RSS_L3_SA | ENA_ADMIN_RSS_L3_DA |
+		ENA_ADMIN_RSS_L4_SP | ENA_ADMIN_RSS_L4_DP));
+	assert(g_hw.rss_udp4_fields ==
+	       (ENA_ADMIN_RSS_L3_SA | ENA_ADMIN_RSS_L3_DA |
+		ENA_ADMIN_RSS_L4_SP | ENA_ADMIN_RSS_L4_DP));
+	assert(g_hw.rss_ip4_fields ==
+	       (ENA_ADMIN_RSS_L3_SA | ENA_ADMIN_RSS_L3_DA));
 
 	assert(g_hw.rss_set_ind_count == 1);
 	assert(g_hw.rss_ind_table_size == 16);
@@ -1190,8 +1246,10 @@ static void test_validation_rss_configuration(void)
 		uint16_t q = (uint16_t)(i % 4);
 
 		assert(g_hw.rss_ind_table[i] == g_adapter.rx_rings[q]->sq_idx);
-		if (g_adapter.rx_rings[q]->cq_idx != g_adapter.rx_rings[q]->sq_idx)
-			assert(g_hw.rss_ind_table[i] != g_adapter.rx_rings[q]->cq_idx);
+		if (g_adapter.rx_rings[q]->cq_idx !=
+		    g_adapter.rx_rings[q]->sq_idx)
+			assert(g_hw.rss_ind_table[i] !=
+			       g_adapter.rx_rings[q]->cq_idx);
 	}
 
 	/* Stop netdev and verify clean teardown */
@@ -1200,8 +1258,12 @@ static void test_validation_rss_configuration(void)
 	for (uint16_t q = 0; q < 4; q++) {
 		for (int i = 0; i < g_adapter.rx_rings[q]->sq_depth; i++) {
 			if (g_adapter.rx_rings[q]->buffers.rx_bufs[i].netbuf) {
-				test_free(g_adapter.rx_rings[q]->buffers.rx_bufs[i].netbuf);
-				g_adapter.rx_rings[q]->buffers.rx_bufs[i].netbuf = NULL;
+				test_free(g_adapter.rx_rings[q]
+					      ->buffers.rx_bufs[i]
+					      .netbuf);
+				g_adapter.rx_rings[q]
+				    ->buffers.rx_bufs[i]
+				    .netbuf = NULL;
 			}
 		}
 	}
@@ -1209,7 +1271,8 @@ static void test_validation_rss_configuration(void)
 	teardown_test_adapter(&g_adapter);
 	ena_netdev_free(netdev);
 
-	/* Verify single-queue mode: when 1 queue is configured, RSS is not enabled */
+	/* Verify single-queue mode: when 1 queue is configured, RSS is not
+	 * enabled */
 	assert(setup_test_adapter(&g_hw, &g_adapter, 1500, 1500) == 0);
 	netdev = ena_netdev_alloc(&g_adapter);
 	assert(netdev != NULL);
@@ -1232,7 +1295,8 @@ static void test_validation_rss_configuration(void)
 	assert(netdev->ops->dev_stop(netdev) == 0);
 	for (int i = 0; i < g_adapter.rx_rings[0]->sq_depth; i++) {
 		if (g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf) {
-			test_free(g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf);
+			test_free(
+			    g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf);
 			g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf = NULL;
 		}
 	}
@@ -1286,8 +1350,10 @@ static void test_validation_rss_configuration(void)
 		assert(g_hw.rss_ind_table[i] == g_adapter.rx_rings[q]->sq_idx);
 		/* Regression check: the entry must not hold the RX ring CQ
 		 * index. The pre-fix code wrote the values 2 and 3. */
-		if (g_adapter.rx_rings[q]->cq_idx != g_adapter.rx_rings[q]->sq_idx)
-			assert(g_hw.rss_ind_table[i] != g_adapter.rx_rings[q]->cq_idx);
+		if (g_adapter.rx_rings[q]->cq_idx !=
+		    g_adapter.rx_rings[q]->sq_idx)
+			assert(g_hw.rss_ind_table[i] !=
+			       g_adapter.rx_rings[q]->cq_idx);
 		/* A valid entry stays inside the RX SQ space. The firmware
 		 * resolves this field per direction, so the value can
 		 * never reach a TX queue. */
@@ -1304,8 +1370,12 @@ static void test_validation_rss_configuration(void)
 	for (uint16_t q = 0; q < 2; q++) {
 		for (int i = 0; i < g_adapter.rx_rings[q]->sq_depth; i++) {
 			if (g_adapter.rx_rings[q]->buffers.rx_bufs[i].netbuf) {
-				test_free(g_adapter.rx_rings[q]->buffers.rx_bufs[i].netbuf);
-				g_adapter.rx_rings[q]->buffers.rx_bufs[i].netbuf = NULL;
+				test_free(g_adapter.rx_rings[q]
+					      ->buffers.rx_bufs[i]
+					      .netbuf);
+				g_adapter.rx_rings[q]
+				    ->buffers.rx_bufs[i]
+				    .netbuf = NULL;
 			}
 		}
 	}
@@ -1405,7 +1475,8 @@ static void test_validation_garp_link_flap(void)
 	assert(sim_netif.garp_sent_count == 1);
 	assert(sim_netif.last_grat_arp_ip == 0x0A000064);
 
-	/* Subsequent poll with link still UP and IP unchanged must NOT send GARP */
+	/* Subsequent poll with link still UP and IP unchanged must NOT send
+	 * GARP */
 	mock_lwip_poll(&sim_netif, netdev);
 	mock_lwip_send_gratuitous_arp(&sim_netif);
 	assert(sim_netif.garp_sent_count == 1);
@@ -1455,7 +1526,8 @@ static void test_validation_garp_link_flap(void)
 	assert(netdev->ops->dev_stop(netdev) == 0);
 	for (int i = 0; i < g_adapter.rx_rings[0]->sq_depth; i++) {
 		if (g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf) {
-			test_free(g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf);
+			test_free(
+			    g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf);
 			g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf = NULL;
 		}
 	}
@@ -1507,7 +1579,9 @@ struct mock_lwip_core_state {
 };
 
 static struct mock_lwip_core_state g_mock_cores[MOCK_LWIP_CORE_MAX];
-static uint8_t g_memp_raw_storage[MOCK_LWIP_CORE_MAX][MOCK_MEMP_MAX][MOCK_MEMP_POOL_SIZE * sizeof(struct mock_memp_node)];
+static uint8_t
+    g_memp_raw_storage[MOCK_LWIP_CORE_MAX][MOCK_MEMP_MAX]
+		      [MOCK_MEMP_POOL_SIZE * sizeof(struct mock_memp_node)];
 
 static void mock_percore_init(void)
 {
@@ -1519,7 +1593,10 @@ static void mock_percore_init(void)
 			pool->free_count = 0;
 			pool->free_list = NULL;
 			for (unsigned int i = 0; i < MOCK_MEMP_POOL_SIZE; i++) {
-				struct mock_memp_node *node = (struct mock_memp_node *)&g_memp_raw_storage[c][p][i * sizeof(struct mock_memp_node)];
+				struct mock_memp_node *node =
+				    (struct mock_memp_node *)&g_memp_raw_storage
+					[c][p]
+					[i * sizeof(struct mock_memp_node)];
 				node->next = pool->free_list;
 				pool->free_list = node;
 				pool->free_count++;
@@ -1528,7 +1605,8 @@ static void mock_percore_init(void)
 	}
 }
 
-static int mock_tcp_bind_listen(unsigned int core_id, struct mock_tcp_pcb *pcb, uint16_t port)
+static int mock_tcp_bind_listen(unsigned int core_id, struct mock_tcp_pcb *pcb,
+				uint16_t port)
 {
 	if (core_id >= MOCK_LWIP_CORE_MAX)
 		return -1;
@@ -1558,7 +1636,8 @@ static void *mock_memp_alloc(unsigned int core_id, unsigned int pool_id)
 	return node;
 }
 
-static void mock_memp_free(unsigned int core_id, unsigned int pool_id, void *ptr)
+static void mock_memp_free(unsigned int core_id, unsigned int pool_id,
+			   void *ptr)
 {
 	if (!ptr || core_id >= MOCK_LWIP_CORE_MAX || pool_id >= MOCK_MEMP_MAX)
 		return;
@@ -1580,7 +1659,8 @@ static int mock_socket_alloc(unsigned int core_id)
 			cs->sockets[i].port = 0;
 			cs->sockets[i].so_reuseport = 0;
 			cs->sockets[i].core_id = core_id;
-			return i + (int)(core_id * MOCK_LWIP_NUM_SOCKETS) + MOCK_LWIP_SOCKET_OFFSET;
+			return i + (int)(core_id * MOCK_LWIP_NUM_SOCKETS) +
+			       MOCK_LWIP_SOCKET_OFFSET;
 		}
 	}
 	return -1;
@@ -1705,8 +1785,10 @@ static void test_validation_lwip_per_core_socket_partition(void)
 	assert(fd1 == MOCK_LWIP_SOCKET_OFFSET + MOCK_LWIP_NUM_SOCKETS);
 
 	/* Validate core ownership decode */
-	unsigned int core0 = (unsigned int)((fd0 - MOCK_LWIP_SOCKET_OFFSET) / MOCK_LWIP_NUM_SOCKETS);
-	unsigned int core1 = (unsigned int)((fd1 - MOCK_LWIP_SOCKET_OFFSET) / MOCK_LWIP_NUM_SOCKETS);
+	unsigned int core0 = (unsigned int)((fd0 - MOCK_LWIP_SOCKET_OFFSET) /
+					    MOCK_LWIP_NUM_SOCKETS);
+	unsigned int core1 = (unsigned int)((fd1 - MOCK_LWIP_SOCKET_OFFSET) /
+					    MOCK_LWIP_NUM_SOCKETS);
 	assert(core0 == 0);
 	assert(core1 == 1);
 
@@ -1756,7 +1838,8 @@ static void test_validation_per_core_run_to_completion(void)
 	assert(g_mock_cores[0].sockets[0].core_id == 0);
 	assert(g_mock_cores[1].sockets[0].core_id == 1);
 
-	/* 3. Per-core run-to-completion packet processing without cross-core locking */
+	/* 3. Per-core run-to-completion packet processing without cross-core
+	 * locking */
 	struct mock_tcp_pcb conn_core0;
 	struct mock_tcp_pcb conn_core1;
 	memset(&conn_core0, 0, sizeof(conn_core0));

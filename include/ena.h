@@ -39,73 +39,75 @@ struct ena_pci_id {
 
 /* ENA Master Adapter Context */
 struct ena_adapter {
-	void *pci_dev;                  /* Pointer to struct uk_pci_device */
-	volatile uint8_t *bar0_base;    /* Virtual address of mapped BAR0 */
-	size_t bar0_size;               /* Size of BAR0 MMIO space */
-	volatile uint8_t *bar2_base;    /* Virtual address of LLQ BAR2 (optional) */
-	size_t bar2_size;               /* Size of BAR2 MMIO space */
-	
-	enum ena_state state;           /* Driver lifecycle state */
+	void *pci_dev;		     /* Pointer to struct uk_pci_device */
+	volatile uint8_t *bar0_base; /* Virtual address of mapped BAR0 */
+	size_t bar0_size;	     /* Size of BAR0 MMIO space */
+	volatile uint8_t
+	    *bar2_base;	  /* Virtual address of LLQ BAR2 (optional) */
+	size_t bar2_size; /* Size of BAR2 MMIO space */
+
+	enum ena_state state; /* Driver lifecycle state */
 
 	/* Last AEN keep-alive report from the device. [Ticket 1152cbcaca] */
 	uint32_t aen_keepalives;
 	uint64_t aen_rx_drops;
 	uint64_t aen_tx_drops;
-	uint32_t aenq_enabled_groups;   /* AENQ group bitmap enabled on the device */
-	uint32_t version;               /* Device version from ENA_REGS_VERSION_OFF */
-	uint32_t controller_version;    /* Controller version */
-	uint32_t caps;                  /* Hardware capabilities */
-	
-	uint8_t mac_addr[6];            /* MAC address */
-	uint16_t max_mtu;               /* Maximum supported MTU */
-	uint16_t max_tx_queues;         /* Hardware maximum TX queues */
-	uint16_t max_rx_queues;         /* Hardware maximum RX queues */
-	uint16_t max_tx_ring_size;      /* Hardware maximum TX ring depth */
-	uint16_t max_rx_ring_size;      /* Hardware maximum RX ring depth */
+	uint32_t
+	    aenq_enabled_groups; /* AENQ group bitmap enabled on the device */
+	uint32_t version;	 /* Device version from ENA_REGS_VERSION_OFF */
+	uint32_t controller_version; /* Controller version */
+	uint32_t caps;		     /* Hardware capabilities */
+
+	uint8_t mac_addr[6];	   /* MAC address */
+	uint16_t max_mtu;	   /* Maximum supported MTU */
+	uint16_t max_tx_queues;	   /* Hardware maximum TX queues */
+	uint16_t max_rx_queues;	   /* Hardware maximum RX queues */
+	uint16_t max_tx_ring_size; /* Hardware maximum TX ring depth */
+	uint16_t max_rx_ring_size; /* Hardware maximum RX ring depth */
 
 	/* Phase 2: Admin Queue (request ring) */
-	void *aq_base;                  /* Virtual base of the AQ ring */
-	uint64_t aq_phys;               /* Physical base of the AQ ring */
-	uint16_t aq_depth;              /* AQ depth (power of 2) */
-	uint16_t aq_tail;               /* Next AQ slot to fill */
-	uint8_t aq_phase;               /* AQ phase bit for submitted entries */
-	uint16_t next_command_id;       /* Next command id to assign */
-	uint32_t admin_lock;            /* Busy flag serializing exec_cmd */
+	void *aq_base;		  /* Virtual base of the AQ ring */
+	uint64_t aq_phys;	  /* Physical base of the AQ ring */
+	uint16_t aq_depth;	  /* AQ depth (power of 2) */
+	uint16_t aq_tail;	  /* Next AQ slot to fill */
+	uint8_t aq_phase;	  /* AQ phase bit for submitted entries */
+	uint16_t next_command_id; /* Next command id to assign */
+	uint32_t admin_lock;	  /* Busy flag serializing exec_cmd */
 
 	/* Phase 2: Admin Completion Queue (response ring) */
-	void *acq_base;                 /* Virtual base of the ACQ ring */
-	uint64_t acq_phys;              /* Physical base of the ACQ ring */
-	uint16_t acq_depth;             /* ACQ depth (power of 2) */
-	uint16_t acq_head;             /* Next ACQ slot to read */
-	uint8_t acq_phase;             /* Expected ACQ phase bit */
+	void *acq_base;	    /* Virtual base of the ACQ ring */
+	uint64_t acq_phys;  /* Physical base of the ACQ ring */
+	uint16_t acq_depth; /* ACQ depth (power of 2) */
+	uint16_t acq_head;  /* Next ACQ slot to read */
+	uint8_t acq_phase;  /* Expected ACQ phase bit */
 
 	/* Phase 2: Asynchronous Event Notification Queue */
-	void *aenq_base;               /* Virtual base of the AENQ ring */
-	uint64_t aenq_phys;            /* Physical base of the AENQ ring */
-	uint16_t aenq_depth;           /* AENQ depth (power of 2) */
-	uint16_t aenq_head;            /* Next AENQ slot to read */
-	uint8_t aenq_phase;            /* Expected AENQ phase bit */
+	void *aenq_base;     /* Virtual base of the AENQ ring */
+	uint64_t aenq_phys;  /* Physical base of the AENQ ring */
+	uint16_t aenq_depth; /* AENQ depth (power of 2) */
+	uint16_t aenq_head;  /* Next AENQ slot to read */
+	uint8_t aenq_phase;  /* Expected AENQ phase bit */
 
 	/* Phase 2: AENQ event dispatch */
 	ena_aenq_handler *aenq_handler;
 	void *aenq_handler_arg;
-	bool link_up;             /* Current link state from AENQ LINK_CHANGE events */
+	bool link_up; /* Current link state from AENQ LINK_CHANGE events */
 
 	/* Phase 3: negotiated device attributes */
-	uint32_t impl_id;               /* Device implementation id */
-	uint32_t device_version;        /* Device version from attributes */
-	uint32_t supported_features;    /* Feature id bitmap from device */
-	uint32_t attr_caps;             /* Capability bitmap from attributes */
-	uint32_t phys_addr_width;       /* Physical address width in bits */
-	uint32_t virt_addr_width;       /* Virtual address width in bits */
-	uint32_t max_header_size;       /* Maximum TX header size */
-	uint16_t max_packet_tx_descs;   /* Max descriptors per TX packet */
-	uint16_t max_packet_rx_descs;   /* Max descriptors per RX packet */
-	uint32_t mtu;                   /* Negotiated MTU */
+	uint32_t impl_id;	      /* Device implementation id */
+	uint32_t device_version;      /* Device version from attributes */
+	uint32_t supported_features;  /* Feature id bitmap from device */
+	uint32_t attr_caps;	      /* Capability bitmap from attributes */
+	uint32_t phys_addr_width;     /* Physical address width in bits */
+	uint32_t virt_addr_width;     /* Virtual address width in bits */
+	uint32_t max_header_size;     /* Maximum TX header size */
+	uint16_t max_packet_tx_descs; /* Max descriptors per TX packet */
+	uint16_t max_packet_rx_descs; /* Max descriptors per RX packet */
+	uint32_t mtu;		      /* Negotiated MTU */
 
 	/* Phase 3: host info buffer */
-	void *host_info_base;           /* Virtual base of the 4KB buffer */
-	uint64_t host_info_phys;        /* Physical base of the 4KB buffer */
+	void *host_info_base;	 /* Virtual base of the 4KB buffer */
+	uint64_t host_info_phys; /* Physical base of the 4KB buffer */
 
 	/* Phase 4: IO Rings */
 	struct ena_ring **tx_rings;
@@ -150,13 +152,15 @@ int ena_device_reset(struct ena_adapter *adapter);
  * @param max_polls Maximum number of polling iterations before timing out.
  * @return 0 when reset completes, or -ETIMEDOUT if polling budget expires.
  */
-int ena_device_wait_reset_complete(struct ena_adapter *adapter, unsigned int max_polls);
+int ena_device_wait_reset_complete(struct ena_adapter *adapter,
+				   unsigned int max_polls);
 
 /**
  * Check if the device is in a ready state.
  *
  * @param adapter Pointer to the master ENA adapter structure.
- * @return 0 if the device is ready, -EBUSY if not ready, or -EINVAL on invalid arguments.
+ * @return 0 if the device is ready, -EBUSY if not ready, or -EINVAL on invalid
+ * arguments.
  */
 int ena_device_check_ready(const struct ena_adapter *adapter);
 
@@ -168,7 +172,8 @@ int ena_device_check_ready(const struct ena_adapter *adapter);
  * @param bar0_size Size of the BAR0 MMIO address space in bytes.
  * @return 0 on success, or a negative errno value on error.
  */
-int ena_device_init_scaffold(struct ena_adapter *adapter, void *bar0_base, size_t bar0_size);
+int ena_device_init_scaffold(struct ena_adapter *adapter, void *bar0_base,
+			     size_t bar0_size);
 
 #ifndef __Unikraft__
 /* Host test hook: the mock registers a callback that observes each reset
@@ -232,9 +237,9 @@ int ena_admin_aenq_register(struct ena_adapter *adapter,
  *
  * @param adapter Pointer to the master ENA adapter structure.
  * @param max_events Maximum number of event entries to process in this sweep.
- * @return Number of processed events on success, or a negative errno value on error.
+ * @return Number of processed events on success, or a negative errno value on
+ * error.
  */
 int ena_admin_aenq_poll(struct ena_adapter *adapter, unsigned int max_events);
 
 #endif /* LIBENA_ENA_H */
-

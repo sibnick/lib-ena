@@ -17,25 +17,27 @@
 
 static int g_failures;
 
-#define SUBTEST(fn) do { \
-	printf("[TEST] %s...\n", #fn); \
-	if ((fn)() == 0) \
-		printf("[PASS] %s\n", #fn); \
-	else { \
-		printf("[FAIL] %s\n", #fn); \
-		g_failures++; \
-	} \
-} while (0)
+#define SUBTEST(fn)                                                            \
+	do {                                                                   \
+		printf("[TEST] %s...\n", #fn);                                 \
+		if ((fn)() == 0)                                               \
+			printf("[PASS] %s\n", #fn);                            \
+		else {                                                         \
+			printf("[FAIL] %s\n", #fn);                            \
+			g_failures++;                                          \
+		}                                                              \
+	} while (0)
 
-#define TEST_ASSERT(cond) do { \
-	if (!(cond)) { \
-		fprintf(stderr, "  assertion failed: %s (line %d)\n", \
-			#cond, __LINE__); \
-		return 1; \
-	} \
-} while (0)
+#define TEST_ASSERT(cond)                                                      \
+	do {                                                                   \
+		if (!(cond)) {                                                 \
+			fprintf(stderr, "  assertion failed: %s (line %d)\n",  \
+				#cond, __LINE__);                              \
+			return 1;                                              \
+		}                                                              \
+	} while (0)
 
-#define T0	1000000ULL	/* 1 ms: time at which the core starts */
+#define T0 1000000ULL /* 1 ms: time at which the core starts */
 
 /* A fresh state takes no sleep. */
 static int test_init_no_sleep(void)
@@ -67,8 +69,9 @@ static int test_active_streak_window(void)
 		TEST_ASSERT(ib_tick(&s, T0 + (uint64_t)(i + 1) * 1000, 0) == 0);
 
 	/* The 9th no-work iteration crosses the limit. */
-	TEST_ASSERT(ib_tick(&s, T0 + (uint64_t)(IB_IDLE_STREAK_LIMIT + 1) * 1000, 0) ==
-		    IB_ACTIVE_SLEEP_NS);
+	TEST_ASSERT(ib_tick(&s,
+			    T0 + (uint64_t)(IB_IDLE_STREAK_LIMIT + 1) * 1000,
+			    0) == IB_ACTIVE_SLEEP_NS);
 
 	return 0;
 }
@@ -110,11 +113,8 @@ static int test_dormant_growth_and_cap(void)
 	struct ib_state s;
 	int i;
 	uint64_t expect[] = {
-		IB_LONG_BASE_NS,
-		IB_LONG_BASE_NS << 1,
-		IB_LONG_BASE_NS << 2,
-		IB_LONG_MAX_NS,
-		IB_LONG_MAX_NS,
+	    IB_LONG_BASE_NS, IB_LONG_BASE_NS << 1, IB_LONG_BASE_NS << 2,
+	    IB_LONG_MAX_NS,  IB_LONG_MAX_NS,
 	};
 
 	/* Start ticking at 3 ms: already beyond the 2 ms window. */
@@ -132,7 +132,8 @@ static int test_dormant_growth_and_cap(void)
 		if ((uint32_t)(i + 1) <= IB_IDLE_STREAK_LIMIT)
 			TEST_ASSERT(ns == 0);
 		else
-			TEST_ASSERT(ns == expect[(i + 1) - IB_IDLE_STREAK_LIMIT - 1]);
+			TEST_ASSERT(ns ==
+				    expect[(i + 1) - IB_IDLE_STREAK_LIMIT - 1]);
 	}
 
 	TEST_ASSERT(s.shift == IB_LONG_MAX_SHIFT);

@@ -36,7 +36,8 @@ static void test_tx_submit_basic(void)
 	const struct ena_eth_io_tx_desc *desc;
 
 	memset(&adapter, 0, sizeof(adapter));
-	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 16, 16, &ring) == 0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 16, 16, &ring) ==
+	       0);
 	assert(ena_tx_free_space(ring) == 16);
 
 	memset(&pkt, 0, sizeof(pkt));
@@ -82,7 +83,8 @@ static void test_tx_submit_checksum_flags(void)
 	const struct ena_eth_io_tx_desc *desc;
 
 	memset(&adapter, 0, sizeof(adapter));
-	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 16, 16, &ring) == 0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 16, 16, &ring) ==
+	       0);
 
 	/* 1. IPv4 TCP packet with checksum offload and DF */
 	memset(&pkt, 0, sizeof(pkt));
@@ -97,8 +99,11 @@ static void test_tx_submit_checksum_flags(void)
 	assert(ena_tx_submit(ring, &pkt, &req_id) == 0);
 	desc = &((const struct ena_eth_io_tx_desc *)ring->sq_virt)[0];
 
-	assert((desc->meta_ctrl & ENA_ETH_IO_TX_DESC_L3_PROTO_IDX_MASK) == ENA_ETH_IO_L3_PROTO_IPV4);
-	assert(((desc->meta_ctrl & ENA_ETH_IO_TX_DESC_L4_PROTO_IDX_MASK) >> ENA_ETH_IO_TX_DESC_L4_PROTO_IDX_SHIFT) == ENA_ETH_IO_L4_PROTO_TCP);
+	assert((desc->meta_ctrl & ENA_ETH_IO_TX_DESC_L3_PROTO_IDX_MASK) ==
+	       ENA_ETH_IO_L3_PROTO_IPV4);
+	assert(((desc->meta_ctrl & ENA_ETH_IO_TX_DESC_L4_PROTO_IDX_MASK) >>
+		ENA_ETH_IO_TX_DESC_L4_PROTO_IDX_SHIFT) ==
+	       ENA_ETH_IO_L4_PROTO_TCP);
 	assert(desc->meta_ctrl & ENA_ETH_IO_TX_DESC_L3_CSUM_EN_MASK);
 	assert(desc->meta_ctrl & ENA_ETH_IO_TX_DESC_L4_CSUM_EN_MASK);
 	assert(desc->meta_ctrl & ENA_ETH_IO_TX_DESC_DF_MASK);
@@ -114,8 +119,11 @@ static void test_tx_submit_checksum_flags(void)
 	assert(ena_tx_submit(ring, &pkt, &req_id) == 0);
 	desc = &((const struct ena_eth_io_tx_desc *)ring->sq_virt)[1];
 
-	assert((desc->meta_ctrl & ENA_ETH_IO_TX_DESC_L3_PROTO_IDX_MASK) == ENA_ETH_IO_L3_PROTO_IPV6);
-	assert(((desc->meta_ctrl & ENA_ETH_IO_TX_DESC_L4_PROTO_IDX_MASK) >> ENA_ETH_IO_TX_DESC_L4_PROTO_IDX_SHIFT) == ENA_ETH_IO_L4_PROTO_UDP);
+	assert((desc->meta_ctrl & ENA_ETH_IO_TX_DESC_L3_PROTO_IDX_MASK) ==
+	       ENA_ETH_IO_L3_PROTO_IPV6);
+	assert(((desc->meta_ctrl & ENA_ETH_IO_TX_DESC_L4_PROTO_IDX_MASK) >>
+		ENA_ETH_IO_TX_DESC_L4_PROTO_IDX_SHIFT) ==
+	       ENA_ETH_IO_L4_PROTO_UDP);
 	assert(!(desc->meta_ctrl & ENA_ETH_IO_TX_DESC_L3_CSUM_EN_MASK));
 	assert(desc->meta_ctrl & ENA_ETH_IO_TX_DESC_L4_CSUM_EN_MASK);
 
@@ -163,7 +171,8 @@ static void test_tx_doorbell(void)
 	uint16_t req_id;
 
 	assert(setup_adapter(&hw, &adapter) == 0);
-	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 16, 16, &ring) == 0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 16, 16, &ring) ==
+	       0);
 	assert(ena_ring_create_hw(ring, 0) == 0);
 
 	memset(&pkt, 0, sizeof(pkt));
@@ -279,7 +288,8 @@ static void test_tx_phase_flip_wrap(void)
 	/* Cycle 2: Submit next packet with phase = 0 */
 	assert(ena_tx_submit(ring, &pkt, &req_id) == 0);
 	desc = &((const struct ena_eth_io_tx_desc *)ring->sq_virt)[0];
-	assert(!(desc->len_ctrl & ENA_ETH_IO_TX_DESC_PHASE_MASK)); /* Phase bit is 0 */
+	assert(!(desc->len_ctrl &
+		 ENA_ETH_IO_TX_DESC_PHASE_MASK)); /* Phase bit is 0 */
 
 	/* Complete the 5th packet */
 	mock_ena_hw_emulate_tx(&hw, ring, 1);
@@ -304,8 +314,10 @@ static void test_tx_invalid_args(void)
 	uint16_t req_id;
 
 	memset(&adapter, 0, sizeof(adapter));
-	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8, &tx_ring) == 0);
-	assert(ena_ring_alloc(&adapter, 1, ENA_RING_TYPE_RX, 8, 8, &rx_ring) == 0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8, &tx_ring) ==
+	       0);
+	assert(ena_ring_alloc(&adapter, 1, ENA_RING_TYPE_RX, 8, 8, &rx_ring) ==
+	       0);
 
 	memset(&pkt, 0, sizeof(pkt));
 	pkt.phys_addr = 0x1000;
