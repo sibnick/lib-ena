@@ -797,7 +797,8 @@ static volatile __nsec mc_fd_lock_acquired_at;
  * the fd. The lock is only ever held around accept4 and close.
  * [Ticket a9c6945c21]
  */
-enum mc_fd_op { MC_FD_OP_NONE = 0, MC_FD_OP_ACCEPT, MC_FD_OP_CLOSE };
+enum mc_fd_op { MC_FD_OP_NONE = 0, MC_FD_OP_ACCEPT, MC_FD_OP_CLOSE,
+		MC_FD_OP_LISTEN };
 static volatile int mc_fd_op[MC_MAX_WORKERS];
 static volatile __nsec mc_fd_op_at[MC_MAX_WORKERS];
 static volatile int mc_fd_op_fd[MC_MAX_WORKERS];
@@ -834,7 +835,9 @@ static void mc_fd_lock_acquire(void)
 			int ofd = mc_fd_op_fd[holder];
 			const char *opname =
 				(op == MC_FD_OP_ACCEPT) ? "accept4" :
-				(op == MC_FD_OP_CLOSE) ? "close" : "unknown";
+				(op == MC_FD_OP_CLOSE) ? "close" :
+				(op == MC_FD_OP_LISTEN) ? "listen-setup" :
+				"unknown";
 
 			warned = 1;
 			printf("httpreply-mc: [WARN] core %u waiting on fd lock "
@@ -908,9 +911,11 @@ static int create_core_listener(int core_id)
 	       (unsigned long)uk_pcpuvar_current_get(uk_pcpuvar_cpu_idx));
 
 	mc_fd_lock_acquire();
+	mc_fd_mark(mc_this_core(), MC_FD_OP_LISTEN, -1);
 	fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
 	if (fd < 0) {
 		printf("httpreply-mc: [ERR] socket failed: errno %d\n", errno);
+		mc_fd_unmark(mc_this_core());
 		mc_fd_lock_release();
 		return -1;
 	}
@@ -918,6 +923,7 @@ static int create_core_listener(int core_id)
 	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
 		printf("httpreply-mc: [ERR] SO_REUSEADDR failed: errno %d\n", errno);
 		close(fd);
+		mc_fd_unmark(mc_this_core());
 		mc_fd_lock_release();
 		return -1;
 	}
@@ -925,6 +931,7 @@ static int create_core_listener(int core_id)
 	if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
 		printf("httpreply-mc: [ERR] SO_REUSEPORT failed: errno %d\n", errno);
 		close(fd);
+		mc_fd_unmark(mc_this_core());
 		mc_fd_lock_release();
 		return -1;
 	}
@@ -939,6 +946,7 @@ static int create_core_listener(int core_id)
 	if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
 		printf("httpreply-mc: [ERR] bind failed: errno %d\n", errno);
 		close(fd);
+		mc_fd_unmark(mc_this_core());
 		mc_fd_lock_release();
 		return -1;
 	}
@@ -946,6 +954,7 @@ static int create_core_listener(int core_id)
 	if (listen(fd, BACKLOG) < 0) {
 		printf("httpreply-mc: [ERR] listen failed: errno %d\n", errno);
 		close(fd);
+		mc_fd_unmark(mc_this_core());
 		mc_fd_lock_release();
 		return -1;
 	}
@@ -954,6 +963,7 @@ static int create_core_listener(int core_id)
 	printf("httpreply-mc: core %d listener fd=%d (lwip_core %u, listen_pcb=%p)\n",
 	       core_id, fd, lwip_current_core_id(), (void *)l);
 
+	mc_fd_unmark(mc_this_core());
 	mc_fd_lock_release();
 	return fd;
 }
