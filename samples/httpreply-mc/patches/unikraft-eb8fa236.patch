@@ -422,7 +422,7 @@ index 04bc0ed..1cbb4b6 100644
  
  	iolock = _SHOULD_LOCK(of->mode);
 diff --git a/lib/ukalloc/alloc.c b/lib/ukalloc/alloc.c
-index b7bf88f..4cef05f 100644
+index b7bf88f..a263114 100644
 --- a/lib/ukalloc/alloc.c
 +++ b/lib/ukalloc/alloc.c
 @@ -41,18 +41,43 @@
@@ -499,16 +499,18 @@ index b7bf88f..4cef05f 100644
  #ifdef CONFIG_HAVE_MEMTAG
  	return ukarch_memtag_region(
  		(void *)(intptr + METADATA_IFPAGES_SIZE_POW2),
-@@ -197,6 +237,20 @@ void uk_free_ifpages(struct uk_alloc *a, void *ptr)
+@@ -197,6 +237,22 @@ void uk_free_ifpages(struct uk_alloc *a, void *ptr)
  
  	UK_ASSERT(metadata->base != __NULL);
  	UK_ASSERT(metadata->num_pages != 0);
 +
 +#if CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY
 +	{
++		/* The canary sits just past the user region: userptr + size.
++		 * For uk_malloc that is base+METADATA+size; for uk_memalign
++		 * the user pointer is alignment-offset, so use ptr itself. */
 +		unsigned long long *canary = (unsigned long long *)
-+			((char *) metadata->base +
-+			 METADATA_IFPAGES_SIZE_POW2 + metadata->size);
++			((char *) ptr + metadata->size);
 +
 +		if (canary[0] != UKALLOC_CANARY_A ||
 +		    canary[1] != UKALLOC_CANARY_B)
@@ -520,7 +522,7 @@ index b7bf88f..4cef05f 100644
  	uk_pfree(a, metadata->base, metadata->num_pages);
  
  #ifdef CONFIG_HAVE_MEMTAG
-@@ -204,6 +258,36 @@ void uk_free_ifpages(struct uk_alloc *a, void *ptr)
+@@ -204,6 +260,35 @@ void uk_free_ifpages(struct uk_alloc *a, void *ptr)
  #endif /* CONFIG_HAVE_MEMTAG */
  }
  
@@ -543,8 +545,7 @@ index b7bf88f..4cef05f 100644
 +	if (!metadata->base || !metadata->num_pages)
 +		return 0;
 +	canary = (unsigned long long *)
-+		((char *) metadata->base +
-+		 METADATA_IFPAGES_SIZE_POW2 + metadata->size);
++		((char *) ptr + metadata->size);
 +	if (canary[0] != UKALLOC_CANARY_A || canary[1] != UKALLOC_CANARY_B)
 +		return 1;
 +	return 0;
@@ -557,7 +558,24 @@ index b7bf88f..4cef05f 100644
  void *uk_realloc_ifpages(struct uk_alloc *a, void *ptr, __sz size)
  {
  	void *retptr;
-@@ -629,3 +713,22 @@ unsigned long uk_alloc_pavailmem_total(void)
+@@ -313,6 +398,16 @@ int uk_posix_memalign_ifpages(struct uk_alloc *a,
+ 	metadata->num_pages = num_pages;
+ 	metadata->base = (void *) intptr;
+ 
++#if CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY
++	{
++		unsigned long long *canary = (unsigned long long *)
++			((char *) *memptr + size);
++
++		canary[0] = UKALLOC_CANARY_A;
++		canary[1] = UKALLOC_CANARY_B;
++	}
++#endif
++
+ #ifdef CONFIG_HAVE_MEMTAG
+ 	ukarch_memtag_region(*memptr, size);
+ #endif /* CONFIG_HAVE_MEMTAG */
+@@ -629,3 +724,22 @@ unsigned long uk_alloc_pavailmem_total(void)
  	}
  	return total;
  }
