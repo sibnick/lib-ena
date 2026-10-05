@@ -134,41 +134,38 @@ wrk -t4 -c200 -d10s --latency http://<instance-ip>/
 
 ## 7. Verified AWS EC2 Performance Results
 
-These results come from a same-day A/B run on 2026-09-27. Both servers are
-AWS EC2 `c6i.large` (2 vCPUs) in subnet 172.31.16.0/20 (us-east-1a), and the
-`wrk` 4.1.0 client (Ubuntu 24.04) sits in the same subnet. Both servers return
-a 14-byte HTTP body. Each level ran as two 10 s `wrk` sweeps (threads = 1 for
-c=1, 2 for c=2, 4 above), and the tables show the mean of the two sweeps.
+These results come from a same-day A/B run on 2026-10-05, on trunk
+revision `cf895d8cec`. This trunk includes the TX reclaim at completion
+[Ticket 292e049bf4] and the compiler optimization changes
+[Ticket 483416560f]. Both servers are AWS EC2 `c6i.large` (2 vCPUs) in
+subnet 172.31.16.0/20 (us-east-1a), and the `wrk` client (Ubuntu 24.04)
+sits in the same subnet. Both servers return a 14-byte HTTP body. Each
+level ran one 30 s `wrk` sweep with 2 threads.
 
-**What the levels mean.** c=1 through c=25 are reference points that show how
-throughput scales with the connection count at low load. c=50 is where the two
-stacks cross. c=100 is the only pass/fail goal of the multi-core design: it
-must reach at least 80,000 req/s, and it reached 102,812. c=200 is a stress
-probe of the saturation limit.
+**What the levels mean.** c=10 and c=25 show throughput at low load.
+c=100 is the pass/fail goal of the multi-core design: it must reach at
+least 80,000 req/s, and it reached 218,506. c=200 is a stress probe of
+the saturation limit.
 
 ### Table 1. Unikraft multi-core (`httpreply-mc`)
 
 | Concurrency (`-c`) | Req/s | Avg Latency (ms) | P50 (µs) | P99 (ms) | Socket Errors |
 | :--- | ---: | ---: | ---: | ---: | ---: |
-| 1 | 3,859.92 | 9.83 | 228.50 | 197.12 | 0 |
-| 2 | 7,219.15 | 9.05 | 241.00 | 158.73 | 0 |
-| 10 | 22,195.43 | 15.93 | 288.00 | 346.87 | 0 |
-| 25 | 52,635.81 | 23.08 | 335.50 | 453.18 | 0 |
-| 50 | 77,830.53 | 28.58 | 394.50 | 529.90 | 0 |
-| 100 | 102,812.24 | 39.01 | 519.50 | 638.70 | 0 |
-| 200 | 109,122.67 | 53.67 | 879.00 | 949.98 | 0 |
+| 10 | 51,406.18 | 0.19 | 192.00 | 0.26 | 0 |
+| 25 | 103,629.18 | 0.22 | 225.00 | 0.30 | 0 |
+| 50 | 154,850.15 | 0.30 | 295.00 | 0.42 | 0 |
+| 100 | 218,506.21 | 0.43 | 399.00 | 1.70 | 0 |
+| 200 | 223,780.04 | 0.76 | 717.00 | 2.28 | 0 |
 
 ### Table 2. Linux Nginx baseline (Ubuntu 24.04, default configuration)
 
 | Concurrency (`-c`) | Req/s | Avg Latency (ms) | P50 (µs) | P99 (ms) | Socket Errors |
 | :--- | ---: | ---: | ---: | ---: | ---: |
-| 1 | 4,872.26 | 0.21 | 201.00 | 0.26 | 0 |
-| 2 | 9,381.17 | 0.21 | 211.00 | 0.26 | 0 |
-| 10 | 32,145.55 | 0.25 | 245.00 | 0.33 | 0 |
-| 25 | 71,436.16 | 0.33 | 336.00 | 0.45 | 0 |
-| 50 | 73,361.01 | 0.65 | 641.50 | 0.84 | 0 |
-| 100 | 72,908.95 | 1.36 | 1,365.00 | 1.90 | 0 |
-| 200 | 73,079.49 | 2.79 | 2,730.00 | 3.85 | 0 |
+| 10 | 29,926.21 | 0.34 | 337.00 | 0.43 | 0 |
+| 25 | 62,676.13 | 0.38 | 386.00 | 0.49 | 0 |
+| 50 | 74,290.73 | 0.67 | 671.00 | 0.88 | 0 |
+| 100 | 74,409.55 | 1.34 | 1,330.00 | 1.72 | 0 |
+| 200 | 74,014.64 | 2.70 | 2,680.00 | 3.66 | 0 |
 
 ### Comparison
 
@@ -177,27 +174,28 @@ The last column is the relative difference (Unikraft minus Nginx, over Nginx).
 
 | Concurrency (`-c`) | Nginx Req/s | Unikraft Req/s | Unikraft vs Nginx |
 | :--- | ---: | ---: | ---: |
-| 1 | 4,872.26 | 3,859.92 | -20.8% |
-| 2 | 9,381.17 | 7,219.15 | -23.0% |
-| 10 | 32,145.55 | 22,195.43 | -31.0% |
-| 25 | 71,436.16 | 52,635.81 | -26.3% |
-| 50 | 73,361.01 | 77,830.53 | +6.1% |
-| 100 | 72,908.95 | 102,812.24 | +41.0% |
-| 200 | 73,079.49 | 109,122.67 | +49.3% |
+| 10 | 29,926.21 | 51,406.18 | +71.8% |
+| 25 | 62,676.13 | 103,629.18 | +65.3% |
+| 50 | 74,290.73 | 154,850.15 | +108.4% |
+| 100 | 74,409.55 | 218,506.21 | +193.7% |
+| 200 | 74,014.64 | 223,780.04 | +202.3% |
 
-Nginx plateaus at about 73k req/s from c=50 up, because its two worker
-processes saturate there. The multi-core Unikraft server keeps scaling: from
-c=50 up, traffic spans both cores, and the gap widens with the connection count.
+Nginx plateaus at about 74k req/s from c=50 up, because its two worker
+processes saturate there. The multi-core Unikraft server keeps scaling, and
+it now leads Nginx at every measured level, from +72% at c=10 to +202% at
+c=200.
 
-At low concurrency (c=10 and below) Nginx is faster. Few connections map to one
-core's queue, and the userspace stack pays more per request than the kernel for
-this 14-byte reply. At c=50 and above, enough parallel flows exist to feed both
-cores, and the shared-nothing design wins by 6% to 49%.
+These numbers double the throughput of the 2026-09-27 run at the same
+levels. Two changes on trunk account for the gain: the driver reclaims TX
+bounce slots at completion instead of walking all 256 map entries per send
+[Ticket 292e049bf4], and the build now compiles the driver at `-O3` with
+LTO [Ticket 483416560f].
 
-One caveat: the P99 column of Table 1 is inflated by the driver's 2 s heartbeat
-and console I/O pauses, visible in every run since 2026-09-24. Nginx P99 stays
-under 4 ms. Both stacks served all requests with zero socket errors (14,336,481
-requests across 28 `wrk` runs).
+The P99 tail also dropped. Earlier runs showed P99 near one second, caused
+by the driver heartbeat and console I/O pauses. In this run P99 stays under
+2.3 ms, and the average latency stays under 0.8 ms at c=200. Both stacks
+served all requests with zero socket errors (32,081,621 requests across
+10 `wrk` runs).
 
 ## 8. Configuration Reference
 

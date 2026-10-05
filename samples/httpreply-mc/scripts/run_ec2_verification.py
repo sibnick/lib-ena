@@ -522,7 +522,7 @@ def main():
     snapshot_id = None
     eip_allocation_id = None
     gate_failed = False
-    date_str = "2026-09-30"
+    date_str = time.strftime("%Y-%m-%d")
 
     try:
         disk_raw = create_bootable_disk(kernel_path, sample_dir)
@@ -729,7 +729,6 @@ def main():
             print(f"[WARN] Could not retrieve cap.pcap: {e}")
 
         # Save JSON & CSV
-        date_str = "2026-09-30"
         json_path = sample_dir / f"benchmark_results_{date_str}.json"
         csv_path = sample_dir / f"benchmark_results_{date_str}.csv"
 
