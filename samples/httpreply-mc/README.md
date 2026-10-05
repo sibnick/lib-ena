@@ -197,6 +197,72 @@ by the driver heartbeat and console I/O pauses. In this run P99 stays under
 served all requests with zero socket errors (32,081,621 requests across
 10 `wrk` runs).
 
+### 4-vCPU run (c6i.xlarge, 2026-10-06)
+
+This run tests the 4-core build on trunk revision `42cf122bb3`. That
+trunk includes the per-core heap fix [Ticket f47bdd0ed1]. Worker `i` now
+runs on CPU `i`, so each queue pair keeps one owner. Both servers are AWS
+EC2 `c6i.xlarge` (4 vCPUs) in the same subnet as the client.
+
+Each level runs two phases. First, closed-loop `wrk` 4.1.0 for 30 s gives
+throughput, P50, and P99 with the same method as the tables above.
+Second, `wrk2` runs for 30 s at a fixed rate of 90 percent of the
+measured throughput. `wrk2` reports the coordinated-omission-corrected
+P99.9. A fixed rate must stay below capacity, or the rate scheduler
+skews the histogram. CPU load comes from CloudWatch `CPUUtilization`
+(1-minute datapoints) over each phase window.
+
+### Table 3. Unikraft multi-core, 4 vCPUs (`httpreply-mc`)
+
+| Concurrency (`-c`) | Req/s | Avg Latency (ms) | P50 (µs) | P99 (ms) | P99.9 (ms) | CPU avg/max (%) | Socket Errors |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 25 | 53,761.97 | 0.45 | 439.00 | 0.62 | 108.80 | 66.4 / 85.0 | 0 |
+| 50 | 98,643.64 | 0.49 | 478.00 | 0.69 | 16.45 | 87.0 / 89.0 | 0 |
+| 100 | 177,021.22 | 0.56 | 543.00 | 0.86 | 6.23 | 88.6 / 89.0 | 0 |
+| 200 | 270,862.21 | 0.73 | 685.00 | 1.29 | 153.85 | 85.8 / 88.2 | 0 |
+| 300 | 304,708.55 | 0.97 | 880.00 | 2.07 | 246.14 | 86.2 / 91.7 | 0 |
+| 500 | 306,561.16 | 1.62 | 1,510.00 | 3.03 | 1,210.00 | 91.7 / 91.7 | 0 |
+
+### Table 4. Linux Nginx baseline, 4 vCPUs (Ubuntu 24.04, default configuration)
+
+| Concurrency (`-c`) | Req/s | Avg Latency (ms) | P50 (µs) | P99 (ms) | P99.9 (ms) | CPU avg/max (%) | Socket Errors |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 25 | 76,264.07 | 0.32 | 306.00 | 0.40 | 2.29 | 44.1 / 59.9 | 0 |
+| 50 | 129,594.32 | 0.37 | 358.00 | 0.50 | 42.72 | 69.1 / 78.3 | 0 |
+| 100 | 138,304.01 | 0.72 | 715.00 | 0.94 | 25.76 | 79.4 / 80.5 | 0 |
+| 200 | 138,415.46 | 1.44 | 1,430.00 | 1.92 | 27.26 | 82.7 / 86.0 | 0 |
+| 300 | 138,261.81 | 2.16 | 2,150.00 | 2.77 | 227.07 | 79.6 / 81.5 | 0 |
+| 500 | 136,975.96 | 3.67 | 3,620.00 | 4.85 | 8.74 | 77.7 / 77.7 | 0 |
+
+### Comparison at 4 vCPUs
+
+| Concurrency (`-c`) | Nginx Req/s | Unikraft Req/s | Unikraft vs Nginx |
+| :--- | ---: | ---: | ---: |
+| 25 | 76,264.07 | 53,761.97 | -29.5% |
+| 50 | 129,594.32 | 98,643.64 | -23.9% |
+| 100 | 138,304.01 | 177,021.22 | +28.0% |
+| 200 | 138,415.46 | 270,862.21 | +95.7% |
+| 300 | 138,261.81 | 304,708.55 | +120.4% |
+| 500 | 136,975.96 | 306,561.16 | +123.8% |
+
+Nginx with four worker processes plateaus at about 138k req/s from
+c=100 up. The Unikraft server keeps scaling to 306k req/s at c=500, and
+it leads Nginx from c=100 up. At c=25 and c=50 this run shows Nginx
+ahead. The 2-vCPU run above shows Unikraft ahead at those levels, so the
+low-concurrency order is not stable across runs.
+
+The 4-core build reaches 306k req/s, 37 percent above the 2-core peak of
+223k. A 2026-10-05 run of the same build reached 334k req/s at c=300,
+so run-to-run spread is about 10 percent. The P99.9 column also varies
+between runs (the same build showed 3.5 ms at c=500 on 2026-10-05 and
+1,210 ms here). Treat P99.9 as a one-shot sample, not a stable limit.
+P99 stays under 3.1 ms at every level. Both stacks served all requests
+with zero socket errors (59,162,607 requests across 12 runs).
+
+Raw output, CSV, and JSON are in `fossil uv` under
+`reports/httpreply-mc_2026-10-06/`. The 2026-10-05 4-vCPU run is under
+`reports/httpreply-mc_2026-10-05/` with the `4cpu-fixed-` prefix.
+
 ## 8. Configuration Reference
 
 Key Kconfig options used in `defconfig`:
