@@ -501,7 +501,7 @@ static void drive_core_stack(int core_id)
 
 			if (dev)
 				ena_netdev_aen_report(dev, &aen_n, &aen_rx, &aen_tx);
-			printf("httpreply-mc: core %d heartbeat (polls=%lu, rx=%lu, tx=%lu, active=%u, rxpost=%u refill=%llu rxdrop=%llu, aen=%u rxdrop=%llu txdrop=%llu, free: pbuf=%u pcb=%u seg=%u)\n",
+			printf("httpreply-mc: core %d heartbeat (polls=%lu, rx=%lu, tx=%lu, active=%u, rxpost=%u refill=%llu rxdrop=%llu, aen=%u rxdrop=%llu txdrop=%llu, free: pbuf=%u pcb=%u seg=%u, heapfree=%lld defheapfree=%lld)\n",
 			       core_id, poll_cnt[core_id], rxpkts, txpkts,
 			       active_pcbs,
 			       dev ? ena_netdev_rx_posted(dev, (uint16_t)core_id) : 0xFFFFFFFFu,
@@ -510,7 +510,9 @@ static void drive_core_stack(int core_id)
 			       aen_n,
 			       (unsigned long long)aen_rx,
 			       (unsigned long long)aen_tx,
-			       m_pbuf, m_pcb, m_seg);
+			       m_pbuf, m_pcb, m_seg,
+			       (long long)uk_alloc_availmem(uk_alloc_get_current()),
+			       (long long)uk_alloc_availmem(uk_alloc_get_default()));
 
 
 		}

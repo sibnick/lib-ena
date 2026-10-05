@@ -79,191 +79,6 @@ index 6e748f0..ca006cd 100644
 +	(UK_INTCTLR_LAST_ALLOCABLE_IRQ - UK_INTCTLR_FIRST_ALLOCABLE_IRQ + 1)
  
  #endif /* __UK_INTCTLR_XPIC_LIMITS_H__ */
-diff --git a/drivers/ukintctlr/xpic/include/uk/intctlr/msix.h b/drivers/ukintctlr/xpic/include/uk/intctlr/msix.h
-new file mode 100644
-index 0000000..a2675ac
---- /dev/null
-+++ b/drivers/ukintctlr/xpic/include/uk/intctlr/msix.h
-@@ -0,0 +1,56 @@
-+/* SPDX-License-Identifier: BSD-3-Clause */
-+/*
-+ * MSI-X vector allocation and message construction for the x86_64
-+ * APIC-based interrupt controller (xpic).
-+ *
-+ * Copyright (c) 2026, Unikraft GmbH and The Unikraft Authors.
-+ * Licensed under the BSD-3-Clause License (the "License").
-+ * You may not use this file except in compliance with the License.
-+ */
-+
-+#ifndef __UK_INTCTLR_MSIX_H__
-+#define __UK_INTCTLR_MSIX_H__
-+
-+#include <uk/essentials.h>
-+
-+#ifdef __cplusplus
-+extern "C" {
-+#endif
-+
-+/**
-+ * Allocate one MSI-X vector and build its 16-byte message.
-+ *
-+ * Reserves one irq from the uk_intctlr pool. The hardware vector
-+ * number is 32 + irq, so the interrupt lands in the target lcpu's
-+ * IDT IRQ gate. uk_intctlr dispatches the interrupt, and the APIC
-+ * handler writes the EOI.
-+ *
-+ * The message targets lcpu @p lcpu in xAPIC physical destination
-+ * mode. The function reads the destination APIC ID from the
-+ * lcpu's recorded initial APIC ID (uk_pcpuvar_cpu_id). KVM and
-+ * QEMU set that ID equal to the vCPU index.
-+ *
-+ * @param lcpu    Target lcpu that should receive the interrupt.
-+ * @param irq     Output: allocated irq number (vector = 32 + irq).
-+ * @param addr    Output: 64-bit MSI address to store in table
-+ *                words 0 and 1 (low and high 32-bit halves).
-+ * @param data    Output: 32-bit data word (the vector) to store in
-+ *                table word 2.
-+ * @return zero on success, or a negative errno value on failure.
-+ */
-+int uk_intctlr_msix_alloc(unsigned int lcpu, unsigned int *irq,
-+			  __u64 *addr, __u32 *data);
-+
-+/**
-+ * Free a vector previously allocated by uk_intctlr_msix_alloc().
-+ *
-+ * @param irq The irq number returned by uk_intctlr_msix_alloc().
-+ * @return zero on success, or a negative errno value on failure.
-+ */
-+int uk_intctlr_msix_free(unsigned int irq);
-+
-+#ifdef __cplusplus
-+}
-+#endif
-+
-+#endif /* __UK_INTCTLR_MSIX_H__ */
-diff --git a/drivers/ukintctlr/xpic/msix.c b/drivers/ukintctlr/xpic/msix.c
-new file mode 100644
-index 0000000..5855972
---- /dev/null
-+++ b/drivers/ukintctlr/xpic/msix.c
-@@ -0,0 +1,117 @@
-+/* SPDX-License-Identifier: BSD-3-Clause */
-+/*
-+ * MSI-X vector allocation and message construction for the x86_64
-+ * APIC-based interrupt controller (xpic).
-+ *
-+ * Copyright (c) 2026, Unikraft GmbH and The Unikraft Authors.
-+ * Licensed under the BSD-3-Clause License (the "License").
-+ * You may not use this file except in compliance with the License.
-+ */
-+
-+#include <errno.h>
-+#include <uk/intctlr.h>
-+#include <uk/intctlr/msix.h>
-+#include <uk/intctlr/limits.h>
-+#include <uk/pcpuvar.h>
-+
-+#if CONFIG_LIBUKINTCTLR_APIC
-+
-+/*
-+ * xAPIC physical destination mode: the low 32 bits of the 64-bit
-+ * MSI address are the APIC MMIO base (0xFEE00000) with the
-+ * destination APIC ID in bits 31:24. The high 32 bits are zero.
-+ */
-+#define UK_MSIX_XAPIC_ADDR_BASE		0xFEE00000ULL
-+
-+/*
-+ * Two bands stay outside the allocatable pool: the wake IPI (irq
-+ * 208, vector 0xF0) and the per-vCPU LAPIC one-shot (irq 16,
-+ * vector 0x30). With the pool spanning irq 20..207 (see limits.h)
-+ * an allocated MSI-X vector can never collide with either band,
-+ * and the IPI band no longer shares a vector with the one-shot.
-+ */
-+#define UK_MSIX_FIRST_VECTOR		(32 + UK_INTCTLR_FIRST_ALLOCABLE_IRQ)
-+
-+static unsigned int apic_id_of_lcpu(unsigned int lcpu)
-+{
-+	unsigned int id = (unsigned int)uk_pcpuvar_lval(lcpu,
-+							  uk_pcpuvar_cpu_id);
-+
-+	/*
-+	 * If bring-up did not populate a slot, the code falls back to
-+	 * the vCPU index. KVM and QEMU use that index as the APIC ID.
-+	 */
-+	if (id == 0 && lcpu != 0)
-+		id = lcpu;
-+
-+	return id;
-+}
-+
-+int uk_intctlr_msix_alloc(unsigned int lcpu, unsigned int *irq,
-+			   __u64 *addr, __u32 *data)
-+{
-+	unsigned int nirq;
-+	__u32 vector;
-+	int rc;
-+
-+	if (!irq || !addr || !data)
-+		return -EINVAL;
-+
-+	rc = uk_intctlr_irq_alloc(&nirq, 1);
-+	if (rc)
-+		return rc;
-+
-+	vector = 32 + nirq;
-+
-+	/*
-+	 * The spurious vector 0xff never enters a table entry, and
-+	 * the reserved IPI band stays clear. The check guards against
-+	 * a pool that grows past its last valid vector.
-+	 */
-+	if (vector < UK_MSIX_FIRST_VECTOR || vector >= 0xff) {
-+		uk_intctlr_irq_free(&nirq, 1);
-+		return -ENOSPC;
-+	}
-+
-+	*irq = nirq;
-+	*data = vector;
-+
-+	/*
-+	 * xAPIC physical destination mode: the destination APIC ID
-+	 * goes into bits 19:12 of the MSI address. Bits 31:20 are
-+	 * the fixed 0xFEE prefix. A destination written to bits
-+	 * 31:24 breaks that prefix, names a non-LAPIC address, and
-+	 * the message is lost.
-+	 */
-+	*addr = UK_MSIX_XAPIC_ADDR_BASE |
-+		((__u64)apic_id_of_lcpu(lcpu) << 12);
-+
-+	return 0;
-+}
-+
-+int uk_intctlr_msix_free(unsigned int irq)
-+{
-+	unsigned int nirq = irq;
-+
-+	return uk_intctlr_irq_free(&nirq, 1);
-+}
-+
-+#else /* !CONFIG_LIBUKINTCTLR_APIC */
-+
-+int uk_intctlr_msix_alloc(unsigned int lcpu, unsigned int *irq,
-+			   __u64 *addr, __u32 *data)
-+{
-+	(void)lcpu;
-+	(void)irq;
-+	(void)addr;
-+	(void)data;
-+	return -ENOTSUP;
-+}
-+
-+int uk_intctlr_msix_free(unsigned int irq)
-+{
-+	(void)irq;
-+	return -ENOTSUP;
-+}
-+
-+#endif /* !CONFIG_LIBUKINTCTLR_APIC */
 diff --git a/drivers/ukintctlr/xpic/pic.c b/drivers/ukintctlr/xpic/pic.c
 index 7e8b51a..26094d2 100644
 --- a/drivers/ukintctlr/xpic/pic.c
@@ -704,10 +519,42 @@ index b4f7d55..84e53bb 100644
  }
  
 diff --git a/lib/ukallocbbuddy/bbuddy.c b/lib/ukallocbbuddy/bbuddy.c
-index 3e39480..113af81 100644
+index 3e39480..2ddd25b 100644
 --- a/lib/ukallocbbuddy/bbuddy.c
 +++ b/lib/ukallocbbuddy/bbuddy.c
-@@ -117,11 +117,11 @@ do {									\
+@@ -82,8 +82,31 @@ struct uk_bbpalloc {
+ 	unsigned long nr_free_pages;
+ 	struct uk_hlist_head free_head[FREELIST_SIZE];
+ 	struct uk_bbpalloc_memr *memr_head;
++	/* Set for an allocator shared between cores. The default heap is
++	 * used by every core (posix-socket, posix-poll, lwIP mailboxes).
++	 * bbuddy is not thread-safe without this guard: concurrent
++	 * malloc/free corrupts the free lists. [Ticket d4c2a6bd2a] */
++	unsigned int shared;
++	unsigned int lock;
+ };
+ 
++static inline void bbuddy_lock(struct uk_bbpalloc *b)
++{
++	unsigned int exp;
++
++	if (!b->shared)
++		return;
++	exp = 0;
++	while (!uk_compare_exchange_n(&b->lock, &exp, 1u))
++		exp = 0;
++}
++
++static inline void bbuddy_unlock(struct uk_bbpalloc *b)
++{
++	if (b->shared)
++		uk_exchange_n(&b->lock, 0u);
++}
++
+ #if CONFIG_LIBUKALLOCBBUDDY_FREELIST_SANITY
+ /* Provide sanity checking of freelists, walking their length and checking
+  * for consistency. Useful when suspecting memory corruption.
+@@ -117,11 +140,11 @@ do {									\
  			uk_pr_err("Bad page level" _FREESAN_LOCFMT	\
  				  "got %u, expected %zu\n",		\
  				  c, (ord), (head), off, c->page_order, (ord));\
@@ -721,7 +568,44 @@ index 3e39480..113af81 100644
  	}								\
  } while (0)
  
-@@ -473,6 +473,49 @@ static void bbuddy_pfree(struct uk_alloc *a, void *obj, unsigned long num_pages)
+@@ -356,7 +379,7 @@ static inline void bbuddy_trim(struct uk_bbpalloc *b, struct chunk_head *ch,
+ 	}
+ }
+ 
+-static void *bbuddy_palloc(struct uk_alloc *a, unsigned long num_pages)
++static void *bbuddy_palloc_nolock(struct uk_alloc *a, unsigned long num_pages)
+ {
+ 	struct uk_bbpalloc *const b = (struct uk_bbpalloc *)&a->priv;
+ 	struct chunk_head *alloc_ch;
+@@ -400,6 +423,17 @@ err_nomem:
+ 	return NULL;
+ }
+ 
++static void *bbuddy_palloc(struct uk_alloc *a, unsigned long num_pages)
++{
++	struct uk_bbpalloc *const b = (struct uk_bbpalloc *)&a->priv;
++	void *obj;
++
++	bbuddy_lock(b);
++	obj = bbuddy_palloc_nolock(a, num_pages);
++	bbuddy_unlock(b);
++	return obj;
++}
++
+ /**
+  * INTERNAL. Maximally merge chunk `*chp` of order `ord` with any free buddies,
+  * updating its value along the way.
+@@ -460,7 +494,8 @@ static inline size_t bbuddy_merge(struct uk_bbpalloc *b,
+ 	return ord;
+ }
+ 
+-static void bbuddy_pfree(struct uk_alloc *a, void *obj, unsigned long num_pages)
++static void bbuddy_pfree_nolock(struct uk_alloc *a, void *obj,
++			       unsigned long num_pages)
+ {
+ 	struct uk_bbpalloc *const b = (struct uk_bbpalloc *)&a->priv;
+ 	char *base = obj;
+@@ -473,6 +508,49 @@ static void bbuddy_pfree(struct uk_alloc *a, void *obj, unsigned long num_pages)
  	UK_ASSERT(num_pages);
  	UK_ASSERT(IS_ALIGNED((uintptr_t)obj, __PAGE_SIZE));
  
@@ -771,6 +655,103 @@ index 3e39480..113af81 100644
  	uk_alloc_stats_count_pfree(a, obj, num_pages);
  	freelist_sanitycheck(b->free_head);
  
+@@ -505,6 +583,16 @@ static void bbuddy_pfree(struct uk_alloc *a, void *obj, unsigned long num_pages)
+ 	freelist_sanitycheck(b->free_head);
+ }
+ 
++static void bbuddy_pfree(struct uk_alloc *a, void *obj,
++			unsigned long num_pages)
++{
++	struct uk_bbpalloc *const b = (struct uk_bbpalloc *)&a->priv;
++
++	bbuddy_lock(b);
++	bbuddy_pfree_nolock(a, obj, num_pages);
++	bbuddy_unlock(b);
++}
++
+ static long bbuddy_pmaxalloc(struct uk_alloc *a)
+ {
+ 	struct uk_bbpalloc *b;
+@@ -535,7 +623,7 @@ static long bbuddy_pavailmem(struct uk_alloc *a)
+ 	return (long) b->nr_free_pages;
+ }
+ 
+-static int bbuddy_addmem(struct uk_alloc *a, void *base, size_t len)
++static int bbuddy_addmem_nolock(struct uk_alloc *a, void *base, size_t len)
+ {
+ 	struct uk_bbpalloc *b;
+ 	struct uk_bbpalloc_memr *memr;
+@@ -633,7 +721,20 @@ static int bbuddy_addmem(struct uk_alloc *a, void *base, size_t len)
+ 	return 0;
+ }
+ 
+-struct uk_alloc *uk_allocbbuddy_init(void *base, size_t len)
++static int bbuddy_addmem(struct uk_alloc *a, void *base, size_t len)
++{
++	struct uk_bbpalloc *b;
++	int ret;
++
++	b = (struct uk_bbpalloc *)&a->priv;
++	bbuddy_lock(b);
++	ret = bbuddy_addmem_nolock(a, base, len);
++	bbuddy_unlock(b);
++	return ret;
++}
++
++static struct uk_alloc *bbuddy_init(void *base, size_t len,
++				   unsigned int shared)
+ {
+ 	struct uk_alloc *a;
+ 	struct uk_bbpalloc *b;
+@@ -665,6 +766,8 @@ struct uk_alloc *uk_allocbbuddy_init(void *base, size_t len)
+ 	for (i = 0; i < FREELIST_SIZE; i++)
+ 		UK_INIT_HLIST_HEAD(&b->free_head[i]);
+ 	b->memr_head = NULL;
++	b->shared = shared;
++	b->lock = 0;
+ 
+ 	/* initialize and register allocator interface */
+ 	uk_alloc_init_palloc(a, bbuddy_palloc, bbuddy_pfree,
+@@ -678,3 +781,13 @@ struct uk_alloc *uk_allocbbuddy_init(void *base, size_t len)
+ 
+ 	return a;
+ }
++
++struct uk_alloc *uk_allocbbuddy_init(void *base, size_t len)
++{
++	return bbuddy_init(base, len, 0);
++}
++
++struct uk_alloc *uk_allocbbuddy_init_shared(void *base, size_t len)
++{
++	return bbuddy_init(base, len, 1);
++}
+diff --git a/lib/ukallocbbuddy/exportsyms.uk b/lib/ukallocbbuddy/exportsyms.uk
+index ee41a2a..6879548 100644
+--- a/lib/ukallocbbuddy/exportsyms.uk
++++ b/lib/ukallocbbuddy/exportsyms.uk
+@@ -1,2 +1,3 @@
+ uk_allocbbuddy_init
++uk_allocbbuddy_init_shared
+ 
+diff --git a/lib/ukallocbbuddy/include/uk/allocbbuddy.h b/lib/ukallocbbuddy/include/uk/allocbbuddy.h
+index 3d7558b..3f440a5 100644
+--- a/lib/ukallocbbuddy/include/uk/allocbbuddy.h
++++ b/lib/ukallocbbuddy/include/uk/allocbbuddy.h
+@@ -42,6 +42,13 @@ extern "C" {
+ 
+ struct uk_alloc *uk_allocbbuddy_init(void *base, size_t len);
+ 
++/*
++ * Same as uk_allocbbuddy_init() but marks the instance as shared between
++ * cores. All allocation operations take an internal spinlock. Use this for
++ * an allocator that more than one core uses (for example the default heap).
++ */
++struct uk_alloc *uk_allocbbuddy_init_shared(void *base, size_t len);
++
+ #ifdef __cplusplus
+ }
+ #endif
 diff --git a/lib/ukboot/Config.uk b/lib/ukboot/Config.uk
 index cee02cb..e321b56 100644
 --- a/lib/ukboot/Config.uk
@@ -795,10 +776,30 @@ index cee02cb..e321b56 100644
  # initialized. The check for !LIBUKBOOT_INITNOSCHED is not sufficient, as
  # the option is also not available if !LIBUKBOOT_INITALLOC is set. The
 diff --git a/lib/ukboot/boot.c b/lib/ukboot/boot.c
-index abbb394..8188bf9 100644
+index abbb394..dccfeaf 100644
 --- a/lib/ukboot/boot.c
 +++ b/lib/ukboot/boot.c
-@@ -100,6 +100,10 @@
+@@ -52,6 +52,9 @@
+ #if CONFIG_LIBUKBOOT_INITBBUDDY
+ #include <uk/allocbbuddy.h>
+ #define uk_alloc_init uk_allocbbuddy_init
++/* The default heap is used by every core. Use the locked variant so that
++ * concurrent allocation cannot corrupt the allocator. [Ticket d4c2a6bd2a] */
++#define uk_alloc_init_default uk_allocbbuddy_init_shared
+ #elif CONFIG_LIBUKBOOT_INITREGION
+ #include <uk/allocregion.h>
+ #define uk_alloc_init uk_allocregion_init
+@@ -65,6 +68,9 @@
+ #include <uk/tinyalloc.h>
+ #define uk_alloc_init uk_tinyalloc_init
+ #endif
++#ifndef uk_alloc_init_default
++#define uk_alloc_init_default uk_alloc_init
++#endif
+ #if CONFIG_LIBUKBOOT_ALLOCSTACK
+ #include <uk/allocstack.h>
+ #if CONFIG_LIBUKBOOT_ALLOCSTACK_PREMAP_ORDER
+@@ -100,6 +106,10 @@
  #include <uk/intctlr.h>
  #endif /* CONFIG_LIBUKINTCTLR */
  
@@ -809,7 +810,7 @@ index abbb394..8188bf9 100644
  #include "init.h"
  
  extern char **boot_argv;
-@@ -117,6 +121,123 @@ struct uk_semaphore main_sema;
+@@ -117,6 +127,123 @@ struct uk_semaphore main_sema;
  static struct uk_vas kernel_vas;
  #endif /* CONFIG_LIBUKBOOT_HEAP_BASE && CONFIG_LIBUKVMEM */
  
@@ -933,7 +934,29 @@ index abbb394..8188bf9 100644
  static struct uk_alloc *heap_init()
  {
  	struct uk_alloc *a = NULL;
-@@ -210,6 +331,13 @@ static struct uk_alloc *heap_init()
+@@ -161,8 +288,8 @@ static struct uk_alloc *heap_init()
+ 	if (unlikely(rc))
+ 		return NULL;
+ 
+-	a = uk_alloc_init((void *)heap_base,
+-			  HEAP_INITIAL_PAGES << UK_PAGING_PAGE_SHIFT);
++	a = uk_alloc_init_default((void *)heap_base,
++				  HEAP_INITIAL_PAGES << UK_PAGING_PAGE_SHIFT);
+ 	if (unlikely(!a))
+ 		return NULL;
+ 
+@@ -199,8 +326,8 @@ static struct uk_alloc *heap_init()
+ 	if (unlikely(rc))
+ 		return NULL;
+ 
+-	a = uk_alloc_init((void *)heap_base,
+-			  alloc_pages << UK_PAGING_PAGE_SHIFT);
++	a = uk_alloc_init_default((void *)heap_base,
++				  alloc_pages << UK_PAGING_PAGE_SHIFT);
+ #endif /* !CONFIG_LIBUKVMEM */
+ #else /* CONFIG_LIBUKBOOT_HEAP_BASE */
+ 	/* Paging is disabled so we still have the static boot page table set
+@@ -210,6 +337,13 @@ static struct uk_alloc *heap_init()
  	 * again with the next region. As soon we have an allocator, we simply
  	 * add every subsequent region to it.
  	 */
@@ -947,6 +970,15 @@ index abbb394..8188bf9 100644
  	ukplat_memregion_foreach(&md, UKPLAT_MEMRT_FREE, 0, 0) {
  		UK_ASSERT_VALID_FREE_MRD(md);
  
+@@ -224,7 +358,7 @@ static struct uk_alloc *heap_init()
+ 			    );
+ 
+ 		if (!a)
+-			a = uk_alloc_init((void *)md->vbase, md->len);
++			a = uk_alloc_init_default((void *)md->vbase, md->len);
+ 		else
+ 			uk_alloc_addmem(a, (void *)md->vbase, md->len);
+ 	}
 diff --git a/lib/ukboot/exportsyms.uk b/lib/ukboot/exportsyms.uk
 index de526bf..18d76cd 100644
 --- a/lib/ukboot/exportsyms.uk
@@ -1160,362 +1192,6 @@ index d6af82d..601ad46 100644
  LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(LIBKVMPLAT_BASE)/x86/tscclock.c
  LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(LIBKVMPLAT_BASE)/x86/time.c
  
-diff --git a/plat/kvm/x86/lcpu.c b/plat/kvm/x86/lcpu.c
-new file mode 100644
-index 0000000..14cda71
---- /dev/null
-+++ b/plat/kvm/x86/lcpu.c
-@@ -0,0 +1,350 @@
-+/* SPDX-License-Identifier: BSD-3-Clause */
-+/*
-+ * KVM x86_64 platform: secondary CPU (AP) bring-up.
-+ *
-+ * Secondary cores enter the 16-bit real-mode trampoline in lcpu_start.S.
-+ * That code is part of the image, which is linked at 1 MiB, but the
-+ * trampoline must sit in the first 1 MiB of physical memory. A copy of it
-+ * is placed in a fixed hole below 1 MiB and its internal references are
-+ * fixed up before any AP is started.
-+ *
-+ * APs are started with the standard x86 INIT/SIPI sequence through the
-+ * local APIC. The mode (xapic MMIO or x2apic MSR) is detected at boot
-+ * from the APIC base MSR.
-+ *
-+ * Based on the native platform lcpu_pm.c (same start16 relocation logic).
-+ */
-+
-+#include <uk/arch/util.h>
-+#include <uk/arch/x86_64.h>
-+#include <uk/essentials.h>
-+#include <uk/print.h>
-+#include <uk/lcpu/pm.h>
-+#include <uk/pcpuvar.h>
-+#include <uk/prio.h>
-+
-+#if CONFIG_LIBUKBOOT
-+#include <uk/boot/earlytab.h>
-+#include <uk/plat/common/bootinfo.h>
-+#include <uk/plat/common/memory.h>
-+#include <string.h>
-+#endif /* CONFIG_LIBUKBOOT */
-+
-+#include <x86/delay.h>
-+
-+#if CONFIG_HAVE_SMP
-+static inline void x2apic_send_sipi(__vaddr_t addr, int dest)
-+{
-+	__u32 eax;
-+
-+	UK_ASSERT((addr &
-+		   (UK_ARCH_X86_64_APIC_ICR_VECTOR_MASK << __PAGE_SHIFT)) == addr);
-+
-+	eax = UK_ARCH_X86_64_APIC_ICR_TRIGGER_LEVEL |
-+	      UK_ARCH_X86_64_APIC_ICR_LEVEL_ASSERT |
-+	      UK_ARCH_X86_64_APIC_ICR_DESTMODE_PHYSICAL |
-+	      UK_ARCH_X86_64_APIC_ICR_DMODE_SUP |
-+	      (addr >> __PAGE_SHIFT);
-+
-+	uk_arch_x86_64_wrmsr(UK_ARCH_X86_64_APIC_MSR_ICR, eax, dest);
-+}
-+
-+static inline void x2apic_send_iipi(int dest)
-+{
-+	__u32 eax;
-+
-+	eax = UK_ARCH_X86_64_APIC_ICR_TRIGGER_LEVEL |
-+	      UK_ARCH_X86_64_APIC_ICR_LEVEL_ASSERT |
-+	      UK_ARCH_X86_64_APIC_ICR_DESTMODE_PHYSICAL |
-+	      UK_ARCH_X86_64_APIC_ICR_DMODE_INIT;
-+
-+	uk_arch_x86_64_wrmsr(UK_ARCH_X86_64_APIC_MSR_ICR, eax, dest);
-+}
-+
-+/* Deassert only supported on Pentium and P6 familiy processors */
-+#define x2apic_send_iipi_deassert() {}
-+
-+/*
-+ * The BSP may run with either the xapic (MMIO) or the x2apic (MSR) local
-+ * APIC mode enabled, depending on the boot protocol and the hypervisor.
-+ * Detect the active mode at boot and dispatch IPIs to it.
-+ */
-+static int apic_mode; /* 0 = xapic, 1 = x2apic */
-+static __u64 apic_mmio_base;
-+
-+static int apic_mode_detect(void)
-+{
-+	__u32 lo = 0, hi = 0;
-+
-+	uk_arch_x86_64_rdmsr(0x01B, &lo, &hi);
-+
-+	if (unlikely(!(lo & (1u << 11))))
-+		return -ENODEV;
-+
-+	if (lo & (1u << 10))
-+		uk_pr_err("kvm: x2APIC (EXTD) set in APIC base MSR; forcing xAPIC mode\n");
-+
-+	apic_mode = 0;
-+	apic_mmio_base = (((__u64)hi << 32) | (__u64)lo) & 0xFFFFF000UL;
-+	if (unlikely(!apic_mmio_base))
-+		apic_mmio_base = 0xFEE00000UL;
-+	return 0;
-+}
-+
-+static inline void xapic_write_icr(__u32 lo, __u64 dest)
-+{
-+	volatile __u32 *icr_hi = (volatile __u32 *)(apic_mmio_base + 0x310);
-+	volatile __u32 *icr_lo = (volatile __u32 *)(apic_mmio_base + 0x300);
-+
-+	while (*icr_lo & (1u << 12))
-+		uk_arch_x86_64_spinwait();
-+
-+	*icr_hi = ((__u32)dest) << 24;
-+	*icr_lo = lo;
-+
-+	while (*icr_lo & (1u << 12))
-+		uk_arch_x86_64_spinwait();
-+}
-+
-+static int apic_send_sipi(__u64 addr, __u64 dest)
-+{
-+	if (apic_mode) {
-+		x2apic_send_sipi(addr, (int)dest);
-+		return 0;
-+	}
-+
-+	__u32 eax = UK_ARCH_X86_64_APIC_ICR_TRIGGER_EDGE |
-+		    UK_ARCH_X86_64_APIC_ICR_LEVEL_ASSERT |
-+		    UK_ARCH_X86_64_APIC_ICR_DESTMODE_PHYSICAL |
-+		    UK_ARCH_X86_64_APIC_ICR_DMODE_SUP |
-+		    ((addr >> __PAGE_SHIFT) & UK_ARCH_X86_64_APIC_ICR_VECTOR_MASK);
-+
-+	xapic_write_icr(eax, dest);
-+	return 0;
-+}
-+
-+static int apic_send_iipi(__u64 dest)
-+{
-+	if (apic_mode) {
-+		x2apic_send_iipi((int)dest);
-+		return 0;
-+	}
-+
-+	__u32 eax = UK_ARCH_X86_64_APIC_ICR_TRIGGER_LEVEL |
-+		    UK_ARCH_X86_64_APIC_ICR_LEVEL_ASSERT |
-+		    UK_ARCH_X86_64_APIC_ICR_DESTMODE_PHYSICAL |
-+		    UK_ARCH_X86_64_APIC_ICR_DMODE_INIT;
-+
-+	xapic_write_icr(eax, dest);
-+	return 0;
-+}
-+
-+#define apic_send_iipi_deassert() do {} while (0)
-+
-+/* Secondary cores start in 16-bit real-mode and we have to provide the
-+ * corresponding boot code somewhere in the first 1 MiB. We copy the trampoline
-+ * code to the target address during MP initialization.
-+ */
-+extern void *x86_start16_begin[];
-+extern void *x86_start16_end[];
-+extern __uptr uk_plat_native_x86_64_start16_addr; /* target address */
-+
-+#define UK_ARCH_START16_SIZE						\
-+	((__uptr)x86_start16_end - (__uptr)x86_start16_begin)
-+
-+#define START16_MOV_SYM(sym, sz)					\
-+	sym##_imm##sz##_start16
-+
-+#define START16_DATA_SYM(sym, sz)					\
-+	sym##_data##sz##_start16
-+
-+#define IMPORT_START16_SYM(sym, sz, type)				\
-+	extern void *sym[];						\
-+	extern void *START16_##type##_SYM(sym, sz)[]
-+
-+#define START16_MOV_OFF(sym, sz)					\
-+	((void *)START16_MOV_SYM(sym, sz) -				\
-+	(void *)x86_start16_begin)
-+
-+#define START16_DATA_OFF(sym, sz)					\
-+	((void *)START16_DATA_SYM(sym, sz) -				\
-+	(void *)x86_start16_begin)
-+
-+IMPORT_START16_SYM(gdt32_ptr, 2, MOV);
-+IMPORT_START16_SYM(gdt32, 4, DATA);
-+IMPORT_START16_SYM(lcpu_start16, 2, MOV);
-+IMPORT_START16_SYM(jump_to32, 2, MOV);
-+IMPORT_START16_SYM(lcpu_start32, 4, MOV);
-+
-+#define START16_RELOC_ENTRY(sym, sz, type)				\
-+	{								\
-+		.r_mem_off = START16_##type##_OFF(sym, sz),		\
-+		.r_addr = (void *)(sym) - (void *)x86_start16_begin,	\
-+		.r_sz = (sz),						\
-+	}
-+
-+static void apply_start16_reloc(__u64 baddr, __u64 r_mem_off,
-+				__u64 r_addr, __u32 r_sz)
-+{
-+	switch (r_sz) {
-+	case 2:
-+		*(__u16 *)((__u8 *)baddr + r_mem_off) = (__u16)(baddr + r_addr);
-+		break;
-+	case 4:
-+		*(__u32 *)((__u8 *)baddr + r_mem_off) = (__u32)(baddr + r_addr);
-+		break;
-+	}
-+}
-+
-+static void start16_reloc_mp_init(void)
-+{
-+	struct {
-+		__u64 r_mem_off;
-+		__u64 r_addr;
-+		__u32 r_sz;
-+	} x86_start16_relocs[] = {
-+		START16_RELOC_ENTRY(lcpu_start16, 2, MOV),
-+		START16_RELOC_ENTRY(gdt32_ptr, 2, MOV),
-+		START16_RELOC_ENTRY(gdt32, 4, DATA),
-+		START16_RELOC_ENTRY(jump_to32, 2, MOV),
-+		START16_RELOC_ENTRY(lcpu_start32, 4, MOV),
-+	};
-+	__sz i;
-+
-+	for (i = 0; i < ARRAY_SIZE(x86_start16_relocs); i++)
-+		apply_start16_reloc((__u64)uk_plat_native_x86_64_start16_addr,
-+				    x86_start16_relocs[i].r_mem_off,
-+				    x86_start16_relocs[i].r_addr,
-+				    x86_start16_relocs[i].r_sz);
-+
-+	/* Unlike the other entries, lcpu_start32 must stay the same
-+	 * as it is not part of the start16 section.
-+	 */
-+	apply_start16_reloc((__u64)uk_plat_native_x86_64_start16_addr,
-+			    START16_MOV_OFF(lcpu_start32, 4),
-+			    (__u64)lcpu_start32 -
-+			    (__u64)uk_plat_native_x86_64_start16_addr, 4);
-+}
-+
-+#if CONFIG_LIBUKBOOT
-+static int boot_memregion_alloc_sipi_vect(struct ukplat_bootinfo *bi __unused)
-+{
-+#define X86_VIDEO_MEM_START	0xA0000UL
-+	__sz len;
-+
-+	len = (__sz)((__uptr)x86_start16_end - (__uptr)x86_start16_begin);
-+	len = UK_PAGING_PAGE_ALIGN_UP(len);
-+	uk_plat_native_x86_64_start16_addr = (__uptr)ukplat_memregion_alloc(len,
-+							  UKPLAT_MEMRT_RESERVED,
-+							  UKPLAT_MEMRF_READ  |
-+							  UKPLAT_MEMRF_WRITE);
-+	if (unlikely(!uk_plat_native_x86_64_start16_addr ||
-+		     uk_plat_native_x86_64_start16_addr >= X86_VIDEO_MEM_START))
-+		return -ENOMEM;
-+
-+	/* Copy AP startup code to target address in first 1MiB */
-+	UK_ASSERT(uk_plat_native_x86_64_start16_addr < 0x100000);
-+	memcpy((void *)uk_plat_native_x86_64_start16_addr, &x86_start16_begin,
-+	       UK_ARCH_START16_SIZE);
-+
-+	start16_reloc_mp_init();
-+
-+	uk_pr_info("Copied AP 16-bit boot code to 0x%"__PRIvaddr" (SIPI vector 0x%02lx)\n",
-+		   uk_plat_native_x86_64_start16_addr,
-+		   (unsigned long)(uk_plat_native_x86_64_start16_addr >> 12));
-+
-+	return 0;
-+}
-+#endif /* CONFIG_LIBUKBOOT */
-+
-+static int kvm_x86_lcpu_start(__u64 idx)
-+{
-+	/* Send INIT IPI */
-+	apic_send_iipi(uk_pcpuvar_lval(idx, uk_pcpuvar_cpu_id));
-+
-+	/* Deassert */
-+	apic_send_iipi_deassert();
-+
-+	return 0;
-+}
-+
-+#if CONFIG_HAVE_CPU_MULTI_PHASE_STARTUP
-+static int kvm_x86_lcpu_post_start(const __u64 lcpuidx[], unsigned int *num)
-+{
-+	__u64 id, this_cpu_id = uk_pcpuvar_current_get(uk_pcpuvar_cpu_id);
-+	unsigned int i, j;
-+
-+	/* wait 10 msec (according to Intel manual 8.4.4.1) */
-+	mdelay(10);
-+
-+	for (i = 0; i < *num; i++) {
-+		id = uk_pcpuvar_lval(lcpuidx[i], uk_pcpuvar_cpu_id);
-+		if (id == this_cpu_id)
-+			continue;
-+
-+		for (j = 0; j < 2; j++) {
-+			/* Send STARTUP IPI */
-+			apic_send_sipi(uk_plat_native_x86_64_start16_addr, id);
-+
-+			/* wait 200 usec (according to Intel manual 8.4.4.1) */
-+			udelay(200);
-+		}
-+	}
-+
-+	return 0;
-+}
-+#endif /* CONFIG_HAVE_CPU_MULTI_PHASE_STARTUP */
-+#endif /* CONFIG_HAVE_SMP */
-+
-+static void kvm_x86_lcpu_halt(void)
-+{
-+	uk_arch_x86_64_halt();
-+}
-+
-+static void kvm_x86_lcpu_halt_irq(void)
-+{
-+	/*
-+	 * We have to be careful when enabling interrupts before entering a
-+	 * halt state. If we want to wait for an interrupt (e.g., a timer)
-+	 * the interrupt may fire in the short window between sti and hlt and
-+	 * we are going to halt forever. As sti only enables interrupts after
-+	 * the following instruction, we can avoid the race condition by
-+	 * ensuring that hlt immediately follows sti. There must be no
-+	 * instruction in between.
-+	 */
-+	asm volatile (
-+		"sti\n\t"
-+		"hlt\n\t"
-+		"cli\n\t"
-+		:
-+		:
-+		: "memory"
-+	);
-+}
-+
-+static const struct uk_lcpu_pm_ops kvm_x86_pm_ops = {
-+#if CONFIG_HAVE_SMP
-+	.start = kvm_x86_lcpu_start,
-+#if CONFIG_HAVE_CPU_MULTI_PHASE_STARTUP
-+	.post_start = kvm_x86_lcpu_post_start,
-+#endif /* CONFIG_HAVE_CPU_MULTI_PHASE_STARTUP */
-+#endif /* CONFIG_HAVE_SMP */
-+	.halt = kvm_x86_lcpu_halt,
-+	.halt_irq = kvm_x86_lcpu_halt_irq,
-+};
-+
-+__isr static
-+int kvm_x86_lcpu_pm_ops_register(struct ukplat_bootinfo *bi __unused)
-+{
-+#if CONFIG_LIBUKBOOT
-+	if (boot_memregion_alloc_sipi_vect(bi) < 0)
-+		uk_pr_warn("kvm: failed to allocate SIPI vector trampoline\n");
-+#endif
-+#if CONFIG_HAVE_SMP
-+	if (apic_mode_detect())
-+		uk_pr_warn("kvm: local APIC not ready; SMP start will fail\n");
-+#endif
-+	return uk_lcpu_pm_ops_register(&kvm_x86_pm_ops);
-+}
-+
-+UK_BOOT_EARLYTAB_ENTRY(kvm_x86_lcpu_pm_ops_register, UK_PRIO_EARLIEST);
 diff --git a/plat/kvm/x86/lcpu_start.S b/plat/kvm/x86/lcpu_start.S
 index 7506102..d2c9ee9 100644
 --- a/plat/kvm/x86/lcpu_start.S
