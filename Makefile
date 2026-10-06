@@ -17,6 +17,8 @@ TEST9 = $(BUILD)/test_llq
 TEST10 = $(BUILD)/test_validation
 TEST11 = $(BUILD)/test_spsc
 TEST12 = $(BUILD)/test_idlebackoff
+TEST13 = $(BUILD)/test_rss_skew
+TEST14 = $(BUILD)/test_tx_guard
 
 ENA_SRCS = src/ena_pci.c src/ena_com.c src/ena_plat.c
 ENA_SRCS_P2 = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena_init.c src/ena_datapath.c src/ena_tx.c src/ena_rx.c
@@ -50,7 +52,7 @@ sanitize: test-sanitize
 test-sanitize: CFLAGS += -O0 -fsanitize=address,undefined -g
 test-sanitize: clean test
 
-test: $(TEST1) $(TEST2) $(TEST3) $(TEST4) $(TEST5) $(TEST6) $(TEST7) $(TEST8) $(TEST9) $(TEST10) $(TEST11) $(TEST12)
+test: $(TEST1) $(TEST2) $(TEST3) $(TEST4) $(TEST5) $(TEST6) $(TEST7) $(TEST8) $(TEST9) $(TEST10) $(TEST11) $(TEST12) $(TEST13) $(TEST14)
 	./$(TEST1)
 	./$(TEST2)
 	./$(TEST3)
@@ -63,6 +65,8 @@ test: $(TEST1) $(TEST2) $(TEST3) $(TEST4) $(TEST5) $(TEST6) $(TEST7) $(TEST8) $(
 	./$(TEST10)
 	./$(TEST11)
 	./$(TEST12)
+	./$(TEST13)
+	./$(TEST14)
 
 $(TEST1): tests/test_pci_scaffold.c tests/mock_pci.c tests/mock_pci.h $(ENA_SRCS) $(ENA_HDRS)
 	@mkdir -p $(BUILD)
@@ -111,6 +115,20 @@ $(TEST11): tests/test_spsc.c samples/httpreply-mc/spsc.h
 $(TEST12): tests/test_idlebackoff.c samples/httpreply-mc/idlebackoff.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -Isamples/httpreply-mc -o $@ tests/test_idlebackoff.c
+
+# Host analysis for ticket ca72834ec7. The RSS simulation models the
+# Toeplitz hash and the round-robin indirection table from src/ena_rss.c.
+# It asserts only its own hash self-checks, so it exits 0 on a normal run.
+$(TEST13): tests/test_rss_skew.c
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -o $@ tests/test_rss_skew.c
+
+# Host micro-benchmark for the TX cross-CPU guard in src/ena_tx.c. It
+# links the real host platform stub so ena_plat_cpu_id() is the driver's
+# own function.
+$(TEST14): tests/test_tx_guard.c src/ena_plat.c $(ENA_HDRS)
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -o $@ tests/test_tx_guard.c src/ena_plat.c
 
 # Rewrite the C sources in place with the style in .clang-format at the repo
 # root. Aligned #define tables sit inside "clang-format off" guards, so the
