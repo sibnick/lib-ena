@@ -182,7 +182,12 @@ int ena_admin_init(struct ena_adapter *adapter, uint16_t aq_depth,
 	adapter->aenq_base = aenq;
 	adapter->aenq_phys = aenq_phys;
 	adapter->aenq_depth = aenq_depth;
-	adapter->aenq_head = 0;
+	/* The head is a monotonic consumer counter, and the doorbell
+	 * starts at the depth. Match the software counter to it, so the
+	 * first poll writes depth+1 and the value never goes back.
+	 * Masking the head still selects slot 0, the first slot the
+	 * device posts to. [Ticket f3cf310548] */
+	adapter->aenq_head = aenq_depth;
 	adapter->aenq_phase = 1;
 
 	adapter->aenq_handler = NULL;

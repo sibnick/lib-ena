@@ -366,6 +366,46 @@ static void test_admin_aenq_dispatch(void)
 	printf("[PASS] test_admin_aenq_dispatch passed\n");
 }
 
+/* The AENQ head is a monotonic consumer counter. Init writes the depth
+ * to the head doorbell, so the software head must start at the depth.
+ * A poll then writes depth+1, never 1. [Ticket f3cf310548] */
+static void test_admin_aenq_head_monotonic(void)
+{
+	printf("[TEST] Running test_admin_aenq_head_monotonic...\n");
+
+	struct mock_ena_hw hw;
+	mock_ena_hw_init(&hw);
+	ena_admin_set_db_hook(mock_ena_hw_aq_doorbell_hook, &hw);
+
+	struct ena_adapter adapter;
+	ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0));
+	assert(ena_admin_init(&adapter, 8, 8, 8) == 0);
+
+	/* Init publishes the depth, and the software head matches it. */
+	assert(adapter.aenq_head == 8);
+	assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_AENQ_HEAD_DB_OFF) == 8);
+
+	/* The first event sits at slot 0 and carries phase 1. The poll
+	 * must find it and acknowledge with depth+1, not 1. */
+	mock_ena_hw_inject_aenq(&hw, ENA_ADMIN_LINK_CHANGE, 0);
+	assert(ena_admin_aenq_poll(&adapter, 16) == 1);
+	assert(adapter.aenq_head == 9);
+	assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_AENQ_HEAD_DB_OFF) == 9);
+
+	/* Later polls keep increasing. A full pass of the ring flips the
+	 * expected phase, and the next slot is still delivered. */
+	for (int i = 0; i < 8; i++) {
+		mock_ena_hw_inject_aenq(&hw, ENA_ADMIN_WARNING, (uint16_t)i);
+		assert(ena_admin_aenq_poll(&adapter, 16) == 1);
+	}
+	assert(adapter.aenq_head == 17);
+	assert(adapter.aenq_phase == 0);
+	assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_AENQ_HEAD_DB_OFF) == 17);
+
+	ena_admin_fini(&adapter);
+	printf("[PASS] test_admin_aenq_head_monotonic passed\n");
+}
+
 static void test_admin_fini_clears(void)
 {
 	printf("[TEST] Running test_admin_fini_clears...\n");
@@ -794,6 +834,7 @@ int main(void)
 	test_admin_timeout_invalidates_io_queues();
 	test_admin_acq_phase_flip();
 	test_admin_aenq_dispatch();
+	test_admin_aenq_head_monotonic();
 	test_admin_fini_clears();
 	test_admin_caps_entry_size();
 	test_admin_acq_tail_register();
