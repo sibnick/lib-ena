@@ -643,17 +643,6 @@ void ena_plat_msix_diag(uint32_t *msgctl, uint32_t *t1_addr, uint32_t *t1_data,
 
 void *ena_dma_alloc(size_t size, uint64_t *phys_out)
 {
-	/* Reserve low memory (< 1MB) so all heap allocations are DMA-safe */
-	while (1) {
-		void *p = uk_malloc(uk_alloc_get_default(), 4096);
-		if (!p)
-			break;
-		if ((uintptr_t)p >= ENA_DMA_LOW_MEM_LIMIT) {
-			uk_free(uk_alloc_get_default(), p);
-			break;
-		}
-	}
-
 	void *virt = uk_memalign(uk_alloc_get_default(), 4096, size);
 	if (!virt)
 		return NULL;
