@@ -34,8 +34,10 @@ static void test_init_wire_layouts(void)
 			feature_id) == 1);
 
 	assert(sizeof(struct ena_admin_device_attr_feature_desc) == 36);
-	assert(offsetof(struct ena_admin_device_attr_feature_desc, mac_addr) == 24);
-	assert(offsetof(struct ena_admin_device_attr_feature_desc, max_mtu) == 32);
+	assert(offsetof(struct ena_admin_device_attr_feature_desc, mac_addr) ==
+	       24);
+	assert(offsetof(struct ena_admin_device_attr_feature_desc, max_mtu) ==
+	       32);
 
 	assert(sizeof(struct ena_admin_queue_feature_desc) == 32);
 	assert(offsetof(struct ena_admin_queue_feature_desc,
@@ -65,7 +67,8 @@ static void test_init_device_attributes(void)
 
 	assert(adapter.impl_id == 0x1D0F);
 	assert(adapter.device_version == 0x00020000);
-	assert((adapter.supported_features & (1u << ENA_ADMIN_DEVICE_ATTRIBUTES)) != 0);
+	assert((adapter.supported_features &
+		(1u << ENA_ADMIN_DEVICE_ATTRIBUTES)) != 0);
 	assert((adapter.supported_features & (1u << ENA_ADMIN_MTU)) != 0);
 	assert(adapter.attr_caps == 1);
 	assert(adapter.phys_addr_width == 48);
@@ -118,9 +121,9 @@ static void test_init_host_info(void)
 	const struct ena_admin_host_info *info = adapter.host_info_base;
 	assert(info->os_type == ENA_ADMIN_OS_DPDK);
 	assert(strcmp((const char *)info->os_dist_str, "Unikraft") == 0);
-	assert(strstr((const char *)info->kernel_ver_str, "ena-unikraft") != NULL);
-	assert((info->driver_version & 0xFFu) ==
-	       ENA_INIT_DRIVER_VERSION_MAJOR);
+	assert(strstr((const char *)info->kernel_ver_str, "ena-unikraft") !=
+	       NULL);
+	assert((info->driver_version & 0xFFu) == ENA_INIT_DRIVER_VERSION_MAJOR);
 	assert(info->ena_spec_version == ENA_INIT_ENA_SPEC_VERSION);
 	assert(info->num_cpus == 1);
 
@@ -159,7 +162,8 @@ static void test_init_mtu_invalid(void)
 	/* Below the minimum: the driver rejects it before sending. */
 	assert(ena_init_set_mtu(&adapter, 10) == -EINVAL);
 	/* Above the device maximum: the device rejects it. */
-	assert(ena_init_set_mtu(&adapter, 9001) == -ENA_ADMIN_ILLEGAL_PARAMETER);
+	assert(ena_init_set_mtu(&adapter, 9001) ==
+	       -ENA_ADMIN_ILLEGAL_PARAMETER);
 
 	/* Nothing was accepted. */
 	assert(hw.negotiated_mtu == 0);
@@ -200,8 +204,10 @@ static void test_init_ordering(void)
 
 	/* The device rejects configuration before the attribute query. */
 	mock_ena_hw_require_attrs_first(&hw, 1);
-	assert(ena_init_set_mtu(&adapter, 1500) == -ENA_ADMIN_ILLEGAL_PARAMETER);
-	assert(ena_init_set_host_info(&adapter) == -ENA_ADMIN_ILLEGAL_PARAMETER);
+	assert(ena_init_set_mtu(&adapter, 1500) ==
+	       -ENA_ADMIN_ILLEGAL_PARAMETER);
+	assert(ena_init_set_host_info(&adapter) ==
+	       -ENA_ADMIN_ILLEGAL_PARAMETER);
 	assert(hw.negotiated_mtu == 0);
 	assert(hw.host_info_base == NULL);
 	assert(adapter.host_info_base == NULL);
@@ -241,12 +247,13 @@ static void test_init_error_paths(void)
 
 		memset(&req, 0, sizeof(req));
 		req.feat_common.feature_id = 99;
-		assert(ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE,
-					 &req, sizeof(req), resp, sizeof(resp),
-					 NULL, 100) == -ENA_ADMIN_ILLEGAL_PARAMETER);
+		assert(ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE, &req,
+					  sizeof(req), resp, sizeof(resp), NULL,
+					  100) == -ENA_ADMIN_ILLEGAL_PARAMETER);
 	}
 
-	/* Hung device: the command times out and transitions adapter to error state. */
+	/* Hung device: the command times out and transitions adapter to error
+	 * state. */
 	mock_ena_hw_hang_admin(&hw);
 	assert(ena_init_set_mtu(&adapter, 1500) == -ETIMEDOUT);
 	assert(adapter.state == ENA_STATE_ERROR);

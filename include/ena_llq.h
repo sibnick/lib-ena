@@ -18,7 +18,7 @@ struct ena_tx_pkt;
 
 enum ena_llq_header_location {
 	ENA_LLQ_INLINE_HEADER = 1,
-	ENA_LLQ_HEADER_RING   = 2,
+	ENA_LLQ_HEADER_RING = 2,
 };
 
 enum ena_llq_entry_size {
@@ -29,8 +29,8 @@ enum ena_llq_entry_size {
 
 /* Stride control for LLQ descriptor entries (reference/ena_admin_defs.h). */
 enum ena_llq_stride_ctrl {
-	ENA_LLQ_SINGLE_DESC_PER_ENTRY     = 1,
-	ENA_LLQ_MULTIPLE_DESCS_PER_ENTRY  = 2,
+	ENA_LLQ_SINGLE_DESC_PER_ENTRY = 1,
+	ENA_LLQ_MULTIPLE_DESCS_PER_ENTRY = 2,
 };
 
 /* Wire format for LLQ Get/Set Feature */
@@ -96,4 +96,3 @@ int ena_llq_tx_push(struct ena_ring *ring, const struct ena_tx_pkt *pkt,
 		    uint16_t *out_req_id);
 
 #endif /* LIBENA_ENA_LLQ_H */
-

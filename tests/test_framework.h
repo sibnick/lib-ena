@@ -78,78 +78,99 @@ static inline void test_free(void *ptr)
 /* The RUN_TEST leak check tracks allocations made through test_malloc,
  * test_calloc, and test_free. Driver-internal heap allocations (rings,
  * DMA buffers) are monitored via AddressSanitizer and teardown assertions. */
-#define RUN_TEST(fn) do { \
-	if (g_test_setup_hook) \
-		g_test_setup_hook(); \
-	size_t _alloc_before = g_test_active_allocs; \
-	printf("[TEST] Running %s...\n", #fn); \
-	fn(); \
-	if (g_test_teardown_hook) \
-		g_test_teardown_hook(); \
-	size_t _alloc_after = g_test_active_allocs; \
-	if (_alloc_after > _alloc_before) { \
-		fprintf(stderr, "[FAIL] %s leaked memory: %zu unfreed allocations\n", \
-			#fn, _alloc_after - _alloc_before); \
-		abort(); \
-	} \
-	printf("[PASS] %s passed\n", #fn); \
-} while (0)
+#define RUN_TEST(fn)                                                           \
+	do {                                                                   \
+		if (g_test_setup_hook)                                         \
+			g_test_setup_hook();                                   \
+		size_t _alloc_before = g_test_active_allocs;                   \
+		printf("[TEST] Running %s...\n", #fn);                         \
+		fn();                                                          \
+		if (g_test_teardown_hook)                                      \
+			g_test_teardown_hook();                                \
+		size_t _alloc_after = g_test_active_allocs;                    \
+		if (_alloc_after > _alloc_before) {                            \
+			fprintf(stderr,                                        \
+				"[FAIL] %s leaked memory: %zu unfreed "        \
+				"allocations\n",                               \
+				#fn, _alloc_after - _alloc_before);            \
+			abort();                                               \
+		}                                                              \
+		printf("[PASS] %s passed\n", #fn);                             \
+	} while (0)
 
-#define TEST_ASSERT(cond) do { \
-	if (!(cond)) { \
-		fprintf(stderr, "[FAIL] %s:%d: assertion failed: %s\n", \
-			__FILE__, __LINE__, #cond); \
-		abort(); \
-	} \
-} while (0)
+#define TEST_ASSERT(cond)                                                      \
+	do {                                                                   \
+		if (!(cond)) {                                                 \
+			fprintf(stderr,                                        \
+				"[FAIL] %s:%d: assertion failed: %s\n",        \
+				__FILE__, __LINE__, #cond);                    \
+			abort();                                               \
+		}                                                              \
+	} while (0)
 
-#define TEST_ASSERT_EQ(actual, expected) do { \
-	int64_t _act = (int64_t)(actual); \
-	int64_t _exp = (int64_t)(expected); \
-	if (_act != _exp) { \
-		fprintf(stderr, "[FAIL] %s:%d: expected %s == %s (actual=0x%lx / %ld, expected=0x%lx / %ld)\n", \
-			__FILE__, __LINE__, #actual, #expected, \
-			(unsigned long)_act, (long)_act, \
-			(unsigned long)_exp, (long)_exp); \
-		abort(); \
-	} \
-} while (0)
+#define TEST_ASSERT_EQ(actual, expected)                                       \
+	do {                                                                   \
+		int64_t _act = (int64_t)(actual);                              \
+		int64_t _exp = (int64_t)(expected);                            \
+		if (_act != _exp) {                                            \
+			fprintf(                                               \
+			    stderr,                                            \
+			    "[FAIL] %s:%d: expected %s == %s (actual=0x%lx / " \
+			    "%ld, expected=0x%lx / %ld)\n",                    \
+			    __FILE__, __LINE__, #actual, #expected,            \
+			    (unsigned long)_act, (long)_act,                   \
+			    (unsigned long)_exp, (long)_exp);                  \
+			abort();                                               \
+		}                                                              \
+	} while (0)
 
-#define TEST_ASSERT_NE(actual, expected) do { \
-	int64_t _act = (int64_t)(actual); \
-	int64_t _exp = (int64_t)(expected); \
-	if (_act == _exp) { \
-		fprintf(stderr, "[FAIL] %s:%d: expected %s != %s (both=0x%lx / %ld)\n", \
-			__FILE__, __LINE__, #actual, #expected, \
-			(unsigned long)_act, (long)_act); \
-		abort(); \
-	} \
-} while (0)
+#define TEST_ASSERT_NE(actual, expected)                                       \
+	do {                                                                   \
+		int64_t _act = (int64_t)(actual);                              \
+		int64_t _exp = (int64_t)(expected);                            \
+		if (_act == _exp) {                                            \
+			fprintf(stderr,                                        \
+				"[FAIL] %s:%d: expected %s != %s (both=0x%lx " \
+				"/ %ld)\n",                                    \
+				__FILE__, __LINE__, #actual, #expected,        \
+				(unsigned long)_act, (long)_act);              \
+			abort();                                               \
+		}                                                              \
+	} while (0)
 
-#define TEST_ASSERT_NOT_NULL(ptr) do { \
-	if ((ptr) == NULL) { \
-		fprintf(stderr, "[FAIL] %s:%d: expected non-NULL pointer for %s\n", \
-			__FILE__, __LINE__, #ptr); \
-		abort(); \
-	} \
-} while (0)
+#define TEST_ASSERT_NOT_NULL(ptr)                                              \
+	do {                                                                   \
+		if ((ptr) == NULL) {                                           \
+			fprintf(stderr,                                        \
+				"[FAIL] %s:%d: expected non-NULL pointer for " \
+				"%s\n",                                        \
+				__FILE__, __LINE__, #ptr);                     \
+			abort();                                               \
+		}                                                              \
+	} while (0)
 
-#define TEST_ASSERT_NULL(ptr) do { \
-	if ((ptr) != NULL) { \
-		fprintf(stderr, "[FAIL] %s:%d: expected NULL pointer for %s (actual=%p)\n", \
-			__FILE__, __LINE__, #ptr, (void *)(ptr)); \
-		abort(); \
-	} \
-} while (0)
+#define TEST_ASSERT_NULL(ptr)                                                  \
+	do {                                                                   \
+		if ((ptr) != NULL) {                                           \
+			fprintf(stderr,                                        \
+				"[FAIL] %s:%d: expected NULL pointer for %s "  \
+				"(actual=%p)\n",                               \
+				__FILE__, __LINE__, #ptr, (void *)(ptr));      \
+			abort();                                               \
+		}                                                              \
+	} while (0)
 
-#define TEST_ASSERT_STR_EQ(actual, expected) do { \
-	const char *_act_s = (const char *)(actual); \
-	const char *_exp_s = (const char *)(expected); \
-	if (strcmp(_act_s, _exp_s) != 0) { \
-		fprintf(stderr, "[FAIL] %s:%d: string mismatch: expected \"%s\", got \"%s\"\n", \
-			__FILE__, __LINE__, _exp_s, _act_s); \
-		abort(); \
-	} \
-} while (0)
+#define TEST_ASSERT_STR_EQ(actual, expected)                                   \
+	do {                                                                   \
+		const char *_act_s = (const char *)(actual);                   \
+		const char *_exp_s = (const char *)(expected);                 \
+		if (strcmp(_act_s, _exp_s) != 0) {                             \
+			fprintf(stderr,                                        \
+				"[FAIL] %s:%d: string mismatch: expected "     \
+				"\"%s\", got \"%s\"\n",                        \
+				__FILE__, __LINE__, _exp_s, _act_s);           \
+			abort();                                               \
+		}                                                              \
+	} while (0)
 
 #endif /* LIBENA_TEST_FRAMEWORK_H */

@@ -9,16 +9,17 @@
 
 /* Supported ENA PCI device IDs (from reference/ena_pci_id_tbl.h) */
 static const struct ena_pci_id supported_pci_ids[] = {
-	{ ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_RESERVED },
-	{ ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_PF },
-	{ ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_LLQ_PF },
-	{ ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_VF },
-	{ ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_LLQ_VF },
+    {ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_RESERVED},
+    {ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_PF},
+    {ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_LLQ_PF},
+    {ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_VF},
+    {ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_LLQ_VF},
 };
 
 int ena_pci_match_id(uint16_t vendor_id, uint16_t device_id)
 {
-	size_t num_ids = sizeof(supported_pci_ids) / sizeof(supported_pci_ids[0]);
+	size_t num_ids =
+	    sizeof(supported_pci_ids) / sizeof(supported_pci_ids[0]);
 	for (size_t i = 0; i < num_ids; i++) {
 		if (supported_pci_ids[i].vendor_id == vendor_id &&
 		    supported_pci_ids[i].device_id == device_id) {
@@ -44,22 +45,19 @@ int ena_pci_match_id(uint16_t vendor_id, uint16_t device_id)
 
 static inline uint32_t pci_read32(const struct pci_address *addr, uint32_t reg)
 {
-	uint32_t config_addr = (1u << 31)
-		| ((uint32_t)addr->bus << 16)
-		| ((uint32_t)addr->devid << 11)
-		| ((uint32_t)addr->function << 8)
-		| (reg & 0xFC);
+	uint32_t config_addr = (1u << 31) | ((uint32_t)addr->bus << 16) |
+			       ((uint32_t)addr->devid << 11) |
+			       ((uint32_t)addr->function << 8) | (reg & 0xFC);
 	uk_arch_x86_64_outl(PCI_CONFIG_ADDR, config_addr);
 	return uk_arch_x86_64_inl(PCI_CONFIG_DATA);
 }
 
-static inline void pci_write32(const struct pci_address *addr, uint32_t reg, uint32_t val)
+static inline void pci_write32(const struct pci_address *addr, uint32_t reg,
+			       uint32_t val)
 {
-	uint32_t config_addr = (1u << 31)
-		| ((uint32_t)addr->bus << 16)
-		| ((uint32_t)addr->devid << 11)
-		| ((uint32_t)addr->function << 8)
-		| (reg & 0xFC);
+	uint32_t config_addr = (1u << 31) | ((uint32_t)addr->bus << 16) |
+			       ((uint32_t)addr->devid << 11) |
+			       ((uint32_t)addr->function << 8) | (reg & 0xFC);
 	uk_arch_x86_64_outl(PCI_CONFIG_ADDR, config_addr);
 	uk_arch_x86_64_outl(PCI_CONFIG_DATA, val);
 }
@@ -67,15 +65,16 @@ static inline void pci_write32(const struct pci_address *addr, uint32_t reg, uin
 static inline void pci_enable_device(const struct pci_address *addr)
 {
 	uint32_t cmd = pci_read32(addr, 0x04);
-	cmd |= (1u << 0)  /* I/O Space Enable */
-	     | (1u << 1)  /* Memory Space Enable */
-	     | (1u << 2); /* Bus Master Enable (DMA) */
+	cmd |= (1u << 0)    /* I/O Space Enable */
+	       | (1u << 1)  /* Memory Space Enable */
+	       | (1u << 2); /* Bus Master Enable (DMA) */
 	pci_write32(addr, 0x04, cmd);
 }
 
 /* Read a PCI BAR at the given config register offset. A 64-bit MMIO BAR
  * spans two dwords (the high dword is at offset + 4). */
-static inline uint64_t pci_read_bar(const struct pci_address *addr, uint32_t reg)
+static inline uint64_t pci_read_bar(const struct pci_address *addr,
+				    uint32_t reg)
 {
 	uint32_t bar_lo = pci_read32(addr, reg);
 	uint64_t bar = (bar_lo & ~0x0Fu);
@@ -88,7 +87,8 @@ static inline uint64_t pci_read_bar(const struct pci_address *addr, uint32_t reg
 
 /* Probe the size of a PCI BAR by writing all ones and reading back the
  * decode mask. Returns 0 for an unimplemented BAR. */
-static inline uint64_t pci_read_bar_size(const struct pci_address *addr, uint32_t reg)
+static inline uint64_t pci_read_bar_size(const struct pci_address *addr,
+					 uint32_t reg)
 {
 	uint32_t bar_lo_orig = pci_read32(addr, reg);
 	uint32_t bar_hi_orig = 0;
@@ -128,13 +128,12 @@ static inline uint64_t pci_read_bar_size(const struct pci_address *addr, uint32_
 }
 
 static const struct pci_device_id ena_pci_ids[] = {
-	{ PCI_DEVICE_ID(ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_RESERVED) },
-	{ PCI_DEVICE_ID(ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_PF) },
-	{ PCI_DEVICE_ID(ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_LLQ_PF) },
-	{ PCI_DEVICE_ID(ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_VF) },
-	{ PCI_DEVICE_ID(ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_LLQ_VF) },
-	{ PCI_ANY_DEVICE_ID }
-};
+    {PCI_DEVICE_ID(ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_RESERVED)},
+    {PCI_DEVICE_ID(ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_PF)},
+    {PCI_DEVICE_ID(ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_LLQ_PF)},
+    {PCI_DEVICE_ID(ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_VF)},
+    {PCI_DEVICE_ID(ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_LLQ_VF)},
+    {PCI_ANY_DEVICE_ID}};
 
 /*
  * Driver-owned registry of probed ENA devices. The pinned UK
@@ -150,14 +149,14 @@ static struct ena_uk_device *ena_pci_find_edev(struct pci_device *pdev)
 {
 	int i;
 
-	for (i = 0; i < ENA_PCI_MAX_DEVS; i++) {
+	for (i = 0; i < ENA_PCI_MAX_DEVS; i++)
 		if (s_edevs[i] && s_edevs[i]->pdev == pdev)
 			return s_edevs[i];
-	}
 	return NULL;
 }
 
-static int ena_pci_track_edev(struct ena_uk_device *edev, struct pci_device *pdev)
+static int ena_pci_track_edev(struct ena_uk_device *edev,
+			      struct pci_device *pdev)
 {
 	int i;
 
@@ -264,26 +263,31 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 
 		if ((bar2_lo & 0x01) == 0) { /* memory BAR */
 			uint64_t bar2_phys = pci_read_bar(&pdev->addr, 0x18);
-			uint64_t bar2_size = pci_read_bar_size(&pdev->addr, 0x18);
+			uint64_t bar2_size =
+			    pci_read_bar_size(&pdev->addr, 0x18);
 
 			if (bar2_phys != 0 && bar2_size != 0) {
 				edev->bar2_vaddr = (void *)(uintptr_t)bar2_phys;
 				edev->adapter.bar2_base =
-					(volatile uint8_t *)(uintptr_t)bar2_phys;
+				    (volatile uint8_t *)(uintptr_t)bar2_phys;
 				edev->adapter.bar2_size = (size_t)bar2_size;
-				ena_info("probe: bar2=%p (phys=0x%lx, size=0x%lx)",
-					 edev->bar2_vaddr, (unsigned long)bar2_phys,
-					 (unsigned long)bar2_size);
+				ena_info(
+				    "probe: bar2=%p (phys=0x%lx, size=0x%lx)",
+				    edev->bar2_vaddr, (unsigned long)bar2_phys,
+				    (unsigned long)bar2_size);
 			} else {
-				ena_info("probe: BAR2 unimplemented (no LLQ push region)");
+				ena_info("probe: BAR2 unimplemented (no LLQ "
+					 "push region)");
 			}
 		} else {
-			ena_info("probe: BAR2 is I/O space (no LLQ push region)");
+			ena_info(
+			    "probe: BAR2 is I/O space (no LLQ push region)");
 		}
 	}
 
 	sts = ena_reg_read32(edev->adapter.bar0_base + ENA_REGS_DEV_STS_OFF);
-	ena_info("probe: bar0=%p (phys=0x%lx, size=0x%x) dev_sts=0x%x version=0x%x caps=0x%x",
+	ena_info("probe: bar0=%p (phys=0x%lx, size=0x%x) dev_sts=0x%x "
+		 "version=0x%x caps=0x%x",
 		 bar0, (unsigned long)bar0_phys, bar0_size, sts,
 		 edev->adapter.version, edev->adapter.caps);
 
@@ -295,7 +299,8 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 		return ret;
 	}
 
-	/* 5. Run feature negotiation (device attributes, queue limits, host info, MTU, MAC) */
+	/* 5. Run feature negotiation (device attributes, queue limits, host
+	 * info, MTU, MAC) */
 	ret = ena_init_run(&edev->adapter, 1500);
 	if (ret) {
 		ena_err("probe: init run failed (%d)", ret);
@@ -315,13 +320,15 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 	 *    Otherwise the driver stays in software polling mode. */
 	ret = ena_intr_setup(&edev->adapter, &pdev->addr);
 	if (ret < 0)
-		ena_info("probe: msix inactive (%d), software polling mode", ret);
+		ena_info("probe: msix inactive (%d), software polling mode",
+			 ret);
 
 	edev->netdev.rx_one = ena_netdev_rx_one;
 	edev->netdev.tx_one = ena_netdev_tx_one;
 	edev->netdev.ops = &ena_ops;
 
-	ret = uk_netdev_drv_register(&edev->netdev, uk_alloc_get_default(), "ena");
+	ret = uk_netdev_drv_register(&edev->netdev, uk_alloc_get_default(),
+				     "ena");
 	if (ret < 0) {
 		ena_err("probe: failed to register uknetdev (%d)", ret);
 		ena_intr_msix_fini(&edev->adapter);
@@ -334,17 +341,18 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 
 	ena_pci_track_edev(edev, pdev);
 
-	ena_info("probe: bound ENA device netdev_id=%u (mac=%02x:%02x:%02x:%02x:%02x:%02x)",
-		 edev->uid,
-		 edev->adapter.mac_addr[0], edev->adapter.mac_addr[1],
-		 edev->adapter.mac_addr[2], edev->adapter.mac_addr[3],
-		 edev->adapter.mac_addr[4], edev->adapter.mac_addr[5]);
+	ena_info("probe: bound ENA device netdev_id=%u "
+		 "(mac=%02x:%02x:%02x:%02x:%02x:%02x)",
+		 edev->uid, edev->adapter.mac_addr[0],
+		 edev->adapter.mac_addr[1], edev->adapter.mac_addr[2],
+		 edev->adapter.mac_addr[3], edev->adapter.mac_addr[4],
+		 edev->adapter.mac_addr[5]);
 	return 0;
 }
 
 static struct pci_driver ena_pci_drv = {
-	.device_ids = ena_pci_ids,
-	.add_dev = ena_pci_add_dev,
+    .device_ids = ena_pci_ids,
+    .add_dev = ena_pci_add_dev,
 };
 
 PCI_REGISTER_DRIVER(&ena_pci_drv);

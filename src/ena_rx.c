@@ -79,8 +79,7 @@ int ena_rx_submit_one(struct ena_ring *ring, void *netbuf, uint64_t phys_addr,
 
 	desc->length = ena_cpu_to_le16((uint16_t)buf_len);
 	ctrl = (ring->sq_phase & ENA_ETH_IO_RX_DESC_PHASE_MASK);
-	ctrl |= ENA_ETH_IO_RX_DESC_FIRST_MASK |
-		ENA_ETH_IO_RX_DESC_LAST_MASK |
+	ctrl |= ENA_ETH_IO_RX_DESC_FIRST_MASK | ENA_ETH_IO_RX_DESC_LAST_MASK |
 		ENA_ETH_IO_RX_DESC_COMP_REQ_MASK;
 	desc->ctrl = ctrl;
 	desc->req_id = ena_cpu_to_le16(req_id);
@@ -100,7 +99,8 @@ int ena_rx_submit_one(struct ena_ring *ring, void *netbuf, uint64_t phys_addr,
 }
 
 int ena_rx_refill(struct ena_ring *ring, unsigned int count,
-		  void *(*alloc_netbuf)(void *arg, uint64_t *phys_out, uint32_t *len_out),
+		  void *(*alloc_netbuf)(void *arg, uint64_t *phys_out,
+					uint32_t *len_out),
 		  void *alloc_arg, unsigned int *refilled_count)
 {
 	unsigned int refilled = 0;
@@ -127,7 +127,8 @@ int ena_rx_refill(struct ena_ring *ring, unsigned int count,
 		if (ret)
 			break;
 
-		struct uk_netdev_rx_queue *rxq = (struct uk_netdev_rx_queue *)alloc_arg;
+		struct uk_netdev_rx_queue *rxq =
+		    (struct uk_netdev_rx_queue *)alloc_arg;
 		if (rxq && rxq->bounce_map && req_id < rxq->nb_desc) {
 			rxq->bounce_map[req_id] = rxq->pending_slot;
 			rxq->pending_slot = -1;
@@ -171,7 +172,8 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 	uint16_t pkt_len;
 	uint8_t phase;
 
-	if (!ring || !pkts || ring->ring_type != ENA_RING_TYPE_RX || !ring->cq_virt || max_pkts == 0)
+	if (!ring || !pkts || ring->ring_type != ENA_RING_TYPE_RX ||
+	    !ring->cq_virt || max_pkts == 0)
 		return -EINVAL;
 
 	/* After a reset the CQ memory may hold stale entries and the
@@ -192,7 +194,8 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 		status_ptr = (volatile const uint32_t *)&cdesc->status;
 		status_val = ena_le32_to_cpu(*status_ptr);
 
-		phase = (uint8_t)((status_val & ENA_ETH_IO_RX_CDESC_BASE_PHASE_MASK) >>
+		phase = (uint8_t)((status_val &
+				   ENA_ETH_IO_RX_CDESC_BASE_PHASE_MASK) >>
 				  ENA_ETH_IO_RX_CDESC_BASE_PHASE_SHIFT);
 		if (phase != ring->cq_phase)
 			break;
@@ -201,7 +204,8 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 
 		req_id = ena_le16_to_cpu(cdesc->req_id);
 		if (req_id >= ring->sq_depth) {
-			ena_err("rx poll: invalid req_id %u from device", req_id);
+			ena_err("rx poll: invalid req_id %u from device",
+				req_id);
 			break;
 		}
 
@@ -219,26 +223,37 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 
 		/* Validate packet length against buffer capacity */
 		if (pkt_len > rx_buf->data_len) {
-			ena_err("rx poll: packet length %u exceeds buffer capacity %u",
+			ena_err("rx poll: packet length %u exceeds buffer "
+				"capacity %u",
 				pkt_len, rx_buf->data_len);
 			ring->rx_dropped++;
-			struct uk_netdev_rx_queue *rxq = (struct uk_netdev_rx_queue *)ring->drop_netbuf_arg;
-			if (rxq && rxq->bounce_map && req_id < rxq->nb_desc && rxq->bounce_map[req_id] >= 0) {
-				uint16_t slot = (uint16_t)rxq->bounce_map[req_id];
+			struct uk_netdev_rx_queue *rxq =
+			    (struct uk_netdev_rx_queue *)ring->drop_netbuf_arg;
+			if (rxq && rxq->bounce_map && req_id < rxq->nb_desc &&
+			    rxq->bounce_map[req_id] >= 0) {
+				uint16_t slot =
+				    (uint16_t)rxq->bounce_map[req_id];
 				rxq->bounce_map[req_id] = -1;
 				if (rxq->bounce_free_ids && rxq->nb_desc > 0) {
-					rxq->bounce_free_ids[rxq->bounce_free_tail] = slot;
-					rxq->bounce_free_tail = (uint16_t)((rxq->bounce_free_tail + 1) & (rxq->nb_desc - 1));
+					rxq->bounce_free_ids
+					    [rxq->bounce_free_tail] = slot;
+					rxq->bounce_free_tail =
+					    (uint16_t)((rxq->bounce_free_tail +
+							1) &
+						       (rxq->nb_desc - 1));
 					rxq->bounce_free_count++;
 				}
 			}
 			if (rx_buf->netbuf) {
 				/* Release the netbuf before freeing */
 				if (ring->drop_netbuf_cb)
-					ring->drop_netbuf_cb(ring->drop_netbuf_arg, rx_buf->netbuf);
+					ring->drop_netbuf_cb(
+					    ring->drop_netbuf_arg,
+					    rx_buf->netbuf);
 #ifdef __Unikraft__
 				else
-					uk_netbuf_free((struct uk_netbuf *)rx_buf->netbuf);
+					uk_netbuf_free(
+					    (struct uk_netbuf *)rx_buf->netbuf);
 #endif
 				rx_buf->netbuf = NULL;
 			}
@@ -255,12 +270,18 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 		pkts[rcvd].len = pkt_len;
 		pkts[rcvd].hash = ena_le32_to_cpu(cdesc->hash);
 		pkts[rcvd].req_id = req_id;
-		pkts[rcvd].l3_csum_err = !!(status_val & ENA_ETH_IO_RX_CDESC_BASE_L3_CSUM_ERR_MASK);
-		pkts[rcvd].l4_csum_err = !!(status_val & ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_ERR_MASK);
-		pkts[rcvd].l4_csum_checked = !!(status_val & ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK);
-		pkts[rcvd].frag = !!(status_val & ENA_ETH_IO_RX_CDESC_BASE_IPV4_FRAG_MASK);
-		pkts[rcvd].first = !!(status_val & ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK);
-		pkts[rcvd].last = !!(status_val & ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK);
+		pkts[rcvd].l3_csum_err =
+		    !!(status_val & ENA_ETH_IO_RX_CDESC_BASE_L3_CSUM_ERR_MASK);
+		pkts[rcvd].l4_csum_err =
+		    !!(status_val & ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_ERR_MASK);
+		pkts[rcvd].l4_csum_checked = !!(
+		    status_val & ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK);
+		pkts[rcvd].frag =
+		    !!(status_val & ENA_ETH_IO_RX_CDESC_BASE_IPV4_FRAG_MASK);
+		pkts[rcvd].first =
+		    !!(status_val & ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK);
+		pkts[rcvd].last =
+		    !!(status_val & ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK);
 
 		ring->rx_packets++;
 		ring->rx_bytes += pkts[rcvd].len;
@@ -268,7 +289,8 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 		/* Return request ID back to free pool */
 		ena_ring_req_id_free(ring, req_id);
 
-		/* Advance CQ consumer head index (monotonic unmasked counter) */
+		/* Advance CQ consumer head index (monotonic unmasked counter)
+		 */
 		ring->cq_head++;
 		if ((ring->cq_head & (ring->cq_depth - 1)) == 0)
 			ring->cq_phase ^= 1;
@@ -297,12 +319,10 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 		if (ring->stats_print_acc >= ENA_VERBOSE_STATS_INTERVAL) {
 			ring->stats_print_acc = 0;
 			ena_info("verbose-stats q%u: rx_pkts=%lu rx_bytes=%lu "
-				"tx_pkts=%lu tx_bytes=%lu",
-				ring->qid,
-				(unsigned long)ring->rx_packets,
-				(unsigned long)ring->rx_bytes,
-				(unsigned long)txp,
-				(unsigned long)txb);
+				 "tx_pkts=%lu tx_bytes=%lu",
+				 ring->qid, (unsigned long)ring->rx_packets,
+				 (unsigned long)ring->rx_bytes,
+				 (unsigned long)txp, (unsigned long)txb);
 		}
 	}
 #endif

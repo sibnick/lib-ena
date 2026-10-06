@@ -179,15 +179,16 @@ static void test_admin_cmd_timeout(void)
 
 	/* After timeout and reset, adapter is in error state */
 	assert(adapter.state == ENA_STATE_ERROR);
-	ret = ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE, NULL, 0,
-				 NULL, 0, &command_id, 100);
+	ret = ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE, NULL, 0, NULL,
+				 0, &command_id, 100);
 	assert(ret == -ENODEV);
 
-	/* Clear the hang and re-initialize admin queue; the next command must succeed. */
+	/* Clear the hang and re-initialize admin queue; the next command must
+	 * succeed. */
 	mock_ena_hw_clear_admin_hang(&hw);
 	assert(ena_admin_init(&adapter, 8, 8, 8) == 0);
-	ret = ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE, NULL, 0,
-				 NULL, 0, &command_id, 100);
+	ret = ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE, NULL, 0, NULL,
+				 0, &command_id, 100);
 	assert(ret == 0);
 
 	ena_admin_fini(&adapter);
@@ -208,11 +209,14 @@ static void test_admin_timeout_invalidates_io_queues(void)
 	assert(ena_admin_init(&adapter, 8, 8, 8) == 0);
 	assert(ena_init_run(&adapter, 1500) == 0);
 
-	/* Attach one TX and one RX ring so the reset has queues to invalidate */
+	/* Attach one TX and one RX ring so the reset has queues to invalidate
+	 */
 	struct ena_ring *tx_ring = NULL;
 	struct ena_ring *rx_ring = NULL;
-	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8, &tx_ring) == 0);
-	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 8, 8, &rx_ring) == 0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8, &tx_ring) ==
+	       0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 8, 8, &rx_ring) ==
+	       0);
 	assert(ena_ring_create_hw(tx_ring, 0) == 0);
 	assert(ena_ring_create_hw(rx_ring, 0) == 0);
 	assert(tx_ring->hw_valid == true);
@@ -235,7 +239,6 @@ static void test_admin_timeout_invalidates_io_queues(void)
 	pkt.phys_addr = 0x50001000;
 	assert(ena_tx_submit(tx_ring, &pkt, &req_id) == 0);
 	assert(tx_ring->req_in_flight[req_id] == 1);
-
 
 	/* Hang the admin queue: the command times out and the driver issues a
 	 * device reset. The mock does not complete the reset, so the adapter
@@ -311,9 +314,9 @@ static void test_admin_acq_phase_flip(void)
 
 	for (int i = 0; i < 5; i++) {
 		uint16_t command_id = 0;
-		int ret = ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE,
-					     NULL, 0, NULL, 0, &command_id,
-					     100);
+		int ret =
+		    ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE, NULL, 0,
+				       NULL, 0, &command_id, 100);
 		assert(ret == 0);
 	}
 
@@ -413,17 +416,17 @@ static void test_admin_caps_entry_size(void)
 	/* Bits 31:16 hold the entry size in bytes, bits 15:0 the depth. */
 	assert((aq_caps & ENA_REGS_AQ_CAPS_AQ_ENTRY_SIZE_MASK) ==
 	       ((uint32_t)sizeof(struct ena_admin_aq_entry)
-	        << ENA_REGS_AQ_CAPS_AQ_ENTRY_SIZE_SHIFT));
+		<< ENA_REGS_AQ_CAPS_AQ_ENTRY_SIZE_SHIFT));
 	assert((aq_caps & ENA_REGS_AQ_CAPS_AQ_DEPTH_MASK) == 8);
 
 	assert((acq_caps & ENA_REGS_ACQ_CAPS_ACQ_ENTRY_SIZE_MASK) ==
 	       ((uint32_t)sizeof(struct ena_admin_acq_entry)
-	        << ENA_REGS_ACQ_CAPS_ACQ_ENTRY_SIZE_SHIFT));
+		<< ENA_REGS_ACQ_CAPS_ACQ_ENTRY_SIZE_SHIFT));
 	assert((acq_caps & ENA_REGS_ACQ_CAPS_ACQ_DEPTH_MASK) == 8);
 
 	assert((aenq_caps & ENA_REGS_AENQ_CAPS_AENQ_ENTRY_SIZE_MASK) ==
 	       ((uint32_t)sizeof(struct ena_admin_aenq_entry)
-	        << ENA_REGS_AENQ_CAPS_AENQ_ENTRY_SIZE_SHIFT));
+		<< ENA_REGS_AENQ_CAPS_AENQ_ENTRY_SIZE_SHIFT));
 	assert((aenq_caps & ENA_REGS_AENQ_CAPS_AENQ_DEPTH_MASK) == 8);
 
 	ena_admin_fini(&adapter);
@@ -451,12 +454,12 @@ static void test_admin_acq_tail_register(void)
 	for (int i = 1; i <= 8; i++) {
 		uint16_t command_id = 0;
 
-		assert(ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE,
-					 NULL, 0, NULL, 0, &command_id,
-					 100) == 0);
+		assert(ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE, NULL,
+					  0, NULL, 0, &command_id, 100) == 0);
 
 		/* The driver publishes the next slot it will read. */
-		assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_ACQ_TAIL_OFF) == (uint32_t)i);
+		assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_ACQ_TAIL_OFF) ==
+		       (uint32_t)i);
 	}
 
 	/* All 8 slots were released, so the device never saw a full ring. */
@@ -494,8 +497,8 @@ static void test_admin_cmd_id_mismatch(void)
 
 	/* The ring still works after the rejection. */
 	mock_ena_hw_clear_bad_cmd_id(&hw);
-	ret = ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE, NULL, 0,
-				 NULL, 0, &command_id, 100);
+	ret = ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE, NULL, 0, NULL,
+				 0, &command_id, 100);
 	assert(ret == 0);
 	assert(command_id == 2);
 	assert(adapter.acq_head == 2);
@@ -530,7 +533,8 @@ static void test_admin_cmd_id_wrap(void)
 			assert(hw.last_command_id == 0x0FFF);
 	}
 
-	/* Command 4096 skipped reserved id 0 and wrapped to id 1; the next id is 2. */
+	/* Command 4096 skipped reserved id 0 and wrapped to id 1; the next id
+	 * is 2. */
 	assert(hw.last_command_id == 1);
 	assert(adapter.acq_head == 4096);
 	assert(adapter.next_command_id == 2);
@@ -551,9 +555,8 @@ static void *lock_worker_fn(void *argp)
 {
 	struct lock_worker_arg *arg = (struct lock_worker_arg *)argp;
 
-	arg->ret = ena_admin_exec_cmd(arg->adapter, ENA_ADMIN_GET_FEATURE,
-				      NULL, 0, NULL, 0, &arg->command_id,
-				      100);
+	arg->ret = ena_admin_exec_cmd(arg->adapter, ENA_ADMIN_GET_FEATURE, NULL,
+				      0, NULL, 0, &arg->command_id, 100);
 	arg->done = 1;
 	return NULL;
 }
@@ -576,18 +579,18 @@ static void test_admin_exec_locking(void)
 	assert(adapter.admin_lock == 0);
 	uint16_t command_id = 0;
 	assert(ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE, NULL, 0,
-				 NULL, 0, &command_id, 100) == 0);
+				  NULL, 0, &command_id, 100) == 0);
 	assert(command_id == 1);
 	assert(adapter.admin_lock == 0);
 
 	/* Hold the lock: a second caller must block, not corrupt state. */
 	adapter.admin_lock = 1;
 
-	struct lock_worker_arg arg = { &adapter, 0, -1, 0 };
+	struct lock_worker_arg arg = {&adapter, 0, -1, 0};
 	pthread_t thread;
 	assert(pthread_create(&thread, NULL, lock_worker_fn, &arg) == 0);
 
-	struct timespec nap = { 0, 200 * 1000 * 1000 }; /* 200 ms */
+	struct timespec nap = {0, 200 * 1000 * 1000}; /* 200 ms */
 	assert(nanosleep(&nap, NULL) == 0);
 
 	/* The worker is still blocked on the held lock. */
@@ -619,8 +622,9 @@ static void *worker_fn(void *argp)
 
 	arg->ret = 0;
 	for (int i = 0; i < arg->count; i++) {
-		int ret = ena_admin_exec_cmd(arg->adapter, ENA_ADMIN_GET_FEATURE,
-					     NULL, 0, NULL, 0, NULL, 100);
+		int ret =
+		    ena_admin_exec_cmd(arg->adapter, ENA_ADMIN_GET_FEATURE,
+				       NULL, 0, NULL, 0, NULL, 100);
 		if (ret != 0) {
 			arg->ret = ret;
 			break;
@@ -690,8 +694,9 @@ static void test_admin_aq_phase_wrap(void)
 	/* Submit 5 commands to wrap AQ past 4 */
 	for (int i = 0; i < 5; i++) {
 		uint16_t command_id = 0;
-		int ret = ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE,
-					     NULL, 0, NULL, 0, &command_id, 100);
+		int ret =
+		    ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE, NULL, 0,
+				       NULL, 0, &command_id, 100);
 		assert(ret == 0);
 	}
 
@@ -702,8 +707,9 @@ static void test_admin_aq_phase_wrap(void)
 	/* Submit 4 more commands to wrap AQ again back to phase 1 */
 	for (int i = 0; i < 4; i++) {
 		uint16_t command_id = 0;
-		int ret = ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE,
-					     NULL, 0, NULL, 0, &command_id, 100);
+		int ret =
+		    ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE, NULL, 0,
+				       NULL, 0, &command_id, 100);
 		assert(ret == 0);
 	}
 
@@ -730,7 +736,8 @@ static void test_admin_error_state_rejection(void)
 	adapter.state = ENA_STATE_ERROR;
 
 	uint16_t cmd_id;
-	int ret = ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE, NULL, 0, NULL, 0, &cmd_id, 100);
+	int ret = ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE, NULL, 0,
+				     NULL, 0, &cmd_id, 100);
 	assert(ret == -ENODEV);
 
 	ena_admin_fini(&adapter);
@@ -753,17 +760,21 @@ static void test_admin_full_64b_entry_payload(void)
 	memset(&full_entry, 0, sizeof(full_entry));
 	full_entry.u.inline_data_w1[0] = 0x12345678;
 	/* Set feature_id = 1 (DEVICE_ATTRIBUTES) in feat_common byte 1 */
-	full_entry.inline_data_w4[0] = ((uint32_t)ENA_ADMIN_DEVICE_ATTRIBUTES << 8) | 0x1;
+	full_entry.inline_data_w4[0] =
+	    ((uint32_t)ENA_ADMIN_DEVICE_ATTRIBUTES << 8) | 0x1;
 
 	uint16_t cmd_id;
-	int ret = ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE, &full_entry, sizeof(full_entry),
-				     NULL, 0, &cmd_id, 100);
+	int ret =
+	    ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE, &full_entry,
+			       sizeof(full_entry), NULL, 0, &cmd_id, 100);
 	assert(ret == 0);
 
 	/* Verify entry in AQ memory preserved inline data words */
-	const struct ena_admin_aq_entry *aq = (const struct ena_admin_aq_entry *)adapter.aq_base;
+	const struct ena_admin_aq_entry *aq =
+	    (const struct ena_admin_aq_entry *)adapter.aq_base;
 	assert(aq[0].u.inline_data_w1[0] == 0x12345678);
-	assert(aq[0].inline_data_w4[0] == (((uint32_t)ENA_ADMIN_DEVICE_ATTRIBUTES << 8) | 0x1));
+	assert(aq[0].inline_data_w4[0] ==
+	       (((uint32_t)ENA_ADMIN_DEVICE_ATTRIBUTES << 8) | 0x1));
 	assert(aq[0].aq_common_desc.opcode == ENA_ADMIN_GET_FEATURE);
 
 	ena_admin_fini(&adapter);

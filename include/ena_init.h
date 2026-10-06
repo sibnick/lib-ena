@@ -18,59 +18,58 @@ struct ena_adapter;
 /* Feature IDs for the get/set feature admin commands
  * (reference/ena_admin_defs.h, enum ena_admin_aq_feature_id). */
 enum ena_admin_aq_feature_id {
-	ENA_ADMIN_DEVICE_ATTRIBUTES		= 1,
-	ENA_ADMIN_MAX_QUEUES_NUM		= 2,
-	ENA_ADMIN_LLQ				= 4,
-	ENA_ADMIN_RSS_HASH_FUNCTION		= 10,
-	ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG	= 12,
-	ENA_ADMIN_MTU				= 14,
-	ENA_ADMIN_RSS_HASH_INPUT		= 18,
-	ENA_ADMIN_AENQ_CONFIG			= 26,
-	ENA_ADMIN_HOST_ATTR_CONFIG		= 28,
+	ENA_ADMIN_DEVICE_ATTRIBUTES = 1,
+	ENA_ADMIN_MAX_QUEUES_NUM = 2,
+	ENA_ADMIN_LLQ = 4,
+	ENA_ADMIN_RSS_HASH_FUNCTION = 10,
+	ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG = 12,
+	ENA_ADMIN_MTU = 14,
+	ENA_ADMIN_RSS_HASH_INPUT = 18,
+	ENA_ADMIN_AENQ_CONFIG = 26,
+	ENA_ADMIN_HOST_ATTR_CONFIG = 28,
 };
 
 /* AENQ group bits (reference/ena_admin_defs.h, enum ena_admin_aenq_group). */
-#define ENA_ADMIN_AENQ_GROUP_LINK_CHANGE	(1u << 0)
-#define ENA_ADMIN_AENQ_GROUP_FATAL_ERROR	(1u << 1)
-#define ENA_ADMIN_AENQ_GROUP_WARNING		(1u << 2)
-#define ENA_ADMIN_AENQ_GROUP_NOTIFICATION	(1u << 3)
-#define ENA_ADMIN_AENQ_GROUP_KEEP_ALIVE		(1u << 4)
-#define ENA_ADMIN_AENQ_GROUPS_ALL		0x1Fu
+#define ENA_ADMIN_AENQ_GROUP_LINK_CHANGE (1u << 0)
+#define ENA_ADMIN_AENQ_GROUP_FATAL_ERROR (1u << 1)
+#define ENA_ADMIN_AENQ_GROUP_WARNING (1u << 2)
+#define ENA_ADMIN_AENQ_GROUP_NOTIFICATION (1u << 3)
+#define ENA_ADMIN_AENQ_GROUP_KEEP_ALIVE (1u << 4)
+#define ENA_ADMIN_AENQ_GROUPS_ALL 0x1Fu
 
 /* OS types (reference/ena_admin_defs.h, enum ena_admin_os_type). */
 enum ena_admin_os_type {
-	ENA_ADMIN_OS_LINUX	= 1,
-	ENA_ADMIN_OS_WIN	= 2,
-	ENA_ADMIN_OS_DPDK	= 3,
-	ENA_ADMIN_OS_FREEBSD	= 4,
-	ENA_ADMIN_OS_IPXE	= 5,
-	ENA_ADMIN_OS_ESXI	= 6,
+	ENA_ADMIN_OS_LINUX = 1,
+	ENA_ADMIN_OS_WIN = 2,
+	ENA_ADMIN_OS_DPDK = 3,
+	ENA_ADMIN_OS_FREEBSD = 4,
+	ENA_ADMIN_OS_IPXE = 5,
+	ENA_ADMIN_OS_ESXI = 6,
 };
 
 /* Driver identity reported to the device. */
-#define ENA_INIT_OS_NAME		"Unikraft"
-#define ENA_INIT_DRIVER_NAME		"ena-unikraft"
-#define ENA_INIT_DRIVER_VERSION_MAJOR	2
-#define ENA_INIT_DRIVER_VERSION_MINOR	0
+#define ENA_INIT_OS_NAME "Unikraft"
+#define ENA_INIT_DRIVER_NAME "ena-unikraft"
+#define ENA_INIT_DRIVER_VERSION_MAJOR 2
+#define ENA_INIT_DRIVER_VERSION_MINOR 0
 #define ENA_INIT_DRIVER_VERSION_SUBMINOR 0
-#define ENA_INIT_DRIVER_MODULE_TYPE	0
-#define ENA_INIT_ENA_SPEC_VERSION	2
+#define ENA_INIT_DRIVER_MODULE_TYPE 0
+#define ENA_INIT_ENA_SPEC_VERSION 2
 
 /* Pack the driver version into the u32 field (reference bit layout). */
-#define ENA_INIT_PACK_DRIVER_VERSION(major, minor, sub, module) \
-	(((uint32_t)(major) & 0xFFu) | \
-	 (((uint32_t)(minor) & 0xFFu) << 8) | \
-	 (((uint32_t)(sub) & 0xFFu) << 16) | \
+#define ENA_INIT_PACK_DRIVER_VERSION(major, minor, sub, module)                \
+	(((uint32_t)(major) & 0xFFu) | (((uint32_t)(minor) & 0xFFu) << 8) |    \
+	 (((uint32_t)(sub) & 0xFFu) << 16) |                                   \
 	 (((uint32_t)(module) & 0xFFu) << 24))
 
 /* Host info buffer size: 4KB of physically contiguous memory. */
-#define ENA_INIT_HOST_INFO_SIZE	4096
+#define ENA_INIT_HOST_INFO_SIZE 4096
 
 /* Minimum legal Ethernet MTU (L3, excluding L2). */
-#define ENA_INIT_MTU_MIN	46
+#define ENA_INIT_MTU_MIN 46
 
 /* Maximum MTU this driver negotiates. */
-#define ENA_INIT_MTU_MAX	0xFFFF
+#define ENA_INIT_MTU_MAX 0xFFFF
 
 /* Select field (bits 1:0) of the common descriptor.
  * 0x1: select the current value. 0x3: select the default value. */
@@ -79,8 +78,8 @@ enum ena_admin_os_type {
 
 /* Common descriptor of the get/set feature admin commands. */
 struct ena_admin_get_set_feature_common_desc {
-	uint8_t flags;           /* bits 1:0: select */
-	uint8_t feature_id;      /* enum ena_admin_aq_feature_id */
+	uint8_t flags;	    /* bits 1:0: select */
+	uint8_t feature_id; /* enum ena_admin_aq_feature_id */
 	uint8_t feature_version;
 	uint8_t reserved8;
 };
@@ -243,4 +242,3 @@ int ena_init_config_aenq(struct ena_adapter *adapter);
 int ena_init_run(struct ena_adapter *adapter, uint32_t mtu);
 
 #endif /* LIBENA_ENA_INIT_H */
-

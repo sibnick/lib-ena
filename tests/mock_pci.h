@@ -145,7 +145,8 @@ struct mock_ena_hw {
 };
 
 void mock_ena_hw_init(struct mock_ena_hw *hw);
-void mock_ena_hw_set_reg32(struct mock_ena_hw *hw, uint32_t offset, uint32_t value);
+void mock_ena_hw_set_reg32(struct mock_ena_hw *hw, uint32_t offset,
+			   uint32_t value);
 uint32_t mock_ena_hw_get_reg32(const struct mock_ena_hw *hw, uint32_t offset);
 void mock_ena_hw_trigger_reset_completion(struct mock_ena_hw *hw);
 
@@ -164,12 +165,14 @@ void mock_ena_hw_inject_bad_db_offset(struct mock_ena_hw *hw, uint32_t offset);
 void mock_ena_hw_clear_bad_db_offset(struct mock_ena_hw *hw);
 void mock_ena_hw_inject_fake_req_id(struct mock_ena_hw *hw, uint16_t id);
 void mock_ena_hw_clear_fake_req_id(struct mock_ena_hw *hw);
-void mock_ena_hw_inject_aenq(struct mock_ena_hw *hw, uint16_t group, uint16_t syndrome);
+void mock_ena_hw_inject_aenq(struct mock_ena_hw *hw, uint16_t group,
+			     uint16_t syndrome);
 void mock_ena_hw_inject_aenq_payload(struct mock_ena_hw *hw, uint16_t group,
 				     uint16_t syndrome, uint32_t inline0);
 
 /* Generic fault injection API */
-void mock_pci_inject_fault(struct mock_ena_hw *hw, enum mock_pci_fault_type type, uint64_t arg);
+void mock_pci_inject_fault(struct mock_ena_hw *hw,
+			   enum mock_pci_fault_type type, uint64_t arg);
 void mock_pci_clear_faults(struct mock_ena_hw *hw);
 
 /* Device-side feature negotiation */
@@ -177,7 +180,8 @@ void mock_ena_hw_require_attrs_first(struct mock_ena_hw *hw, int on);
 
 /* TX packet processing and completion emulation */
 struct ena_ring;
-void mock_ena_hw_emulate_tx(struct mock_ena_hw *hw, struct ena_ring *ring, unsigned int count);
+void mock_ena_hw_emulate_tx(struct mock_ena_hw *hw, struct ena_ring *ring,
+			    unsigned int count);
 
 /* RX packet reception and completion emulation */
 void mock_ena_hw_emulate_rx(struct mock_ena_hw *hw, struct ena_ring *ring,

@@ -27,7 +27,8 @@ static void *mock_rx_alloc_cb(void *arg, uint64_t *phys_out, uint32_t *len_out)
 	return (void *)(uintptr_t)*phys_out;
 }
 
-static int setup_test_adapter(struct mock_ena_hw *hw, struct ena_adapter *adapter)
+static int setup_test_adapter(struct mock_ena_hw *hw,
+			      struct ena_adapter *adapter)
 {
 	mock_ena_hw_init(hw);
 	ena_admin_set_db_hook(mock_ena_hw_aq_doorbell_hook, hw);
@@ -44,27 +45,27 @@ static int setup_test_adapter(struct mock_ena_hw *hw, struct ena_adapter *adapte
 	if (ret)
 		return ret;
 
-	adapter->rx_rings = calloc(adapter->max_rx_queues, sizeof(struct ena_ring *));
-	adapter->tx_rings = calloc(adapter->max_tx_queues, sizeof(struct ena_ring *));
+	adapter->rx_rings =
+	    calloc(adapter->max_rx_queues, sizeof(struct ena_ring *));
+	adapter->tx_rings =
+	    calloc(adapter->max_tx_queues, sizeof(struct ena_ring *));
 	return 0;
 }
 
 static void teardown_test_adapter(struct ena_adapter *adapter)
 {
 	if (adapter->rx_rings) {
-		for (uint16_t i = 0; i < adapter->max_rx_queues; i++) {
+		for (uint16_t i = 0; i < adapter->max_rx_queues; i++)
 			if (adapter->rx_rings[i])
 				ena_ring_free(adapter->rx_rings[i]);
-		}
 		free(adapter->rx_rings);
 		adapter->rx_rings = NULL;
 	}
 
 	if (adapter->tx_rings) {
-		for (uint16_t i = 0; i < adapter->max_tx_queues; i++) {
+		for (uint16_t i = 0; i < adapter->max_tx_queues; i++)
 			if (adapter->tx_rings[i])
 				ena_ring_free(adapter->tx_rings[i]);
-		}
 		free(adapter->tx_rings);
 		adapter->tx_rings = NULL;
 	}
@@ -148,9 +149,11 @@ static void test_intr_unmask_cq_register(void)
 
 	assert(setup_test_adapter(&hw, &adapter) == 0);
 
-	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8, &adapter.tx_rings[0]) == 0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8,
+			      &adapter.tx_rings[0]) == 0);
 	assert(ena_ring_create_hw(adapter.tx_rings[0], 0) == 0);
-	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 8, 8, &adapter.rx_rings[0]) == 0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 8, 8,
+			      &adapter.rx_rings[0]) == 0);
 	assert(ena_ring_create_hw(adapter.rx_rings[0], 0) == 0);
 
 	/* The device reported a per-queue unmask register for both CQs,
@@ -170,21 +173,26 @@ static void test_intr_unmask_cq_register(void)
 	ena_reg_write32(adapter.tx_rings[0]->cq_db, 3);
 	head_db = mock_ena_hw_get_reg32(&hw, adapter.tx_rings[0]->cq_db_offset);
 	assert(head_db == 3);
-	assert(mock_ena_hw_get_reg32(&hw, adapter.rx_rings[0]->cq_db_offset) == 3);
+	assert(mock_ena_hw_get_reg32(&hw, adapter.rx_rings[0]->cq_db_offset) ==
+	       3);
 
 	/* Unmask vector 1 (queue 0). */
 	assert(ena_intr_unmask_vector(&adapter, 1) == 0);
 	assert(adapter.irq_vectors[1].masked == false);
 
 	/* intr_control bit 30 written to both per-queue unmask registers. */
-	assert(mock_ena_hw_get_reg32(&hw, adapter.tx_rings[0]->cq_unmask_db_offset) ==
+	assert(mock_ena_hw_get_reg32(
+		   &hw, adapter.tx_rings[0]->cq_unmask_db_offset) ==
 	       ENA_ETH_IO_INTR_REG_INTR_UNMASK_MASK);
-	assert(mock_ena_hw_get_reg32(&hw, adapter.rx_rings[0]->cq_unmask_db_offset) ==
+	assert(mock_ena_hw_get_reg32(
+		   &hw, adapter.rx_rings[0]->cq_unmask_db_offset) ==
 	       ENA_ETH_IO_INTR_REG_INTR_UNMASK_MASK);
 
 	/* The CQ head doorbell is unchanged. */
-	assert(mock_ena_hw_get_reg32(&hw, adapter.tx_rings[0]->cq_db_offset) == head_db);
-	assert(mock_ena_hw_get_reg32(&hw, adapter.rx_rings[0]->cq_db_offset) == head_db);
+	assert(mock_ena_hw_get_reg32(&hw, adapter.tx_rings[0]->cq_db_offset) ==
+	       head_db);
+	assert(mock_ena_hw_get_reg32(&hw, adapter.rx_rings[0]->cq_db_offset) ==
+	       head_db);
 
 	ena_intr_msix_fini(&adapter);
 	ena_ring_destroy_hw(adapter.tx_rings[0]);
@@ -225,16 +233,19 @@ static void test_poll_step_engine(void)
 
 	assert(setup_test_adapter(&hw, &adapter) == 0);
 
-	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8, &adapter.tx_rings[0]) == 0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8,
+			      &adapter.tx_rings[0]) == 0);
 	adapter.num_tx_rings = 1;
 	assert(ena_ring_create_hw(adapter.tx_rings[0], 0) == 0);
 
-	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 8, 8, &adapter.rx_rings[0]) == 0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 8, 8,
+			      &adapter.rx_rings[0]) == 0);
 	adapter.num_rx_rings = 1;
 	assert(ena_ring_create_hw(adapter.rx_rings[0], 0) == 0);
 
 	/* Populate 2 RX buffers */
-	assert(ena_rx_refill(adapter.rx_rings[0], 2, mock_rx_alloc_cb, NULL, &refilled) == 2);
+	assert(ena_rx_refill(adapter.rx_rings[0], 2, mock_rx_alloc_cb, NULL,
+			     &refilled) == 2);
 
 	/* Submit 2 TX packets */
 	memset(&tx_pkt, 0, sizeof(tx_pkt));
