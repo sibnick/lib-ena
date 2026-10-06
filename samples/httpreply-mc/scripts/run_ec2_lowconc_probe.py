@@ -29,10 +29,15 @@ monitoring. The script uses only 60 s datapoints that fall fully
 inside a phase window. It prints how many datapoints it used. Fewer
 than two datapoints is not usable.
 
+Use --repeat N to measure each concurrency level N times in one
+launch. Each repeat writes its own wrk output file and its own
+STEP_WINDOW line. This keeps each CPU window matched to its phase.
+It also avoids a second snapshot upload and AMI registration.
+
 Usage:
   python3 scripts/run_ec2_lowconc_probe.py [--instance TYPE]
-      [--concurrency 25,50] [--kernel PATH] [--variant LABEL]
-      [--outdir DIR] [--stats] [--dry-run]
+      [--concurrency 25,50] [--repeat N] [--kernel PATH]
+      [--variant LABEL] [--outdir DIR] [--stats] [--dry-run]
 """
 
 import argparse
@@ -93,6 +98,14 @@ def parse_args(argv=None):
         help="comma-separated wrk concurrency levels (default: 25,50)",
     )
     p.add_argument(
+        "--repeat",
+        type=int,
+        metavar="N",
+        default=1,
+        help="measure each concurrency level N times in one launch "
+        "(default: %(default)s)",
+    )
+    p.add_argument(
         "--kernel",
         type=Path,
         default=DEFAULT_KERNEL,
@@ -120,7 +133,21 @@ def parse_args(argv=None):
         action="store_true",
         help="print the plan and the aws commands, do not call aws",
     )
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if args.repeat < 1:
+        p.error("--repeat must be 1 or more")
+    return args
+
+
+def phase_file_tag(c, r, repeat):
+    """Return the wrk file tag for one phase.
+
+    A single run keeps the old names. A repeated run adds _r<N>. The
+    client user-data script builds the same names in bash.
+    """
+    if repeat > 1:
+        return f"c{c}_r{r}"
+    return f"c{c}"
 
 
 def run_instances_cmd(ami_id, ip, instance_type, tag, user_data=None, monitoring=False):
@@ -190,6 +217,15 @@ def client_user_data(args):
 curl -s --max-time 30 http://{TARGET_PRIVATE_IP}/__log > /root/netlog.txt || echo "NETLOG_FETCH_FAILED" > /root/netlog.txt
 echo "NETLOG_SAVED $(wc -c < /root/netlog.txt) bytes" | tee -a /root/wrk_sweep.log
 """
+    repeat = args.repeat
+    if repeat > 1:
+        # These bash names must match phase_file_tag(). Use ${c} and
+        # ${r} so bash does not read $c_r as one variable name.
+        r_label = " r=$r"
+        file_suffix = "_r${r}"
+    else:
+        r_label = ""
+        file_suffix = ""
     return f"""#!/bin/bash
 set -e
 exec > >(tee -a /root/diag.txt) 2>&1
@@ -219,25 +255,35 @@ echo "WARMUP c50 10s" | tee -a /root/wrk_sweep.log
 timeout --kill-after=5s 20s wrk -t{THREADS} -c50 -d10s http://{TARGET_PRIVATE_IP}/ > /root/wrk_warm.txt 2>&1 || true
 sleep 5
 for c in {" ".join(str(c) for c in args.concurrency)}; do
-    T0=$(date +%s)
-    echo "=== STEP c=$c start=$T0 $(date) ===" | tee -a /root/wrk_sweep.log
-    timeout --kill-after=5s 90s wrk -t{THREADS} -c$c -d{DURATION} --latency http://{TARGET_PRIVATE_IP}/ > /root/wrk_c$c.txt 2>&1 || true
-    T1=$(date +%s)
-    echo "STEP_WINDOW c=$c start=$T0 end=$T1" >> /root/step_times.txt
-    echo "=== STEP c=$c end=$T1 $(date) ===" | tee -a /root/wrk_sweep.log
-    sleep 5
+    for r in $(seq 1 {repeat}); do
+        T0=$(date +%s)
+        echo "=== STEP c=$c{r_label} start=$T0 $(date) ===" | tee -a /root/wrk_sweep.log
+        timeout --kill-after=5s 90s wrk -t{THREADS} -c$c -d{DURATION} --latency http://{TARGET_PRIVATE_IP}/ > /root/wrk_c${{c}}{file_suffix}.txt 2>&1 || true
+        T1=$(date +%s)
+        echo "STEP_WINDOW c=$c{r_label} start=$T0 end=$T1" >> /root/step_times.txt
+        echo "=== STEP c=$c{r_label} end=$T1 $(date) ===" | tee -a /root/wrk_sweep.log
+        sleep 5
+    done
 done
 {stats_block}echo "ALL_DONE $(date)" | tee -a /root/wrk_sweep.log
 """
 
 
 def parse_step_times(text):
-    """Return {concurrency: (start_epoch, end_epoch)} from STEP_WINDOW lines."""
+    """Return {(concurrency, repeat): (start_epoch, end_epoch)}.
+
+    A line without r= is a single-run phase. This parser reads it as
+    repeat 1.
+    """
     windows = {}
     for line in text.splitlines():
-        m = re.match(r"STEP_WINDOW c=(\d+) start=(\d+) end=(\d+)", line)
+        m = re.match(
+            r"STEP_WINDOW c=(\d+)(?: r=(\d+))? start=(\d+) end=(\d+)",
+            line,
+        )
         if m:
-            windows[int(m.group(1))] = (int(m.group(2)), int(m.group(3)))
+            r = int(m.group(2)) if m.group(2) else 1
+            windows[(int(m.group(1)), r)] = (int(m.group(3)), int(m.group(4)))
     return windows
 
 
@@ -311,6 +357,9 @@ def print_dry_run(args, kernel):
     print(f"  kernel : {kernel}")
     print(f"  outdir : {args.outdir}")
     print(f"  concs  : {', '.join(str(c) for c in args.concurrency)}")
+    print(f"  repeat : {args.repeat} measurement(s) per concurrency level")
+    if args.repeat > 1:
+        print("  files  : one wrk file per repeat, wrk_c<c>_r<r>.txt on the client")
     print(
         f"  phase  : wrk -t{THREADS} -c<c> -d{DURATION} --latency, "
         "plus a c50 10s warmup"
@@ -423,34 +472,42 @@ def main():
         windows = parse_step_times(step_txt)
 
         for c in args.concurrency:
-            try:
-                content = http_get(client_pub, f"wrk_c{c}.txt", timeout=15)
-            except Exception as e:
-                print(f"[WARN] fetch wrk_c{c}.txt failed: {e}")
-                content = ""
-            (outdir / f"{args.variant}_wrk_c{c}_{DATE_STR}.txt").write_text(content)
-            p = parse_wrk_closed_loop(content)
-            print(
-                f"[probe] c={c}: {p['requests_sec']:.0f} req/s, "
-                f"avg={p['latency_avg_ms']:.2f}ms p50={p['p50_ms']:.2f}ms "
-                f"p99={p['p99_ms']:.2f}ms errors={p['socket_errors']}"
-            )
+            for r in range(1, args.repeat + 1):
+                tag = phase_file_tag(c, r, args.repeat)
+                if args.repeat > 1:
+                    label = f"c={c} r={r}"
+                else:
+                    label = f"c={c}"
+                try:
+                    content = http_get(client_pub, f"wrk_{tag}.txt", timeout=15)
+                except Exception as e:
+                    print(f"[WARN] fetch wrk_{tag}.txt failed: {e}")
+                    content = ""
+                (outdir / f"{args.variant}_wrk_{tag}_{DATE_STR}.txt").write_text(
+                    content
+                )
+                p = parse_wrk_closed_loop(content)
+                print(
+                    f"[probe] {label}: {p['requests_sec']:.0f} req/s, "
+                    f"avg={p['latency_avg_ms']:.2f}ms p50={p['p50_ms']:.2f}ms "
+                    f"p99={p['p99_ms']:.2f}ms errors={p['socket_errors']}"
+                )
 
-            win = windows.get(c)
-            if not win:
-                print(f"[probe] c={c}: no phase window recorded, CPU not usable")
-                continue
-            avg, mx, n = phase_cpu(target_id, win[0], win[1])
-            if avg is None:
-                print(
-                    f"[probe] c={c}: only {n} datapoint(s) fall fully "
-                    "inside the phase window, CPU not usable"
-                )
-            else:
-                print(
-                    f"[probe] c={c}: cpu avg={avg}% max={mx}% "
-                    f"from {n} full 60s datapoints"
-                )
+                win = windows.get((c, r))
+                if not win:
+                    print(f"[probe] {label}: no phase window recorded, CPU not usable")
+                    continue
+                avg, mx, n = phase_cpu(target_id, win[0], win[1])
+                if avg is None:
+                    print(
+                        f"[probe] {label}: only {n} datapoint(s) fall fully "
+                        "inside the phase window, CPU not usable"
+                    )
+                else:
+                    print(
+                        f"[probe] {label}: cpu avg={avg}% max={mx}% "
+                        f"from {n} full 60s datapoints"
+                    )
 
         if args.stats:
             try:
