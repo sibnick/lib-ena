@@ -38,6 +38,21 @@ static int test_aenq_handler(void *arg, uint16_t group, uint16_t syndrome,
 	return 0;
 }
 
+/* Ring drop callback that records the buffers it is asked to release. */
+struct drop_log {
+	int count;
+	void *bufs[8];
+};
+
+static void test_drop_netbuf_cb(void *arg, void *netbuf)
+{
+	struct drop_log *log = (struct drop_log *)arg;
+
+	if (log->count < 8)
+		log->bufs[log->count] = netbuf;
+	log->count++;
+}
+
 static void test_admin_init_success(void)
 {
 	printf("[TEST] Running test_admin_init_success...\n");
@@ -296,6 +311,101 @@ static void test_admin_timeout_invalidates_io_queues(void)
 	ena_device_set_reset_poll_hook(NULL, NULL);
 
 	printf("[PASS] test_admin_timeout_invalidates_io_queues passed\n");
+}
+
+/* A device reset drops outstanding requests without a completion. The
+ * reset must release the buffers those requests still hold and clear the
+ * request-ID ownership marks. [Ticket ed4a65fc89] */
+static void test_admin_reset_frees_held_netbufs(void)
+{
+	printf("[TEST] Running test_admin_reset_frees_held_netbufs...\n");
+
+	struct mock_ena_hw hw;
+	mock_ena_hw_init(&hw);
+	ena_admin_set_db_hook(mock_ena_hw_aq_doorbell_hook, &hw);
+
+	struct ena_adapter adapter;
+	ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0));
+	assert(ena_admin_init(&adapter, 8, 8, 8) == 0);
+
+	struct ena_ring *tx_ring = NULL;
+	struct ena_ring *rx_ring = NULL;
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8, &tx_ring) ==
+	       0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 8, 8, &rx_ring) ==
+	       0);
+	assert(ena_ring_create_hw(tx_ring, 0) == 0);
+	assert(ena_ring_create_hw(rx_ring, 0) == 0);
+
+	/* The reset path walks the adapter ring arrays. */
+	adapter.tx_rings = calloc(1, sizeof(struct ena_ring *));
+	adapter.rx_rings = calloc(1, sizeof(struct ena_ring *));
+	adapter.tx_rings[0] = tx_ring;
+	adapter.rx_rings[0] = rx_ring;
+	adapter.num_tx_rings = 1;
+	adapter.num_rx_rings = 1;
+
+	/* The drop callback is how the netdev layer returns a buffer.
+	 * Record what the reset releases. */
+	struct drop_log log;
+	memset(&log, 0, sizeof(log));
+	tx_ring->drop_netbuf_cb = test_drop_netbuf_cb;
+	tx_ring->drop_netbuf_arg = &log;
+	rx_ring->drop_netbuf_cb = test_drop_netbuf_cb;
+	rx_ring->drop_netbuf_arg = &log;
+
+	/* Put one TX and one RX request in flight. The driver treats the
+	 * netbuf as an opaque pointer, so plain objects stand in for it. */
+	char tx_nb[64];
+	char rx_nb[64];
+	struct ena_tx_pkt pkt;
+	uint16_t tx_req = 0;
+	uint16_t rx_req = 0;
+
+	memset(&pkt, 0, sizeof(pkt));
+	pkt.netbuf = tx_nb;
+	pkt.len = sizeof(tx_nb);
+	pkt.phys_addr = 0x50001000;
+	assert(ena_tx_submit(tx_ring, &pkt, &tx_req) == 0);
+	assert(ena_rx_submit_one(rx_ring, rx_nb, 0x50002000, sizeof(rx_nb),
+				 &rx_req) == 0);
+	assert(tx_ring->req_allocated[tx_req] == 1);
+	assert(rx_ring->req_allocated[rx_req] == 1);
+
+	/* Reset the rings, as the device reset path does. */
+	ena_adapter_invalidate_io_rings(&adapter);
+
+	/* Both buffers went through the drop callback, and the slots are
+	 * empty. */
+	assert(log.count == 2);
+	assert(log.bufs[0] == &tx_nb || log.bufs[1] == &tx_nb);
+	assert(log.bufs[0] == &rx_nb || log.bufs[1] == &rx_nb);
+	assert(tx_ring->buffers.tx_bufs[tx_req].netbuf == NULL);
+	assert(rx_ring->buffers.rx_bufs[rx_req].netbuf == NULL);
+
+	/* Ownership marks and the in-flight flags are clear, and the pool
+	 * is whole again, so the ids stay usable. */
+	for (int i = 0; i < 8; i++) {
+		assert(tx_ring->req_allocated[i] == 0);
+		assert(rx_ring->req_allocated[i] == 0);
+		assert(tx_ring->req_in_flight[i] == 0);
+		assert(rx_ring->req_in_flight[i] == 0);
+	}
+	assert(tx_ring->free_req_count == 8);
+	assert(rx_ring->free_req_count == 8);
+
+	/* A released id is handed out again and its slot is free. */
+	uint16_t reuse = 0;
+	assert(ena_ring_req_id_alloc(tx_ring, &reuse) == 0);
+	assert(ena_ring_req_id_free(tx_ring, reuse) == 0);
+	assert(tx_ring->free_req_count == 8);
+
+	ena_ring_free(tx_ring);
+	ena_ring_free(rx_ring);
+	free(adapter.tx_rings);
+	free(adapter.rx_rings);
+	ena_admin_fini(&adapter);
+	printf("[PASS] test_admin_reset_frees_held_netbufs passed\n");
 }
 
 static void test_admin_acq_phase_flip(void)
@@ -832,6 +942,7 @@ int main(void)
 	test_admin_cmd_error_status();
 	test_admin_cmd_timeout();
 	test_admin_timeout_invalidates_io_queues();
+	test_admin_reset_frees_held_netbufs();
 	test_admin_acq_phase_flip();
 	test_admin_aenq_dispatch();
 	test_admin_aenq_head_monotonic();

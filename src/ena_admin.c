@@ -9,6 +9,10 @@
 #include <errno.h>
 #include <string.h>
 
+#ifdef __Unikraft__
+#include <uk/netbuf.h>
+#endif
+
 #ifndef __Unikraft__
 static ena_admin_db_hook *s_db_hook;
 static void *s_db_cookie;
@@ -21,7 +25,8 @@ void ena_admin_set_db_hook(ena_admin_db_hook *hook, void *cookie)
 #endif
 
 /* Reset the driver-side software state of one ring to a fresh condition.
- * The request pool is re-armed, in-flight flags cleared, and all indices,
+ * Buffers still held by outstanding requests are released first. Then
+ * the request pool is re-armed, in-flight flags cleared, and all indices,
  * phase bits, queue ids, and doorbell pointers zeroed. The caller holds
  * the ring lock. */
 static void ena_ring_reset_sw_state(struct ena_ring *ring)
@@ -39,6 +44,29 @@ static void ena_ring_reset_sw_state(struct ena_ring *ring)
 	ring->sq_db = NULL;
 	ring->cq_db = NULL;
 
+	/* The reset drops every outstanding request without a completion.
+	 * Release the buffer each slot still holds, then clear the slot,
+	 * so the reset does not leak a netbuf. [Ticket ed4a65fc89] */
+	if (ring->buffers.raw_bufs) {
+		for (i = 0; i < ring->sq_depth; i++) {
+			void *netbuf = (ring->ring_type == ENA_RING_TYPE_TX)
+					   ? ring->buffers.tx_bufs[i].netbuf
+					   : ring->buffers.rx_bufs[i].netbuf;
+
+			if (!netbuf)
+				continue;
+
+			if (ring->drop_netbuf_cb)
+				ring->drop_netbuf_cb(ring->drop_netbuf_arg,
+						     netbuf);
+#ifdef __Unikraft__
+			else
+				uk_netbuf_free((struct uk_netbuf *)netbuf);
+#endif
+			ena_ring_slot_clear(ring, i);
+		}
+	}
+
 	if (ring->free_req_ids) {
 		for (i = 0; i < ring->sq_depth; i++)
 			ring->free_req_ids[i] = i;
@@ -49,6 +77,12 @@ static void ena_ring_reset_sw_state(struct ena_ring *ring)
 
 	if (ring->req_in_flight)
 		memset(ring->req_in_flight, 0, ring->sq_depth);
+
+	/* Request ids are all back in the pool, so the ownership marks
+	 * must say the same. A stale mark makes the next release of that
+	 * id a no-op and the id is lost. [Ticket ed4a65fc89] */
+	if (ring->req_allocated)
+		memset(ring->req_allocated, 0, ring->sq_depth);
 }
 
 void ena_adapter_invalidate_io_rings(struct ena_adapter *adapter)

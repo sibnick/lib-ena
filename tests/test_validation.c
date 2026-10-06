@@ -22,10 +22,19 @@
 static struct mock_ena_hw g_hw;
 static struct ena_adapter g_adapter;
 
+/* RX buffers handed to the driver. A device reset releases the ring
+ * slots, so a test that survives a reset frees its buffers from this
+ * list instead of from the ring. */
+#define MOCK_RX_NB_TRACK 64
+static void *g_mock_rx_nb[MOCK_RX_NB_TRACK];
+static int g_mock_rx_nb_count;
+
 static void test_validation_setup(void)
 {
 	mock_ena_hw_init(&g_hw);
 	mock_pci_clear_faults(&g_hw);
+	g_mock_rx_nb_count = 0;
+	memset(g_mock_rx_nb, 0, sizeof(g_mock_rx_nb));
 	test_reset_alloc_tracking();
 }
 
@@ -46,7 +55,21 @@ static void *mock_rx_alloc_cb(void *arg, uint64_t *phys_out, uint32_t *len_out)
 
 	nb->phys_addr = *phys_out;
 	nb->buflen = *len_out;
+
+	if (g_mock_rx_nb_count < MOCK_RX_NB_TRACK)
+		g_mock_rx_nb[g_mock_rx_nb_count++] = nb;
 	return nb;
+}
+
+/* Free every RX buffer this test allocated and still owns. */
+static void mock_rx_free_tracked(void)
+{
+	for (int i = 0; i < g_mock_rx_nb_count; i++) {
+		if (!g_mock_rx_nb[i])
+			continue;
+		test_free(g_mock_rx_nb[i]);
+		g_mock_rx_nb[i] = NULL;
+	}
 }
 
 static void *mock_rx_alloc_fail_cb(void *arg, uint64_t *phys_out,
@@ -1172,6 +1195,9 @@ static void test_validation_aenq_runtime_wiring(void)
 				  resp, sizeof(resp), &cmd_id, 100) == 0);
 
 	assert(netdev->ops->dev_stop(netdev) == 0);
+	/* The fatal-error reset released the ring slots, so the RX
+	 * buffers are no longer reachable through the ring. Free them
+	 * from the list the allocator recorded. */
 	for (int i = 0; i < g_adapter.rx_rings[0]->sq_depth; i++) {
 		if (g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf) {
 			test_free(
@@ -1179,6 +1205,7 @@ static void test_validation_aenq_runtime_wiring(void)
 			g_adapter.rx_rings[0]->buffers.rx_bufs[i].netbuf = NULL;
 		}
 	}
+	mock_rx_free_tracked();
 	teardown_test_adapter(&g_adapter);
 	ena_netdev_free(netdev);
 }

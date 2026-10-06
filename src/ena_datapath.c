@@ -266,12 +266,7 @@ int ena_ring_req_id_free(struct ena_ring *ring, uint16_t req_id)
 	    (uint16_t)((ring->free_req_tail + 1) & (ring->sq_depth - 1));
 	ring->free_req_count++;
 
-	if (ring->ring_type == ENA_RING_TYPE_TX)
-		memset(&ring->buffers.tx_bufs[req_id], 0,
-		       sizeof(struct ena_tx_buffer));
-	else
-		memset(&ring->buffers.rx_bufs[req_id], 0,
-		       sizeof(struct ena_rx_buffer));
+	ena_ring_slot_clear(ring, req_id);
 
 	return 0;
 }

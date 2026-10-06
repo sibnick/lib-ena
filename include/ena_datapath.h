@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include "ena_plat.h"
 #include "ena_admin.h"
@@ -293,6 +294,19 @@ static inline void ena_ring_lock(struct ena_ring *ring)
 static inline void ena_ring_unlock(struct ena_ring *ring)
 {
 	__sync_lock_release(&ring->ring_lock);
+}
+
+/* Clear one request slot in the ring buffer tracking array. The
+ * request-ID release path and the ring reset path share this
+ * clearing, so a released slot always has the same empty content. */
+static inline void ena_ring_slot_clear(struct ena_ring *ring, uint16_t req_id)
+{
+	if (ring->ring_type == ENA_RING_TYPE_TX)
+		memset(&ring->buffers.tx_bufs[req_id], 0,
+		       sizeof(struct ena_tx_buffer));
+	else
+		memset(&ring->buffers.rx_bufs[req_id], 0,
+		       sizeof(struct ena_rx_buffer));
 }
 
 /* -------------------------------------------------------------------------
