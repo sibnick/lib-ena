@@ -263,25 +263,69 @@ Raw output, CSV, and JSON are in `fossil uv` under
 `reports/httpreply-mc_2026-10-06/`. The 2026-10-05 4-vCPU run is under
 `reports/httpreply-mc_2026-10-05/` with the `4cpu-fixed-` prefix.
 
+### Worker Count and Physical Cores
+
+Set the worker count at or below the number of physical cores on the
+target instance. Many EC2 types report two vCPUs per physical core.
+`aws ec2 describe-instance-types --instance-types TYPE` prints
+`DefaultCores` and `DefaultThreadsPerCore`. c6i.large is 1 core with
+2 threads, c6i.xlarge is 2 cores with 2 threads, and c6i.2xlarge is 4
+cores with 2 threads.
+
+The table below is the same trunk, the same client, and c=25. The
+c6i.2xlarge column is three repeats each. The c6i.xlarge column is
+one run each, from the earlier A/B.
+
+| Instance | vCPUs | Physical cores | 2 workers req/s | 4 workers req/s |
+| :--- | ---: | ---: | ---: | ---: |
+| c6i.xlarge | 4 | 2 | 74,366 | 53,762 |
+| c6i.2xlarge | 8 | 4 | 61,543 | 102,842 |
+
+On c6i.xlarge four workers share two physical cores and lose 28
+percent. On c6i.2xlarge each worker gets a physical core, and the same
+build gains 67 percent over its 2-worker form.
+
+The worker loop rate shows the cause. An idle core polls about 218
+times per second. A core that holds connections busy-polls. On
+c6i.xlarge that rate is 230k to 270k per second with four workers, and
+550k to 620k with two. On c6i.2xlarge four workers reach 424k to
+506k. The work per loop iteration does not change. The physical core
+is shared.
+
+Do not read this as a queue-count effect. RSS steering, interrupt
+moderation, the TX completion guard, and the idle backoff were each
+modelled or measured, and none of them explains the change. The
+ordered audit is on the Fossil wiki page "ca72834ec7 low-concurrency
+investigation plan". [Ticket ca72834ec7]
+
+The low-concurrency order against Nginx in the comparison above
+depends on this. Set the worker count to the physical core count
+before you compare at c=25 or c=50.
+
+The 2-worker row is not explained. It gives 74,366 req/s on
+c6i.xlarge and 61,543 req/s on c6i.2xlarge, on the same trunk. Guest
+vCPU placement across physical cores is not controlled from inside the
+guest. That effect is tracked separately. [Ticket cc07b8b438]
+
 ## 8. Configuration Reference
 
 Key Kconfig options used in `defconfig`:
 
 | Option | Value | Description |
 | :--- | :--- | :--- |
-| `CONFIG_UKPLAT_CPU_MAXCOUNT` | `2` | Maximum number of CPU cores configured for KVM |
+| `CONFIG_UKPLAT_CPU_MAXCOUNT` | `2` | Maximum number of CPU cores configured for KVM. Set this at or below the physical core count of the target. See "Worker Count and Physical Cores" in section 7 |
 | `CONFIG_HAVE_SMP` | `y` | Enables Symmetric Multi-Processing support |
 | `CONFIG_LIBUKPCPUVAR` | `y` | Enables per-CPU storage variables |
 | `CONFIG_LWIP_NOTHREADS` | `y` | Runs lwIP in non-threaded NO_SYS mode |
 | `CONFIG_LWIP_PERCORE` | `y` | Isolates lwIP stack state per CPU core |
-| `CONFIG_LIBUKNETDEV_MAXNBQUEUES` | `2` | Configures two hardware network queue pairs |
+| `CONFIG_LIBUKNETDEV_MAXNBQUEUES` | `2` | Configures two hardware network queue pairs. This is the symbol that sets the active queue count. Keep it equal to `CONFIG_UKPLAT_CPU_MAXCOUNT` |
 | `CONFIG_LIBENA` | `y` | Enables native AWS ENA driver |
 | `CONFIG_LIBENA_LLQ` | `y` | Enables ENA Low Latency Queue support |
-| `CONFIG_LIBENA_MAX_QUEUES` | `8` | Maximum queue pairs supported by ENA driver |
+| `CONFIG_LIBENA_MAX_QUEUES` | `8` | Maximum queue pairs supported by ENA driver. This sizes the driver ring arrays, and must stay at or above the active queue count |
 | `CONFIG_LIBENA_RSS` | `y` | Enables ENA hardware Receive Side Scaling |
-| `CONFIG_LIBENA_VERBOSE_STATS` | `y` | Prints periodic datapath counters to console |
+| `CONFIG_LIBENA_VERBOSE_STATS` | `n` | Prints periodic datapath counters to console |
 
-## 8. Design Decisions
+## 9. Design Decisions
 
 ### Run-to-Completion Execution
 Each worker core polls its assigned ENA RX queue. The same core processes stack timers, accepts incoming connections, and writes HTTP responses. This design eliminates inter-core synchronization.
