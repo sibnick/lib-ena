@@ -349,6 +349,10 @@ int ena_rss_set_ind_table(struct ena_adapter *adapter, uint16_t num_queues)
 	rss = &adapter->rss_info;
 	if (!rss->ind_table || !rss->host_ind_table)
 		return -EINVAL;
+	/* __builtin_ctz(0) is undefined. The get path guards this value,
+	 * so the set path must guard it too. [Ticket c79d315d36] */
+	if (rss->ind_table_size == 0)
+		return -EINVAL;
 
 	/* Populate indirection table entries round-robin across active queues.
 	 * The firmware entry field holds the 0-based RX SQ index returned by
