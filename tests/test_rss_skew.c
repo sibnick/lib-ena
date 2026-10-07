@@ -302,7 +302,7 @@ static void random_sets(const int *qidx, int num_q, long *hist, int draws)
 
 	for (d = 0; d < draws; d++) {
 		int cnt[4];
-		int taken[NUM_PORTS / 32 + 1];
+		uint32_t taken[NUM_PORTS / 32 + 1];
 		int got = 0;
 		int max = 0;
 		int q;
@@ -315,9 +315,10 @@ static void random_sets(const int *qidx, int num_q, long *hist, int draws)
 			int word = p / 32;
 			int bit = p % 32;
 
-			if ((taken[word] & (1 << bit)) != 0)
+			/* bit can be 31. 1 << 31 is not valid in int. */
+			if ((taken[word] & (1u << bit)) != 0)
 				continue;
-			taken[word] |= 1 << bit;
+			taken[word] |= 1u << bit;
 			cnt[qidx[p]]++;
 			got++;
 		}
