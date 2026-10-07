@@ -412,6 +412,85 @@ static void test_admin_reset_frees_held_netbufs(void)
 	printf("[PASS] test_admin_reset_frees_held_netbufs passed\n");
 }
 
+/* A device reset drops the deferred buffer releases of a foreign core
+ * along with the outstanding requests. The reset must clear the count
+ * of those entries. A stale entry makes the next owner poll release a
+ * request id that a new transmit already owns. [Ticket 858c34b035] */
+static void test_admin_reset_clears_tx_foreign_frees(void)
+{
+	printf("[TEST] Running test_admin_reset_clears_tx_foreign_frees...\n");
+
+	struct mock_ena_hw hw;
+	mock_ena_hw_init(&hw);
+	ena_admin_set_db_hook(mock_ena_hw_aq_doorbell_hook, &hw);
+	ena_device_set_reset_poll_hook(mock_ena_hw_reset_poll_hook, &hw);
+
+	struct ena_adapter adapter;
+	ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0));
+	assert(ena_admin_init(&adapter, 8, 8, 8) == 0);
+	assert(ena_init_run(&adapter, 1500) == 0);
+
+	struct ena_ring *tx_ring = NULL;
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8, &tx_ring) ==
+	       0);
+	assert(ena_ring_create_hw(tx_ring, 0) == 0);
+
+	/* The reset path walks the adapter ring arrays. */
+	adapter.tx_rings = calloc(1, sizeof(struct ena_ring *));
+	adapter.tx_rings[0] = tx_ring;
+	adapter.num_tx_rings = 1;
+
+	/* CPU 1 sends a buffer and CPU 2 reaps it. CPU 2 leaves the
+	 * buffer release for its owner, so one entry waits in the
+	 * deferred array and its request id stays out of the pool. */
+	struct ena_tx_pkt pkt;
+	char netbuf[32];
+	uint16_t req_id = 0;
+	unsigned int cleaned = 0;
+
+	memset(&pkt, 0, sizeof(pkt));
+	pkt.netbuf = netbuf;
+	pkt.len = sizeof(netbuf);
+	pkt.phys_addr = 0x50001000;
+
+	ena_plat_set_mock_cpu_id(1);
+	assert(ena_tx_submit(tx_ring, &pkt, &req_id) == 0);
+	ena_plat_set_mock_cpu_id(2);
+	mock_ena_hw_emulate_tx(&hw, tx_ring, 1);
+	assert(ena_tx_poll_completions(tx_ring, 8, &cleaned) == 1);
+	assert(tx_ring->tx_foreign_count == 1);
+	assert(tx_ring->free_req_count == 7);
+
+	/* The device reset runs. It re-arms the request pool, so the id
+	 * in the deferred entry is free again. */
+	ena_adapter_invalidate_io_rings(&adapter);
+	assert(tx_ring->tx_foreign_count == 0);
+	assert(tx_ring->free_req_count == 8);
+
+	/* Recovery re-creates the queue. Clearing the completion ring
+	 * leaves the poll with no completion to read, so only the
+	 * deferred array can change the ring state. */
+	assert(ena_adapter_recover_io_rings(&adapter) == 0);
+	memset(tx_ring->cq_virt, 0,
+	       (size_t)tx_ring->cq_depth * tx_ring->cq_elem_size);
+
+	/* CPU 1 transmits again and gets the same id. The stale entry
+	 * must not release it: the request is in flight. */
+	ena_plat_set_mock_cpu_id(1);
+	assert(ena_tx_submit(tx_ring, &pkt, &req_id) == 0);
+	assert(tx_ring->free_req_count == 7);
+	assert(ena_tx_poll_completions(tx_ring, 8, &cleaned) == 0);
+	assert(tx_ring->free_req_count == 7);
+	assert(tx_ring->buffers.tx_bufs[req_id].netbuf == (void *)netbuf);
+
+	ena_plat_set_mock_cpu_id(0);
+	ena_ring_free(tx_ring);
+	free(adapter.tx_rings);
+	ena_admin_fini(&adapter);
+	ena_device_set_reset_poll_hook(NULL, NULL);
+	printf("[PASS] test_admin_reset_clears_tx_foreign_frees passed\n");
+}
+
 /* RX buffers handed to the recovery refill hook. The pool is static, so
  * the test leak check does not see it. */
 struct test_rx_pool {
@@ -1065,6 +1144,7 @@ int main(void)
 	test_admin_cmd_timeout();
 	test_admin_timeout_invalidates_io_queues();
 	test_admin_reset_frees_held_netbufs();
+	test_admin_reset_clears_tx_foreign_frees();
 	test_admin_acq_phase_flip();
 	test_admin_aenq_dispatch();
 	test_admin_aenq_head_monotonic();

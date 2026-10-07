@@ -83,6 +83,12 @@ static void ena_ring_reset_sw_state(struct ena_ring *ring)
 	 * id a no-op and the id is lost. [Ticket ed4a65fc89] */
 	if (ring->req_allocated)
 		memset(ring->req_allocated, 0, ring->sq_depth);
+
+	/* The reset also drops every deferred buffer release. Its request
+	 * id is back in the pool now, so the next owner poll must not
+	 * read the entry again: that release would return an id that a
+	 * new request already holds. [Ticket 858c34b035] */
+	ring->tx_foreign_count = 0;
 }
 
 void ena_adapter_invalidate_io_rings(struct ena_adapter *adapter)
