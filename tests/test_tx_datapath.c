@@ -344,6 +344,11 @@ static void test_tx_invalid_args(void)
 	printf("[PASS] test_tx_invalid_args passed\n");
 }
 
+/* Stand-in for a netbuf pointer. The host build never frees a netbuf,
+ * so the test checks where the driver keeps the pointer, not what it
+ * points at. */
+static char g_foreign_netbuf[16];
+
 static void test_tx_completion_cross_cpu_guard(void)
 {
 	printf("[TEST] Running test_tx_completion_cross_cpu_guard...\n");
@@ -374,8 +379,7 @@ static void test_tx_completion_cross_cpu_guard(void)
 	assert(ena_tx_poll_completions(ring, 8, &cleaned) == 1);
 	assert(ring->tx_owner_warned == false);
 
-	/* CPU 1 submits, CPU 2 reaps. The netbuf free then runs in CPU
-	 * 1's heap, so the guard reports the ring once. */
+	/* CPU 1 submits, CPU 2 reaps. The guard reports the ring once. */
 	assert(ena_tx_submit(ring, &pkt, &req_id) == 0);
 	ena_plat_set_mock_cpu_id(2);
 	mock_ena_hw_emulate_tx(&hw, ring, 1);
@@ -391,6 +395,40 @@ static void test_tx_completion_cross_cpu_guard(void)
 	assert(ring->tx_owner_warned == true);
 
 	/* The completion path still works after the report. */
+	assert(ena_tx_free_space(ring) == 8);
+
+	/* CPU 1 sends a buffer and CPU 2 reaps it. CPU 2 must not free
+	 * a buffer that belongs to CPU 1's heap, so it queues the
+	 * release for CPU 1 and keeps the request out of the free pool.
+	 * [Ticket b08b6c84c1] */
+	pkt.netbuf = g_foreign_netbuf;
+	ena_plat_set_mock_cpu_id(1);
+	assert(ena_tx_submit(ring, &pkt, &req_id) == 0);
+	assert(ena_tx_free_space(ring) == 7);
+	ena_plat_set_mock_cpu_id(2);
+	mock_ena_hw_emulate_tx(&hw, ring, 1);
+	assert(ena_tx_poll_completions(ring, 8, &cleaned) == 1);
+	assert(cleaned == 1);
+	/* CPU 2 left the buffer for its owner. */
+	assert(ring->tx_foreign_count == 1);
+	assert(ring->tx_foreign[0].req_id == req_id);
+	assert(ring->tx_foreign[0].owner_cpu == 1);
+	assert(ring->buffers.tx_bufs[req_id].netbuf ==
+	       (void *)g_foreign_netbuf);
+	assert(ena_tx_free_space(ring) == 7);
+
+	/* A further poll on CPU 2 still leaves the buffer alone. */
+	assert(ena_tx_poll_completions(ring, 8, &cleaned) == 0);
+	assert(ring->tx_foreign_count == 1);
+	assert(ring->buffers.tx_bufs[req_id].netbuf ==
+	       (void *)g_foreign_netbuf);
+
+	/* CPU 1 polls again. It reclaims the buffer and returns the
+	 * request ID to the pool. */
+	ena_plat_set_mock_cpu_id(1);
+	assert(ena_tx_poll_completions(ring, 8, &cleaned) == 0);
+	assert(ring->tx_foreign_count == 0);
+	assert(ring->buffers.tx_bufs[req_id].netbuf == NULL);
 	assert(ena_tx_free_space(ring) == 8);
 
 	ena_plat_set_mock_cpu_id(0);
