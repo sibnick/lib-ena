@@ -57,6 +57,16 @@ static int ena_netdev_drain_aenq(struct ena_adapter *adapter)
 	return ena_admin_aenq_poll(adapter, ENA_NETDEV_AENQ_POLL_BUDGET);
 }
 
+/* Round a value down to the nearest power of two. A zero input returns
+ * zero, because __builtin_clz(0) is undefined. */
+static uint32_t ena_netdev_round_down_pow2(uint32_t v)
+{
+	if (v == 0)
+		return 0;
+
+	return 1u << (31u - (uint32_t)__builtin_clz(v));
+}
+
 /* Clamp descriptor count within driver and hardware limits */
 static uint16_t ena_netdev_clamp_desc_count(uint16_t nb_desc,
 					    uint16_t max_ring_size)
@@ -70,6 +80,13 @@ static uint16_t ena_netdev_clamp_desc_count(uint16_t nb_desc,
 		nb_desc = ENA_MAX_RING_DESC;
 	if (nb_desc < ENA_MIN_RING_DESC)
 		nb_desc = ENA_MIN_RING_DESC;
+
+	/* ena_ring_alloc rejects a depth that is not a power of two, and
+	 * the rxq/txq info ops report nb_is_power_of_two. Round down, so
+	 * a request such as 500 still builds a queue. ENA_MIN_RING_DESC
+	 * is a power of two, so the value stays inside the limits.
+	 * [Ticket 42d7cc6f99] */
+	nb_desc = (uint16_t)ena_netdev_round_down_pow2(nb_desc);
 
 	return nb_desc;
 }
@@ -615,8 +632,11 @@ static void ena_netdev_info_get(struct uk_netdev *dev,
 	info->nb_encap_rx = 0;
 	info->ioalign = ENA_NETDEV_IOALIGN;
 	info->in_queue_pairs = 1;
-	info->features =
-	    UK_NETDEV_F_PARTIAL_CSUM | UK_NETDEV_F_LRO | UK_NETDEV_F_TSO4;
+	/* The TX path sets TSO_EN on a data descriptor. It never sends
+	 * the metadata descriptor that carries MSS and header length, so
+	 * the device drops a TSO frame. Do not advertise TSO4 until that
+	 * submission path exists. [Ticket 9efe01ed5f] */
+	info->features = UK_NETDEV_F_PARTIAL_CSUM | UK_NETDEV_F_LRO;
 }
 
 static int ena_netdev_rxq_info_get(struct uk_netdev *dev,
@@ -1313,8 +1333,9 @@ static int ena_netdev_info_get(struct uk_netdev *dev,
 	info->min_mtu = ENA_MIN_MTU_LEN;
 	info->mtu = dev->adapter->mtu;
 	memcpy(info->hwaddr, dev->adapter->mac_addr, UK_NETDEV_MAC_ADDR_LEN);
-	info->features =
-	    UK_NETDEV_F_PARTIAL_CSUM | UK_NETDEV_F_LRO | UK_NETDEV_F_TSO4;
+	/* No TSO4: the TX path sends no metadata descriptor with MSS and
+	 * header length. [Ticket 9efe01ed5f] */
+	info->features = UK_NETDEV_F_PARTIAL_CSUM | UK_NETDEV_F_LRO;
 
 	return 0;
 }

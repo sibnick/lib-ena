@@ -169,6 +169,26 @@ int ena_ring_alloc(struct ena_adapter *adapter, uint16_t qid,
 			return -ENOMEM;
 		}
 		memset(ring->sq_head_wb_virt, 0, 64);
+
+		/* One deferred-release slot per request ID. A completion
+		 * reaped on a foreign core always has room to hand its
+		 * buffer to the owner core. [Ticket b08b6c84c1] */
+		ring->tx_foreign = calloc(sq_depth, sizeof(*ring->tx_foreign));
+		if (!ring->tx_foreign) {
+			ena_err("ring alloc: failed to allocate deferred "
+				"release array");
+			ena_dma_free(ring->sq_head_wb_virt,
+				     ring->sq_head_wb_phys);
+			ring->sq_head_wb_virt = NULL;
+			free(ring->req_allocated);
+			free(ring->req_in_flight);
+			free(ring->buffers.raw_bufs);
+			free(ring->free_req_ids);
+			ena_dma_free(ring->cq_virt, ring->cq_phys);
+			ena_dma_free(ring->sq_virt, ring->sq_phys);
+			free(ring);
+			return -ENOMEM;
+		}
 	}
 
 	*out_ring = ring;
@@ -193,6 +213,11 @@ void ena_ring_free(struct ena_ring *ring)
 	if (ring->req_allocated) {
 		free(ring->req_allocated);
 		ring->req_allocated = NULL;
+	}
+
+	if (ring->tx_foreign) {
+		free(ring->tx_foreign);
+		ring->tx_foreign = NULL;
 	}
 
 	if (ring->buffers.raw_bufs) {

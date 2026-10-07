@@ -281,8 +281,6 @@ int ena_init_config_llq(struct ena_adapter *adapter)
 {
 	struct ena_admin_get_feat_inline get_req;
 	struct ena_admin_feature_llq_desc llq;
-	uint16_t entry_size = 0;
-	uint16_t header_len = 0;
 	int ret;
 
 	if (!adapter)
@@ -312,6 +310,12 @@ int ena_init_config_llq(struct ena_adapter *adapter)
 	 */
 	ena_info("LLQ: disabled (post-idle TX loss), using standard SQ path");
 	return 0;
+
+#if 0
+	/* The early return above makes this block dead. Keep it for the
+	 * day LLQ is safe again. [Ticket 1152cbcaca] */
+	uint16_t entry_size = 0;
+	uint16_t header_len = 0;
 
 	ena_info("LLQ: max_llq_num=%u max_llq_depth=%u header_loc=0x%x "
 		 "entry_size=0x%x",
@@ -367,6 +371,7 @@ int ena_init_config_llq(struct ena_adapter *adapter)
 	ena_info("LLQ: enabled (entry_size=%u header_len=%u)", entry_size,
 		 header_len);
 	return 0;
+#endif
 }
 
 int ena_init_config_aenq(struct ena_adapter *adapter)

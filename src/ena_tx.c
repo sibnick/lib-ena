@@ -155,6 +155,77 @@ static void ena_tx_report_foreign_reaper(struct ena_ring *ring, uint32_t cpu)
 		 (unsigned int)ring->tx_owner_cpu);
 }
 
+/* Hand a completed buffer to the core that allocated it. The caller
+ * runs on another core, and a per-core heap has no lock, so it must
+ * not free the netbuf here. The request ID stays out of the free pool
+ * until the owner frees the buffer. That keeps one slot in the
+ * deferred array for every deferred entry. The caller holds the ring
+ * lock. Returns true when the buffer is queued for its owner.
+ * [Ticket b08b6c84c1] */
+static bool ena_tx_stage_foreign_free(struct ena_ring *ring, uint16_t req_id,
+				      uint32_t owner_cpu)
+{
+	struct ena_tx_buffer *tx_buf;
+	struct ena_tx_foreign_free *slot;
+
+	if (!ring->buffers.tx_bufs || !ring->tx_foreign)
+		return false;
+
+	tx_buf = &ring->buffers.tx_bufs[req_id];
+	if (!tx_buf->netbuf)
+		return false;
+
+	if (ring->tx_foreign_count >= ring->sq_depth) {
+		/* No room. Drop the buffer rather than free it in a
+		 * foreign heap. */
+		ena_err("tx q%u: no room to defer a buffer release",
+			(unsigned int)ring->qid);
+		tx_buf->netbuf = NULL;
+		return false;
+	}
+
+	slot = &ring->tx_foreign[ring->tx_foreign_count++];
+	slot->req_id = req_id;
+	slot->owner_cpu = owner_cpu;
+	return true;
+}
+
+/* Release the buffers that a foreign core completed on an earlier poll.
+ * Only the core that allocated a netbuf may free it, so an entry that
+ * belongs to another core stays in the array. The caller holds the
+ * ring lock. [Ticket b08b6c84c1] */
+static void ena_tx_drain_foreign_frees(struct ena_ring *ring, uint32_t cpu)
+{
+	struct ena_tx_buffer *tx_buf;
+	uint16_t i;
+
+	if (!ring->tx_foreign || ring->tx_foreign_count == 0)
+		return;
+
+	for (i = 0; i < ring->tx_foreign_count;) {
+		struct ena_tx_foreign_free *slot = &ring->tx_foreign[i];
+
+		if (slot->owner_cpu != cpu) {
+			i++;
+			continue;
+		}
+
+		tx_buf = &ring->buffers.tx_bufs[slot->req_id];
+#ifdef __Unikraft__
+		if (tx_buf->netbuf)
+			uk_netbuf_free((struct uk_netbuf *)tx_buf->netbuf);
+#endif
+		tx_buf->netbuf = NULL;
+
+		/* This returns the request ID to the free pool and clears
+		 * the tracking entry. */
+		ena_ring_req_id_free(ring, slot->req_id);
+
+		/* Drop the entry: the last one takes its place. */
+		*slot = ring->tx_foreign[--ring->tx_foreign_count];
+	}
+}
+
 int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 			    unsigned int *cleaned_count)
 {
@@ -188,6 +259,12 @@ int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 		budget = ring->cq_depth;
 
 	ena_ring_lock(ring);
+
+	/* Release the buffers that a foreign core completed on an earlier
+	 * poll. A deferred entry keeps its request ID out of the free
+	 * pool, so the idle check above never skips this drain.
+	 * [Ticket b08b6c84c1] */
+	ena_tx_drain_foreign_frees(ring, cpu);
 
 	cdesc_ring = (const struct ena_eth_io_tx_cdesc *)ring->cq_virt;
 
@@ -239,9 +316,15 @@ int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 		    ena_le16_to_cpu(cdesc->sq_head_idx) & (ring->sq_depth - 1);
 
 		/* One compare per completion. A mismatch means the free
-		 * below runs in another core's heap. [Ticket f47bdd0ed1] */
-		if (cpu != ring->tx_owner_cpu)
+		 * below runs in another core's heap, so hand the buffer
+		 * to the core that allocated it instead. [Ticket
+		 * f47bdd0ed1] [Ticket b08b6c84c1] */
+		if (cpu != ring->tx_owner_cpu) {
 			ena_tx_report_foreign_reaper(ring, cpu);
+			if (ena_tx_stage_foreign_free(ring, req_id,
+						      ring->tx_owner_cpu))
+				goto advance_cq;
+		}
 
 		/* Reclaim transmitted packet buffer */
 		if (ring->buffers.tx_bufs) {
@@ -258,6 +341,7 @@ int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 		/* Return request ID to free pool */
 		ena_ring_req_id_free(ring, req_id);
 
+advance_cq:
 		/* Advance CQ consumer head index (monotonic unmasked counter)
 		 */
 		ring->cq_head++;

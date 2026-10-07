@@ -185,6 +185,15 @@ struct ena_rx_buffer {
 	uint16_t req_id;    /* Request ID */
 };
 
+/* One deferred release of a TX buffer. The reaper writes it when it
+ * completes a buffer that another core allocated. owner_cpu is the
+ * core that allocated the netbuf, so a later owner change cannot make
+ * a core free a foreign buffer. */
+struct ena_tx_foreign_free {
+	uint16_t req_id;    /* request that still holds the netbuf */
+	uint32_t owner_cpu; /* core allowed to free that netbuf */
+};
+
 /* Circular Ring Abstraction (manages SQ, CQ, and buffer tracking) */
 struct ena_ring {
 	struct ena_adapter *adapter;
@@ -244,6 +253,17 @@ struct ena_ring {
 	 * the first mismatch once per ring. [Ticket f47bdd0ed1] */
 	uint32_t tx_owner_cpu;
 	bool tx_owner_warned;
+
+	/* Deferred TX buffer releases for one ring. A per-core heap has
+	 * no lock, so a core that did not send the packet must not free
+	 * its netbuf. That core records the request here. The owning
+	 * core frees the buffer on its next poll of this ring. The array
+	 * holds one slot per request ID, so it never runs out: a
+	 * deferred entry keeps its request out of the free pool. Poll
+	 * code reads and writes it under the ring lock.
+	 * [Ticket b08b6c84c1] */
+	struct ena_tx_foreign_free *tx_foreign;
+	uint16_t tx_foreign_count; /* entries waiting for their owner */
 
 	/* RX drop callback: return a dropped netbuf bounce slot to the pool
 	 * and free the buffer. Set by the netdev layer, called from ena_rx_poll
