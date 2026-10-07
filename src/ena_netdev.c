@@ -1053,9 +1053,15 @@ int ena_netdev_rx_one(struct uk_netdev *dev, struct uk_netdev_rx_queue *queue,
 				    ((size_t)slot * ENA_RX_BUF_SIZE);
 
 				/* Drop the packet if it does not fit the
-				 * application buffer. */
-				if (rx_pkt.len <= nb->buflen)
-					memcpy(nb->data, slot_virt, rx_pkt.len);
+				 * application buffer, or if the offset and
+				 * length reach past the slot. */
+				if (rx_pkt.len <= nb->buflen &&
+				    (uint32_t)rx_pkt.offset + rx_pkt.len <=
+					ENA_RX_BUF_SIZE)
+					memcpy(nb->data,
+					       (char *)slot_virt +
+						   rx_pkt.offset,
+					       rx_pkt.len);
 				else
 					dropped = true;
 			}
@@ -1070,6 +1076,14 @@ int ena_netdev_rx_one(struct uk_netdev *dev, struct uk_netdev_rx_queue *queue,
 					       (queue->nb_desc - 1));
 				queue->bounce_free_count++;
 			}
+		} else if (rx_pkt.offset && nb->data) {
+			/* The device wrote the packet data at an offset
+			 * inside the buffer. Move the data pointer to the
+			 * start of the packet data. [Ticket bd0a825551] */
+			if ((uint32_t)rx_pkt.offset + rx_pkt.len <= nb->buflen)
+				nb->data = (char *)nb->data + rx_pkt.offset;
+			else
+				dropped = true;
 		}
 
 		if (dropped) {
@@ -1650,9 +1664,15 @@ static int ena_netdev_rxq_recv(struct uk_netdev *dev, uint16_t queue_id,
 				    ((size_t)slot * ENA_RX_BUF_SIZE);
 
 				/* Drop the packet if it does not fit the
-				 * application buffer. */
-				if (rx_pkt.len <= nb->buflen)
-					memcpy(nb->data, slot_virt, rx_pkt.len);
+				 * application buffer, or if the offset and
+				 * length reach past the slot */
+				if (rx_pkt.len <= nb->buflen &&
+				    (uint32_t)rx_pkt.offset + rx_pkt.len <=
+					ENA_RX_BUF_SIZE)
+					memcpy(nb->data,
+					       (char *)slot_virt +
+						   rx_pkt.offset,
+					       rx_pkt.len);
 				else
 					dropped = true;
 			}
@@ -1665,6 +1685,14 @@ static int ena_netdev_rxq_recv(struct uk_netdev *dev, uint16_t queue_id,
 					       (rxq->nb_desc - 1));
 				rxq->bounce_free_count++;
 			}
+		} else if (rx_pkt.offset && nb->data) {
+			/* The device wrote the packet data at an offset
+			 * inside the buffer. Move the data pointer to the
+			 * start of the packet data. [Ticket bd0a825551] */
+			if ((uint32_t)rx_pkt.offset + rx_pkt.len <= nb->buflen)
+				nb->data = (char *)nb->data + rx_pkt.offset;
+			else
+				dropped = true;
 		}
 
 		if (dropped) {

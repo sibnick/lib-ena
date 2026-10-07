@@ -70,6 +70,10 @@ struct mock_ena_hw {
 	uint8_t inject_corrupt_len;
 	uint16_t corrupt_len;
 
+	/* RX completion: byte offset inside the buffer where the device
+	 * wrote the packet data. Default 0. */
+	uint8_t rx_cdesc_offset;
+
 	/* Last consumed admin command for test assertions */
 	uint8_t last_opcode;
 	uint16_t last_command_id;

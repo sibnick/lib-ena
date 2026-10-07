@@ -516,6 +516,8 @@ int ena_tx_poll_completions(struct ena_ring *ring, unsigned int budget,
 struct ena_rx_pkt {
 	void *netbuf;	      /* Pointer to struct uk_netbuf */
 	uint32_t len;	      /* Received packet length in bytes */
+	uint8_t offset;	      /* Byte offset in the buffer where packet
+			       * data starts (RX completion descriptor) */
 	uint32_t hash;	      /* RSS packet hash */
 	bool l3_csum_err;     /* L3 checksum error detected */
 	bool l4_csum_err;     /* L4 checksum error detected */

@@ -1011,6 +1011,7 @@ void mock_ena_hw_emulate_rx(struct mock_ena_hw *hw, struct ena_ring *ring,
 		cq_descs[cq_idx].req_id = ena_cpu_to_le16(req_id);
 		cq_descs[cq_idx].hash = ena_cpu_to_le32(hash);
 		cq_descs[cq_idx].sub_qid = ena_cpu_to_le16(ring->qid);
+		cq_descs[cq_idx].offset = hw->rx_cdesc_offset;
 
 		hw->io_rx_cq_state[qid].cq_tail++;
 		if ((hw->io_rx_cq_state[qid].cq_tail & (ring->cq_depth - 1)) ==
