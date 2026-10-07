@@ -198,6 +198,11 @@ void mock_ena_hw_reset_poll_hook(void *cookie)
 		hw->dev_aenq_phase = 1;
 		hw->last_acq_tail_reg = 0;
 		hw->drv_acq_head = 0;
+		/* The reset also clears the feature settings the host
+		 * negotiated. The driver must send them again. [Ticket
+		 * 775997c726] */
+		hw->attrs_read = 0;
+		hw->negotiated_mtu = 0;
 		mock_ena_hw_set_reg32(hw, ENA_REGS_DEV_STS_OFF,
 				      ENA_DEV_STS_RESET_FIN_MASK |
 					  ENA_DEV_STS_READY_MASK);

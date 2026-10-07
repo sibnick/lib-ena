@@ -241,4 +241,22 @@ int ena_init_config_aenq(struct ena_adapter *adapter);
  */
 int ena_init_run(struct ena_adapter *adapter, uint32_t mtu);
 
+/**
+ * Re-apply the device feature settings after a device reset.
+ *
+ * A device reset clears every feature setting in the device. The driver
+ * keeps the negotiated values, so this sends them again with the same
+ * commands the bring-up sequence uses: read the device attributes
+ * (MAC address and MTU limit), set the MTU, enable the AENQ groups,
+ * and configure RSS over the active RX queues. RSS configuration runs
+ * only with more than one RX queue, the same rule the device start uses.
+ *
+ * Call this after the IO queues are re-created. The RSS indirection
+ * table names RX queue ids, so the queues must exist first.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @return 0 when every setting is re-applied, or the first error seen.
+ */
+int ena_init_reapply_device_features(struct ena_adapter *adapter);
+
 #endif /* LIBENA_ENA_INIT_H */

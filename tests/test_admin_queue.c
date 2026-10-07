@@ -574,6 +574,13 @@ static void test_aenq_fatal_recovers_io_queues(void)
 	/* The device finishes its reset on the first poll. */
 	hw.reset_polls_to_finish = 1;
 
+	/* Recovery re-applies the device features after it re-creates the
+	 * queues, so the last admin command is not a queue command. Count
+	 * the created queues instead, so the check does not depend on the
+	 * order of the recovery steps. */
+	uint32_t sq_before = hw.sq_created_count;
+	uint32_t cq_before = hw.cq_created_count;
+
 	mock_ena_hw_inject_aenq(&hw, ENA_ADMIN_FATAL_ERROR, 0);
 	assert(ena_admin_aenq_poll(&adapter, 4) == 1);
 
@@ -583,7 +590,8 @@ static void test_aenq_fatal_recovers_io_queues(void)
 	assert(rx_ring->hw_valid == true);
 	assert(tx_ring->sq_db != NULL);
 	assert(rx_ring->sq_db != NULL);
-	assert(hw.last_opcode == ENA_ADMIN_CREATE_SQ);
+	assert(hw.sq_created_count == sq_before + 2);
+	assert(hw.cq_created_count == cq_before + 2);
 
 	/* The RX buffer pool of queue 0 is refilled: seven buffers for a
 	 * ring of eight slots, the same depth the start path posts. The
@@ -607,6 +615,91 @@ static void test_aenq_fatal_recovers_io_queues(void)
 	ena_device_set_reset_poll_hook(NULL, NULL);
 
 	printf("[PASS] test_aenq_fatal_recovers_io_queues passed\n");
+}
+
+/* A fatal-error reset clears the feature settings of the device. The
+ * recovery must send them again, or the recovered queues run with the
+ * device defaults. [Ticket 775997c726] */
+static void test_aenq_fatal_reapplies_device_features(void)
+{
+	printf("[TEST] Running test_aenq_fatal_reapplies_device_features...\n");
+
+	struct mock_ena_hw hw;
+	mock_ena_hw_init(&hw);
+	ena_admin_set_db_hook(mock_ena_hw_aq_doorbell_hook, &hw);
+	ena_device_set_reset_poll_hook(mock_ena_hw_reset_poll_hook, &hw);
+
+	struct ena_adapter adapter;
+	ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0));
+	assert(ena_admin_init(&adapter, 8, 8, 8) == 0);
+	assert(ena_init_run(&adapter, 1500) == 0);
+
+	/* Bring-up set the MTU and read the MAC address. */
+	assert(hw.negotiated_mtu == 1500);
+	assert(hw.attrs_read == 1);
+	assert(memcmp(adapter.mac_addr, hw.dev_mac, 6) == 0);
+
+	/* Two RX queues, so recovery also has to re-apply RSS. The mock
+	 * rejects an indirection table that names an RX queue the device
+	 * has not created, so this also checks the order of the steps. */
+	struct ena_ring *tx_ring[2] = {NULL, NULL};
+	struct ena_ring *rx_ring[2] = {NULL, NULL};
+
+	for (int q = 0; q < 2; q++) {
+		assert(ena_ring_alloc(&adapter, (uint16_t)q, ENA_RING_TYPE_TX,
+				      8, 8, &tx_ring[q]) == 0);
+		assert(ena_ring_alloc(&adapter, (uint16_t)q, ENA_RING_TYPE_RX,
+				      8, 8, &rx_ring[q]) == 0);
+		assert(ena_ring_create_hw(tx_ring[q], 0) == 0);
+		assert(ena_ring_create_hw(rx_ring[q], 0) == 0);
+	}
+	adapter.tx_rings = calloc(2, sizeof(struct ena_ring *));
+	adapter.rx_rings = calloc(2, sizeof(struct ena_ring *));
+	adapter.tx_rings[0] = tx_ring[0];
+	adapter.tx_rings[1] = tx_ring[1];
+	adapter.rx_rings[0] = rx_ring[0];
+	adapter.rx_rings[1] = rx_ring[1];
+	adapter.num_tx_rings = 2;
+	adapter.num_rx_rings = 2;
+
+	/* The device reports a new MAC address after the reset. Only a
+	 * fresh attributes read brings the driver cache back in line. */
+	hw.dev_mac[5] = 0x99;
+
+	/* The default handler owns fatal-error recovery. */
+	assert(ena_admin_aenq_register(&adapter, ena_aenq_default_handler,
+				       &adapter) == 0);
+	hw.reset_polls_to_finish = 1;
+	mock_ena_hw_inject_aenq(&hw, ENA_ADMIN_FATAL_ERROR, 0);
+	assert(ena_admin_aenq_poll(&adapter, 4) == 1);
+
+	/* The reset cleared the settings. The recovery re-read the device
+	 * attributes and set the MTU again. */
+	assert(tx_ring[0]->hw_valid == true);
+	assert(rx_ring[1]->hw_valid == true);
+	assert(hw.attrs_read == 1);
+	assert(hw.negotiated_mtu == 1500);
+	assert(adapter.mtu == 1500);
+	assert(memcmp(adapter.mac_addr, hw.dev_mac, 6) == 0);
+
+	/* RSS is programmed again over the re-created queues. The table
+	 * names the queue ids the device assigned when recovery created
+	 * them. */
+	assert(hw.rss_set_ind_count == 1);
+	assert(hw.rss_ind_table_size >= 2);
+	assert(hw.rss_ind_table[0] == rx_ring[0]->sq_idx);
+	assert(hw.rss_ind_table[1] == rx_ring[1]->sq_idx);
+
+	ena_rss_fini(&adapter);
+	for (int q = 0; q < 2; q++) {
+		ena_ring_free(tx_ring[q]);
+		ena_ring_free(rx_ring[q]);
+	}
+	free(adapter.tx_rings);
+	free(adapter.rx_rings);
+	ena_admin_fini(&adapter);
+	ena_device_set_reset_poll_hook(NULL, NULL);
+	printf("[PASS] test_aenq_fatal_reapplies_device_features passed\n");
 }
 
 static void test_admin_acq_phase_flip(void)
@@ -1149,6 +1242,7 @@ int main(void)
 	test_admin_aenq_dispatch();
 	test_admin_aenq_head_monotonic();
 	test_aenq_fatal_recovers_io_queues();
+	test_aenq_fatal_reapplies_device_features();
 	test_admin_fini_clears();
 	test_admin_caps_entry_size();
 	test_admin_acq_tail_register();
