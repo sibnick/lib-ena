@@ -22,9 +22,11 @@ TEST14 = $(BUILD)/test_tx_guard
 
 ENA_SRCS = src/ena_pci.c src/ena_com.c src/ena_plat.c
 ENA_SRCS_P2 = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena_init.c src/ena_datapath.c src/ena_tx.c src/ena_rx.c
-ENA_SRCS_P3 = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena_init.c
-ENA_SRCS_P4 = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena_init.c src/ena_datapath.c
-ENA_SRCS_P5 = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena_init.c src/ena_datapath.c src/ena_tx.c
+# ena_admin.c re-creates IO queues after a device reset, so every link set
+# that takes ena_admin.c also takes the ring create and RX refill code.
+ENA_SRCS_P3 = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena_init.c src/ena_datapath.c src/ena_tx.c src/ena_rx.c
+ENA_SRCS_P4 = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena_init.c src/ena_datapath.c src/ena_rx.c
+ENA_SRCS_P5 = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena_init.c src/ena_datapath.c src/ena_tx.c src/ena_rx.c
 ENA_SRCS_P6 = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena_init.c src/ena_datapath.c src/ena_tx.c src/ena_rx.c
 ENA_SRCS_P7 = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena_init.c src/ena_datapath.c src/ena_tx.c src/ena_rx.c src/ena_intr.c src/ena_netdev.c src/ena_llq.c src/ena_rss.c
 ENA_SRCS_P8 = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena_init.c src/ena_datapath.c src/ena_tx.c src/ena_rx.c src/ena_intr.c src/ena_rss.c

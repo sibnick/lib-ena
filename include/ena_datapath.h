@@ -260,6 +260,14 @@ struct ena_ring {
 	void (*tx_complete_cb)(void *arg, uint16_t req_id);
 	void *tx_complete_arg;
 
+	/* RX refill callback: allocate and post receive buffers into a
+	 * freshly created hardware RX queue. Only the netdev layer owns the
+	 * netbuf allocator, so it stores the allocator and its context here
+	 * in rxq_configure. Device recovery calls it. [Ticket f51ac5d736] */
+	void *(*refill_netbuf)(void *arg, uint64_t *phys_out,
+			       uint32_t *len_out);
+	void *refill_arg;
+
 	/* Tracking Buffers (allocated to depth entries, indexed by req_id) */
 	union {
 		struct ena_tx_buffer *tx_bufs;
