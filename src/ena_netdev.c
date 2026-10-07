@@ -343,6 +343,10 @@ static void ena_netdev_free_rxq_bounce(struct uk_netdev_rx_queue *rxq)
 	rxq->bounce_free_count = 0;
 	rxq->pending_slot = -1;
 	rxq->nb_desc = 0;
+	/* A partial frame must not outlive the queue it came from.
+	 * [Ticket 6fd56c8d29] */
+	rxq->chain_head = NULL;
+	rxq->chain_tail = NULL;
 }
 
 /* Free TX queue bounce buffer */
@@ -416,6 +420,42 @@ static void ena_netdev_rxq_drop_netbuf(void *arg, void *netbuf)
 #ifdef __Unikraft__
 	uk_netbuf_free(nb);
 #endif
+}
+
+/* Free every fragment the queue already chained for a partial frame and
+ * clear the chain pointers. A dropped fragment ends the frame, so the
+ * stack must not see half a packet, and the next packet must not append
+ * to the stale chain. [Ticket 6fd56c8d29] */
+static void ena_netdev_rxq_drop_chain(struct uk_netdev_rx_queue *rxq)
+{
+	struct uk_netbuf *frag;
+
+	if (!rxq)
+		return;
+
+	frag = rxq->chain_head;
+	while (frag) {
+		struct uk_netbuf *next = frag->next;
+
+		ena_netdev_rxq_drop_netbuf(rxq, frag);
+		frag = next;
+	}
+	rxq->chain_head = NULL;
+	rxq->chain_tail = NULL;
+}
+
+/* Clear the partial-frame chain pointers of every RX queue. A stop ends
+ * the datapath, so a half-received frame must not survive it. [Ticket
+ * 6fd56c8d29] */
+static void ena_netdev_clear_rx_chains(struct uk_netdev_rx_queue *rxqs,
+				       uint16_t nq)
+{
+	uint16_t q;
+
+	for (q = 0; q < nq && q < ENA_NETDEV_MAX_QUEUES; q++) {
+		rxqs[q].chain_head = NULL;
+		rxqs[q].chain_tail = NULL;
+	}
 }
 
 /* Submit one prepared TX packet on a ring. If the ring uses a device
@@ -904,6 +944,7 @@ static int ena_netdev_stop(struct uk_netdev *dev)
 	struct ena_adapter *adapter = &edev->adapter;
 
 	adapter->link_up = false;
+	ena_netdev_clear_rx_chains(edev->rx_queues, ENA_NETDEV_MAX_QUEUES);
 	return ena_netdev_stop_rings_hw(adapter, adapter->num_rx_rings,
 					adapter->num_tx_rings);
 }
@@ -1034,6 +1075,9 @@ int ena_netdev_rx_one(struct uk_netdev *dev, struct uk_netdev_rx_queue *queue,
 		if (dropped) {
 			ring->rx_dropped++;
 			ena_netdev_rxq_drop_netbuf(queue, nb);
+			/* A drop ends the frame. Free the fragments that
+			 * are already chained and clear the chain. */
+			ena_netdev_rxq_drop_chain(queue);
 			ena_netdev_rx_refill_helper(ring, queue);
 			return 0;
 		}
@@ -1507,6 +1551,8 @@ static int ena_netdev_stop(struct uk_netdev *dev)
 	if (dev->state != UK_NETDEV_RUNNING)
 		return -EINVAL;
 
+	ena_netdev_clear_rx_chains(dev->rx_queues, ENA_NETDEV_MAX_QUEUES);
+
 	ret = ena_netdev_stop_rings_hw(dev->adapter, dev->nb_rx_queues,
 				       dev->nb_tx_queues);
 	if (ret)
@@ -1604,7 +1650,7 @@ static int ena_netdev_rxq_recv(struct uk_netdev *dev, uint16_t queue_id,
 				    ((size_t)slot * ENA_RX_BUF_SIZE);
 
 				/* Drop the packet if it does not fit the
-				 * application buffer */
+				 * application buffer. */
 				if (rx_pkt.len <= nb->buflen)
 					memcpy(nb->data, slot_virt, rx_pkt.len);
 				else
@@ -1624,6 +1670,9 @@ static int ena_netdev_rxq_recv(struct uk_netdev *dev, uint16_t queue_id,
 		if (dropped) {
 			ring->rx_dropped++;
 			ena_netdev_rxq_drop_netbuf(rxq, nb);
+			/* A drop ends the frame. Free the fragments that
+			 * are already chained and clear the chain. */
+			ena_netdev_rxq_drop_chain(rxq);
 			if (ring->free_req_count > 0 && rxq->alloc_rxpkts) {
 				unsigned int refilled = 0;
 				int ref_ret = ena_rx_refill(
