@@ -126,7 +126,9 @@ static void test_validation_t3_nano_profile(void)
 	assert(info.max_tx_queues >= 1);
 	assert(info.features & UK_NETDEV_F_PARTIAL_CSUM);
 	assert(info.features & UK_NETDEV_F_LRO);
-	assert(info.features & UK_NETDEV_F_TSO4);
+	/* No TSO4: the TX path sends no metadata descriptor with MSS.
+	 * [Ticket 9efe01ed5f] */
+	assert(!(info.features & UK_NETDEV_F_TSO4));
 
 	teardown_test_adapter(&g_adapter);
 	ena_netdev_free(netdev);
@@ -580,6 +582,18 @@ static void test_validation_audit_security_fixes(void)
 	tx_pkt.len = 200;
 	assert(ena_llq_tx_push(tx_ring, &tx_pkt, huge_hdr, 110, NULL) ==
 	       -EINVAL);
+
+	/* RSS: a zero table size is rejected before the __builtin_ctz()
+	 * call, like the get path already does. [Ticket c79d315d36] */
+	g_adapter.rss_info.ind_table =
+	    test_calloc(1, sizeof(struct ena_admin_rss_ind_table_entry));
+	g_adapter.rss_info.host_ind_table = test_calloc(1, sizeof(uint16_t));
+	g_adapter.rss_info.ind_table_size = 0;
+	assert(ena_rss_set_ind_table(&g_adapter, 1) == -EINVAL);
+	test_free(g_adapter.rss_info.ind_table);
+	test_free(g_adapter.rss_info.host_ind_table);
+	g_adapter.rss_info.ind_table = NULL;
+	g_adapter.rss_info.host_ind_table = NULL;
 
 	ena_ring_destroy_hw(rx_ring);
 	ena_ring_free(rx_ring);

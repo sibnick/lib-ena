@@ -223,7 +223,9 @@ static void test_netdev_alloc_and_info_get(void)
 	assert(info.max_tx_queues == g_adapter.max_tx_queues);
 	assert(info.features & UK_NETDEV_F_PARTIAL_CSUM);
 	assert(info.features & UK_NETDEV_F_LRO);
-	assert(info.features & UK_NETDEV_F_TSO4);
+	/* The TX path sends no TSO metadata descriptor, so the driver
+	 * must not advertise TSO4. [Ticket 9efe01ed5f] */
+	assert(!(info.features & UK_NETDEV_F_TSO4));
 	assert(info.hwaddr[0] == 0x52 && info.hwaddr[1] == 0x54);
 
 	teardown_test_adapter(&g_adapter);
@@ -261,6 +263,52 @@ static void test_netdev_configure_and_lifecycle(void)
 	/* Stop device */
 	assert(netdev->ops->dev_stop(netdev) == 0);
 	assert(netdev->state == UK_NETDEV_STOPPED);
+
+	teardown_test_adapter(&g_adapter);
+	ena_netdev_free(netdev);
+}
+
+static void test_netdev_desc_count_power_of_two(void)
+{
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
+
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 1;
+	conf.nb_tx_queues = 1;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+
+	/* A queue info request reports nb_is_power_of_two, and
+	 * ena_ring_alloc rejects any other depth, so a request of 500
+	 * must come back as the next lower power of two. [Ticket
+	 * 42d7cc6f99] */
+	assert(netdev->ops->rxq_configure(netdev, 0, 500, NULL) == 0);
+	assert(g_adapter.rx_rings[0] != NULL);
+	assert(g_adapter.rx_rings[0]->sq_depth == 256);
+	assert(netdev->rx_queues[0].nb_desc == 256);
+	assert((g_adapter.rx_rings[0]->sq_depth &
+		(g_adapter.rx_rings[0]->sq_depth - 1)) == 0);
+	assert(g_adapter.rx_rings[0]->sq_depth >= ENA_MIN_RING_DESC);
+	assert(g_adapter.rx_rings[0]->sq_depth <= g_adapter.max_rx_ring_size);
+
+	/* The TX path applies the same rule. */
+	assert(netdev->ops->txq_configure(netdev, 0, 500, NULL) == 0);
+	assert(g_adapter.tx_rings[0]->sq_depth == 256);
+	assert(netdev->tx_queues[0].nb_desc == 256);
+
+	/* A request above the device limit lands on the limit, which the
+	 * init path already keeps a power of two. */
+	assert(netdev->ops->rxq_configure(netdev, 0, 4000, NULL) == 0);
+	assert(g_adapter.rx_rings[0]->sq_depth == g_adapter.max_rx_ring_size);
+
+	/* A request below the minimum lands on the minimum. */
+	assert(netdev->ops->rxq_configure(netdev, 0, 3, NULL) == 0);
+	assert(g_adapter.rx_rings[0]->sq_depth == ENA_MIN_RING_DESC);
 
 	teardown_test_adapter(&g_adapter);
 	ena_netdev_free(netdev);
@@ -1361,6 +1409,7 @@ int main(void)
 
 	RUN_TEST(test_netdev_alloc_and_info_get);
 	RUN_TEST(test_netdev_configure_and_lifecycle);
+	RUN_TEST(test_netdev_desc_count_power_of_two);
 	RUN_TEST(test_netdev_multi_queue_msix_mapping);
 	RUN_TEST(test_netdev_txq_xmit);
 	RUN_TEST(test_netdev_tx_bounce_backpressure);
@@ -1379,7 +1428,7 @@ int main(void)
 	RUN_TEST(test_netdev_rx_more_flag);
 
 	printf("========================================\n");
-	printf("ALL PHASE 7 NETDEV TESTS PASSED (18/18) \n");
+	printf("ALL PHASE 7 NETDEV TESTS PASSED (19/19) \n");
 	printf("========================================\n");
 	return 0;
 }
