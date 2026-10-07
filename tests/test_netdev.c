@@ -1494,6 +1494,82 @@ static void test_netdev_rx_stop_clears_chain(void)
 	ena_netdev_free(netdev);
 }
 
+static unsigned int g_refill_drop_count;
+static void *g_refill_dropped_nb;
+
+static void test_rxq_drop_record(void *arg, void *netbuf)
+{
+	struct uk_netbuf *nb = (struct uk_netbuf *)netbuf;
+
+	(void)arg;
+	g_refill_drop_count++;
+	g_refill_dropped_nb = nb;
+	untrack_and_free_netbuf(nb);
+}
+
+/*
+ * When ena_rx_submit_one fails, the refill loop still owns the netbuf it
+ * allocated and the bounce slot its allocator popped. It must release
+ * both, or repeated failures drain the bounce pool. [Ticket e7a96cf374]
+ */
+static void test_netdev_rx_refill_submit_failure_reclaims(void)
+{
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+	struct uk_netdev_rxqueue_conf rx_conf;
+	struct uk_netdev_txqueue_conf tx_conf;
+	struct ena_ring *rx_ring;
+	struct uk_netdev_rx_queue *rxq;
+	unsigned int refilled;
+
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 1;
+	conf.nb_tx_queues = 1;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+
+	memset(&rx_conf, 0, sizeof(rx_conf));
+	memset(&tx_conf, 0, sizeof(tx_conf));
+	assert(netdev->ops->rxq_configure(netdev, 0, 8, &rx_conf) == 0);
+	assert(netdev->ops->txq_configure(netdev, 0, 8, &tx_conf) == 0);
+	assert(netdev->ops->dev_start(netdev) == 0);
+
+	rx_ring = g_adapter.rx_rings[0];
+	rxq = &netdev->rx_queues[0];
+
+	/* Record the netbuf the driver releases. */
+	rx_ring->drop_netbuf_cb = test_rxq_drop_record;
+	rx_ring->drop_netbuf_arg = rxq;
+	g_refill_drop_count = 0;
+	g_refill_dropped_nb = NULL;
+
+	/* A device reset makes every submit fail. */
+	rx_ring->hw_valid = false;
+
+	assert(ena_rx_refill(rx_ring, 1, mock_rx_undersized_alloc_cb, rxq,
+			     &refilled) == 0);
+	assert(refilled == 0);
+	assert(g_refill_drop_count == 1);
+	assert(g_refill_dropped_nb != NULL);
+	assert(rxq->pending_slot == -1);
+	assert(rxq->bounce_free_count == 8);
+
+	/* The pool is intact: the next refill still works once the
+	 * hardware is valid again. */
+	rx_ring->hw_valid = true;
+	assert(ena_rx_refill(rx_ring, 1, mock_rx_undersized_alloc_cb, rxq,
+			     &refilled) == 1);
+	assert(rxq->bounce_free_count == 7);
+
+	assert(netdev->ops->dev_stop(netdev) == 0);
+	free_remaining_tracked_netbufs();
+	teardown_test_adapter(&g_adapter);
+	ena_netdev_free(netdev);
+}
+
 int main(void)
 {
 	printf("========================================\n");
@@ -1515,6 +1591,7 @@ int main(void)
 	RUN_TEST(test_netdev_rx_bad_completion_bounce_pool);
 	RUN_TEST(test_netdev_rx_chain_drop_clears_chain);
 	RUN_TEST(test_netdev_rx_stop_clears_chain);
+	RUN_TEST(test_netdev_rx_refill_submit_failure_reclaims);
 	RUN_TEST(test_netdev_invalid_ops);
 	RUN_TEST(test_netdev_bounce_buffers);
 	RUN_TEST(test_netdev_tx_reclaim_at_completion);
@@ -1525,7 +1602,7 @@ int main(void)
 	RUN_TEST(test_netdev_rx_more_flag);
 
 	printf("========================================\n");
-	printf("ALL PHASE 7 NETDEV TESTS PASSED (20/20) \n");
+	printf("ALL PHASE 7 NETDEV TESTS PASSED (21/21) \n");
 	printf("========================================\n");
 	return 0;
 }
