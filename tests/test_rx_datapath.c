@@ -443,6 +443,50 @@ static void test_rx_doorbell_rearm_across_wrap_and_idle(void)
 	printf("[PASS] test_rx_doorbell_rearm_across_wrap_and_idle passed\n");
 }
 
+/*
+ * The RX completion descriptor carries the byte offset inside the buffer
+ * where the device wrote the packet data. ena_rx_poll must report it in
+ * the received-packet structure, or the stack reads shifted bytes.
+ * [Ticket bd0a825551]
+ */
+static void test_rx_poll_reports_buffer_offset(void)
+{
+	printf("[TEST] Running test_rx_poll_reports_buffer_offset...\n");
+
+	struct mock_ena_hw hw;
+	struct ena_adapter adapter;
+	struct ena_ring *ring = NULL;
+	struct ena_rx_pkt pkts[4];
+	unsigned int refilled;
+
+	assert(setup_adapter(&hw, &adapter) == 0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 8, 8, &ring) == 0);
+	assert(ena_ring_create_hw(ring, 0) == 0);
+
+	assert(ena_rx_refill(ring, 2, mock_alloc_netbuf_helper, NULL,
+			     &refilled) == 2);
+
+	/* Device writes the packet 64 bytes into the buffer */
+	hw.rx_cdesc_offset = 64;
+	mock_ena_hw_emulate_rx(&hw, ring, 1, 512, 0, 0);
+	assert(ena_rx_poll(ring, pkts, 1) == 1);
+	assert(pkts[0].offset == 64);
+	assert(pkts[0].len == 512);
+
+	/* A normal completion reports offset 0 */
+	hw.rx_cdesc_offset = 0;
+	mock_ena_hw_emulate_rx(&hw, ring, 1, 300, 0, 0);
+	assert(ena_rx_poll(ring, pkts, 1) == 1);
+	assert(pkts[0].offset == 0);
+	assert(pkts[0].len == 300);
+
+	assert(ena_ring_destroy_hw(ring) == 0);
+	ena_ring_free(ring);
+	ena_admin_fini(&adapter);
+
+	printf("[PASS] test_rx_poll_reports_buffer_offset passed\n");
+}
+
 int main(void)
 {
 	printf("========================================\n");
@@ -457,10 +501,11 @@ int main(void)
 	test_rx_phase_flip_multicycle();
 	test_rx_multi_descriptor_flags();
 	test_rx_doorbell_rearm_across_wrap_and_idle();
+	test_rx_poll_reports_buffer_offset();
 	test_rx_invalid_args();
 
 	printf("========================================\n");
-	printf("ALL PHASE 6 RX TESTS PASSED (9/9)       \n");
+	printf("ALL PHASE 6 RX TESTS PASSED (10/10)       \n");
 	printf("========================================\n");
 	return 0;
 }

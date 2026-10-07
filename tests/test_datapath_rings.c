@@ -349,6 +349,36 @@ static void test_multiple_rings_allocation(void)
 	printf("[PASS] test_multiple_rings_allocation passed\n");
 }
 
+/*
+ * A TX ring allocates the sq_head_wb writeback buffer last. When that
+ * allocation fails, the error path must release every array it already
+ * built, including the request-ID ownership tracking array. The
+ * AddressSanitizer build of this suite reports the leak. [Ticket
+ * 390bf9c965]
+ */
+static void test_ring_alloc_sq_head_wb_failure(void)
+{
+	printf("[TEST] Running test_ring_alloc_sq_head_wb_failure...\n");
+
+	struct ena_adapter adapter;
+	struct ena_ring *ring = NULL;
+
+	memset(&adapter, 0, sizeof(adapter));
+
+	/* A TX ring makes three DMA allocations: SQ, CQ and the
+	 * sq_head_wb writeback. Fail the third one. */
+	ena_plat_set_mock_dma_alloc_fail(3);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8, &ring) ==
+	       -ENOMEM);
+
+	/* The hook disarms after the injected failure. A later
+	 * allocation still succeeds and frees cleanly. */
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8, &ring) == 0);
+	ena_ring_free(ring);
+
+	printf("[PASS] test_ring_alloc_sq_head_wb_failure passed\n");
+}
+
 int main(void)
 {
 	printf("========================================\n");
@@ -364,9 +394,10 @@ int main(void)
 	test_ring_create_destroy_hw();
 	test_ring_create_hw_error_handling();
 	test_multiple_rings_allocation();
+	test_ring_alloc_sq_head_wb_failure();
 
 	printf("========================================\n");
-	printf("ALL PHASE 4 DATAPATH TESTS PASSED (9/9) \n");
+	printf("ALL PHASE 4 DATAPATH TESTS PASSED (10/10) \n");
 	printf("========================================\n");
 	return 0;
 }

@@ -116,6 +116,8 @@ int ena_rx_refill(struct ena_ring *ring, unsigned int count,
 		count = ring->free_req_count;
 
 	while (refilled < count && ring->free_req_count > 0) {
+		struct uk_netdev_rx_queue *rxq =
+		    (struct uk_netdev_rx_queue *)alloc_arg;
 		uint16_t req_id = 0;
 		phys = 0;
 		len = 0;
@@ -124,11 +126,31 @@ int ena_rx_refill(struct ena_ring *ring, unsigned int count,
 			break;
 
 		ret = ena_rx_submit_one(ring, nb, phys, len, &req_id);
-		if (ret)
+		if (ret) {
+			/* The submit failed. The ring does not own this
+			 * netbuf or the bounce slot the allocator popped
+			 * for it. Release both, or repeated failures
+			 * drain the bounce pool. [Ticket e7a96cf374] */
+			if (ring->drop_netbuf_cb)
+				ring->drop_netbuf_cb(ring->drop_netbuf_arg, nb);
+#ifdef __Unikraft__
+			else
+				uk_netbuf_free((struct uk_netbuf *)nb);
+#endif
+			if (rxq && rxq->pending_slot >= 0 &&
+			    rxq->bounce_free_ids && rxq->nb_desc > 0) {
+				rxq->bounce_free_ids[rxq->bounce_free_tail] =
+				    (uint16_t)rxq->pending_slot;
+				rxq->bounce_free_tail =
+				    (uint16_t)((rxq->bounce_free_tail + 1) &
+					       (rxq->nb_desc - 1));
+				rxq->bounce_free_count++;
+			}
+			if (rxq)
+				rxq->pending_slot = -1;
 			break;
+		}
 
-		struct uk_netdev_rx_queue *rxq =
-		    (struct uk_netdev_rx_queue *)alloc_arg;
 		if (rxq && rxq->bounce_map && req_id < rxq->nb_desc) {
 			rxq->bounce_map[req_id] = rxq->pending_slot;
 			rxq->pending_slot = -1;
@@ -268,6 +290,10 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 
 		pkts[rcvd].netbuf = rx_buf->netbuf;
 		pkts[rcvd].len = pkt_len;
+		/* Byte offset inside the buffer where the device wrote
+		 * the packet data. The netdev layer applies it when it
+		 * copies or delivers the buffer. [Ticket bd0a825551] */
+		pkts[rcvd].offset = cdesc->offset;
 		pkts[rcvd].hash = ena_le32_to_cpu(cdesc->hash);
 		pkts[rcvd].req_id = req_id;
 		pkts[rcvd].l3_csum_err =

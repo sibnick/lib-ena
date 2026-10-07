@@ -1350,6 +1350,406 @@ static void test_netdev_rx_more_flag(void)
 	printf("[PASS] test_netdev_rx_more_flag passed\n");
 }
 
+/* RX alloc callback: a high-memory buffer. The driver delivers it to the
+ * stack directly and takes no bounce slot. */
+static void *mock_rx_highmem_alloc_cb(void *arg, uint64_t *phys_out,
+				      uint32_t *len_out)
+{
+	static uint64_t next_phys = 0x9000000;
+	struct uk_netbuf *nb;
+
+	(void)arg;
+
+	nb = test_calloc(1, sizeof(*nb));
+	if (!nb)
+		return NULL;
+
+	nb->data = test_calloc(1, 2048);
+	if (!nb->data) {
+		test_free(nb);
+		return NULL;
+	}
+	nb->buflen = 2048;
+	nb->phys_addr = next_phys;
+	next_phys += 0x1000;
+
+	*phys_out = nb->phys_addr;
+	*len_out = 2048;
+
+	track_netbuf(nb);
+	return nb;
+}
+
+/* The completion descriptor reports where the packet data starts inside
+ * the receive buffer. The driver must copy from that offset, and must
+ * drop a completion whose offset and length reach past the bounce slot.
+ * [Ticket bd0a825551] */
+static void test_netdev_rx_cdesc_offset(void)
+{
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+	struct uk_netdev_rxqueue_conf rx_conf;
+	struct uk_netdev_txqueue_conf tx_conf;
+	struct ena_ring *rx_ring;
+	struct uk_netdev_rx_queue *rxq;
+	struct uk_netbuf *rx_buf = NULL;
+	unsigned int refilled;
+	uint8_t *slot_virt;
+	uint8_t expect[64];
+	uint16_t next_slot;
+
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 1;
+	conf.nb_tx_queues = 1;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+
+	memset(&rx_conf, 0, sizeof(rx_conf));
+	memset(&tx_conf, 0, sizeof(tx_conf));
+	assert(netdev->ops->rxq_configure(netdev, 0, 8, &rx_conf) == 0);
+	assert(netdev->ops->txq_configure(netdev, 0, 8, &tx_conf) == 0);
+	assert(netdev->ops->dev_start(netdev) == 0);
+
+	rx_ring = g_adapter.rx_rings[0];
+	rxq = &netdev->rx_queues[0];
+
+	assert(ena_rx_refill(rx_ring, 1, mock_rx_standard_alloc_cb, rxq,
+			     &refilled) == 1);
+
+	/* The device writes the packet 16 bytes into the slot and
+	 * reports that offset. The bytes before it are not payload. */
+	slot_virt = (uint8_t *)(uintptr_t)rxq->bounce_phys;
+	memset(slot_virt, 0x11, 16);
+	memset(slot_virt + 16, 0xAB, 64);
+	g_hw.rx_cdesc_offset = 16;
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 64, 0x12345678, 0);
+
+	rx_buf = NULL;
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 1);
+	assert(rx_buf != NULL);
+	assert(rx_buf->len == 64);
+	memset(expect, 0xAB, sizeof(expect));
+	assert(memcmp(rx_buf->data, expect, sizeof(expect)) == 0);
+	untrack_and_free_netbuf(g_tracked_nb[0]);
+	g_hw.rx_cdesc_offset = 0;
+
+	/* A hostile offset puts the end of the packet past the slot.
+	 * The driver must drop it, not read outside the bounce buffer. */
+	assert(ena_rx_refill(rx_ring, 1, mock_rx_standard_alloc_cb, rxq,
+			     &refilled) == 1);
+	next_slot =
+	    (uint16_t)
+		rxq->bounce_map[rx_ring->sq_head & (rx_ring->sq_depth - 1)];
+	slot_virt = (uint8_t *)(uintptr_t)rxq->bounce_phys +
+		    (size_t)next_slot * ENA_RX_BUF_SIZE;
+	memset(slot_virt, 0x22, 64);
+	g_hw.rx_cdesc_offset = 250;
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 1900, 0, 0);
+
+	rx_buf = NULL;
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 0);
+	assert(rx_buf == NULL);
+	assert(rx_ring->rx_dropped == 1);
+	untrack_and_free_netbuf(g_tracked_nb[1]);
+	g_hw.rx_cdesc_offset = 0;
+
+	assert(netdev->ops->dev_stop(netdev) == 0);
+	free_remaining_tracked_netbufs();
+	teardown_test_adapter(&g_adapter);
+	ena_netdev_free(netdev);
+}
+
+/* A high-memory buffer is delivered without a copy. The driver must move
+ * its data pointer to the offset the device reports, and keep the
+ * reported length. [Ticket bd0a825551] */
+static void test_netdev_rx_cdesc_offset_highmem(void)
+{
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+	struct uk_netdev_rxqueue_conf rx_conf;
+	struct uk_netdev_txqueue_conf tx_conf;
+	struct ena_ring *rx_ring;
+	struct uk_netdev_rx_queue *rxq;
+	struct uk_netbuf *rx_buf = NULL;
+	struct uk_netbuf *nb;
+	void *data_base;
+	unsigned int refilled;
+	uint8_t expect[64];
+
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 1;
+	conf.nb_tx_queues = 1;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+
+	memset(&rx_conf, 0, sizeof(rx_conf));
+	memset(&tx_conf, 0, sizeof(tx_conf));
+	assert(netdev->ops->rxq_configure(netdev, 0, 8, &rx_conf) == 0);
+	assert(netdev->ops->txq_configure(netdev, 0, 8, &tx_conf) == 0);
+	assert(netdev->ops->dev_start(netdev) == 0);
+
+	rx_ring = g_adapter.rx_rings[0];
+	rxq = &netdev->rx_queues[0];
+
+	assert(ena_rx_refill(rx_ring, 1, mock_rx_highmem_alloc_cb, rxq,
+			     &refilled) == 1);
+	assert(rxq->bounce_map[0] == -1);
+
+	/* The netbuf is the DMA target. Put the packet 32 bytes into
+	 * it, as the device would. */
+	nb = g_tracked_nb[0];
+	assert(nb != NULL && nb->data != NULL);
+	data_base = nb->data;
+	memset(nb->data, 0x22, 32);
+	memset((uint8_t *)nb->data + 32, 0x33, 64);
+	g_hw.rx_cdesc_offset = 32;
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 64, 0, 0);
+
+	rx_buf = NULL;
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 1);
+	assert(rx_buf == nb);
+	assert(rx_buf->len == 64);
+	assert(rx_buf->data == (char *)data_base + 32);
+	memset(expect, 0x33, sizeof(expect));
+	assert(memcmp(rx_buf->data, expect, sizeof(expect)) == 0);
+
+	/* Restore the buffer start before the free. */
+	nb->data = data_base;
+	untrack_and_free_netbuf(nb);
+	g_hw.rx_cdesc_offset = 0;
+
+	assert(netdev->ops->dev_stop(netdev) == 0);
+	free_remaining_tracked_netbufs();
+	teardown_test_adapter(&g_adapter);
+	ena_netdev_free(netdev);
+}
+
+/*
+ * A dropped fragment ends the frame. The driver must free the fragments
+ * it already chained and clear the chain pointers, or the next packet
+ * carries a half-received frame. [Ticket 6fd56c8d29]
+ */
+static void test_netdev_rx_chain_drop_clears_chain(void)
+{
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+	struct uk_netdev_rxqueue_conf rx_conf;
+	struct uk_netdev_txqueue_conf tx_conf;
+	struct ena_ring *rx_ring;
+	struct uk_netdev_rx_queue *rxq;
+	struct uk_netbuf *rx_buf = NULL;
+	unsigned int refilled;
+	uint8_t *slot_virt;
+	uint16_t next_slot;
+
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 1;
+	conf.nb_tx_queues = 1;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+
+	memset(&rx_conf, 0, sizeof(rx_conf));
+	memset(&tx_conf, 0, sizeof(tx_conf));
+	assert(netdev->ops->rxq_configure(netdev, 0, 8, &rx_conf) == 0);
+	assert(netdev->ops->txq_configure(netdev, 0, 8, &tx_conf) == 0);
+	assert(netdev->ops->dev_start(netdev) == 0);
+
+	rx_ring = g_adapter.rx_rings[0];
+	rxq = &netdev->rx_queues[0];
+
+	assert(ena_rx_refill(rx_ring, 2, mock_rx_undersized_alloc_cb, rxq,
+			     &refilled) == 2);
+
+	/* First fragment of a two-descriptor frame: the driver chains
+	 * it and waits for the rest. */
+	slot_virt = (uint8_t *)(uintptr_t)rxq->bounce_phys;
+	memset(slot_virt, 0xAA, 40);
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 40, 0,
+			       ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK);
+
+	rx_buf = NULL;
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 0);
+	assert(rx_buf == NULL);
+	assert(rxq->chain_head != NULL);
+	assert(rxq->chain_tail == rxq->chain_head);
+
+	/* The second fragment does not fit the application buffer. The
+	 * driver drops it and must clear the chain with the first
+	 * fragment. */
+	slot_virt = (uint8_t *)(uintptr_t)rxq->bounce_phys +
+		    (size_t)1 * ENA_RX_BUF_SIZE;
+	memset(slot_virt, 0xBB, 100);
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 100, 0,
+			       ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK);
+
+	rx_buf = NULL;
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 0);
+	assert(rx_buf == NULL);
+	assert(rxq->chain_head == NULL);
+	assert(rxq->chain_tail == NULL);
+	assert(rx_ring->rx_dropped == 1);
+
+	/* The next packet is delivered on its own. It must not carry
+	 * the fragments of the dropped frame. */
+	assert(ena_rx_refill(rx_ring, 1, mock_rx_undersized_alloc_cb, rxq,
+			     &refilled) == 1);
+	next_slot =
+	    (uint16_t)
+		rxq->bounce_map[rx_ring->sq_head & (rx_ring->sq_depth - 1)];
+	slot_virt = (uint8_t *)(uintptr_t)rxq->bounce_phys +
+		    (size_t)next_slot * ENA_RX_BUF_SIZE;
+	memset(slot_virt, 0xCC, 40);
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 40, 0, 0);
+
+	rx_buf = NULL;
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 1);
+	assert(rx_buf != NULL);
+	assert(rx_buf->len == 40);
+	assert(rx_buf->next == NULL);
+	untrack_and_free_netbuf(rx_buf);
+
+	assert(netdev->ops->dev_stop(netdev) == 0);
+	free_remaining_tracked_netbufs();
+	teardown_test_adapter(&g_adapter);
+	ena_netdev_free(netdev);
+}
+
+/* Stop must not leave a partial frame behind in a queue. */
+static void test_netdev_rx_stop_clears_chain(void)
+{
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+	struct uk_netdev_rxqueue_conf rx_conf;
+	struct uk_netdev_txqueue_conf tx_conf;
+	struct ena_ring *rx_ring;
+	struct uk_netdev_rx_queue *rxq;
+	struct uk_netbuf *rx_buf = NULL;
+	unsigned int refilled;
+	uint8_t *slot_virt;
+
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 1;
+	conf.nb_tx_queues = 1;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+
+	memset(&rx_conf, 0, sizeof(rx_conf));
+	memset(&tx_conf, 0, sizeof(tx_conf));
+	assert(netdev->ops->rxq_configure(netdev, 0, 8, &rx_conf) == 0);
+	assert(netdev->ops->txq_configure(netdev, 0, 8, &tx_conf) == 0);
+	assert(netdev->ops->dev_start(netdev) == 0);
+
+	rx_ring = g_adapter.rx_rings[0];
+	rxq = &netdev->rx_queues[0];
+
+	assert(ena_rx_refill(rx_ring, 1, mock_rx_undersized_alloc_cb, rxq,
+			     &refilled) == 1);
+	slot_virt = (uint8_t *)(uintptr_t)rxq->bounce_phys;
+	memset(slot_virt, 0xAA, 40);
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 40, 0,
+			       ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK);
+
+	rx_buf = NULL;
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 0);
+	assert(rxq->chain_head != NULL);
+
+	assert(netdev->ops->dev_stop(netdev) == 0);
+	assert(rxq->chain_head == NULL);
+	assert(rxq->chain_tail == NULL);
+
+	free_remaining_tracked_netbufs();
+	teardown_test_adapter(&g_adapter);
+	ena_netdev_free(netdev);
+}
+
+static unsigned int g_refill_drop_count;
+static void *g_refill_dropped_nb;
+
+static void test_rxq_drop_record(void *arg, void *netbuf)
+{
+	struct uk_netbuf *nb = (struct uk_netbuf *)netbuf;
+
+	(void)arg;
+	g_refill_drop_count++;
+	g_refill_dropped_nb = nb;
+	untrack_and_free_netbuf(nb);
+}
+
+/*
+ * When ena_rx_submit_one fails, the refill loop still owns the netbuf it
+ * allocated and the bounce slot its allocator popped. It must release
+ * both, or repeated failures drain the bounce pool. [Ticket e7a96cf374]
+ */
+static void test_netdev_rx_refill_submit_failure_reclaims(void)
+{
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+	struct uk_netdev_rxqueue_conf rx_conf;
+	struct uk_netdev_txqueue_conf tx_conf;
+	struct ena_ring *rx_ring;
+	struct uk_netdev_rx_queue *rxq;
+	unsigned int refilled;
+
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 1;
+	conf.nb_tx_queues = 1;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+
+	memset(&rx_conf, 0, sizeof(rx_conf));
+	memset(&tx_conf, 0, sizeof(tx_conf));
+	assert(netdev->ops->rxq_configure(netdev, 0, 8, &rx_conf) == 0);
+	assert(netdev->ops->txq_configure(netdev, 0, 8, &tx_conf) == 0);
+	assert(netdev->ops->dev_start(netdev) == 0);
+
+	rx_ring = g_adapter.rx_rings[0];
+	rxq = &netdev->rx_queues[0];
+
+	/* Record the netbuf the driver releases. */
+	rx_ring->drop_netbuf_cb = test_rxq_drop_record;
+	rx_ring->drop_netbuf_arg = rxq;
+	g_refill_drop_count = 0;
+	g_refill_dropped_nb = NULL;
+
+	/* A device reset makes every submit fail. */
+	rx_ring->hw_valid = false;
+
+	assert(ena_rx_refill(rx_ring, 1, mock_rx_undersized_alloc_cb, rxq,
+			     &refilled) == 0);
+	assert(refilled == 0);
+	assert(g_refill_drop_count == 1);
+	assert(g_refill_dropped_nb != NULL);
+	assert(rxq->pending_slot == -1);
+	assert(rxq->bounce_free_count == 8);
+
+	/* The pool is intact: the next refill still works once the
+	 * hardware is valid again. */
+	rx_ring->hw_valid = true;
+	assert(ena_rx_refill(rx_ring, 1, mock_rx_undersized_alloc_cb, rxq,
+			     &refilled) == 1);
+	assert(rxq->bounce_free_count == 7);
+
+	assert(netdev->ops->dev_stop(netdev) == 0);
+	free_remaining_tracked_netbufs();
+	teardown_test_adapter(&g_adapter);
+	ena_netdev_free(netdev);
+}
+
 int main(void)
 {
 	printf("========================================\n");
@@ -1369,6 +1769,11 @@ int main(void)
 	RUN_TEST(test_netdev_tx_csum_offload);
 	RUN_TEST(test_netdev_rx_undersized_netbuf);
 	RUN_TEST(test_netdev_rx_bad_completion_bounce_pool);
+	RUN_TEST(test_netdev_rx_cdesc_offset);
+	RUN_TEST(test_netdev_rx_cdesc_offset_highmem);
+	RUN_TEST(test_netdev_rx_chain_drop_clears_chain);
+	RUN_TEST(test_netdev_rx_stop_clears_chain);
+	RUN_TEST(test_netdev_rx_refill_submit_failure_reclaims);
 	RUN_TEST(test_netdev_invalid_ops);
 	RUN_TEST(test_netdev_bounce_buffers);
 	RUN_TEST(test_netdev_tx_reclaim_at_completion);
@@ -1379,7 +1784,7 @@ int main(void)
 	RUN_TEST(test_netdev_rx_more_flag);
 
 	printf("========================================\n");
-	printf("ALL PHASE 7 NETDEV TESTS PASSED (18/18) \n");
+	printf("ALL PHASE 7 NETDEV TESTS PASSED (23/23) \n");
 	printf("========================================\n");
 	return 0;
 }

@@ -160,6 +160,7 @@ int ena_ring_alloc(struct ena_adapter *adapter, uint16_t qid,
 		if (!ring->sq_head_wb_virt) {
 			ena_err("ring alloc: failed to allocate sq_head_wb");
 			free(ring->req_in_flight);
+			free(ring->req_allocated);
 			free(ring->buffers.raw_bufs);
 			free(ring->free_req_ids);
 			ena_dma_free(ring->cq_virt, ring->cq_phys);
