@@ -9,6 +9,10 @@
 #include <errno.h>
 #include <string.h>
 
+#ifdef __Unikraft__
+#include <uk/netbuf.h>
+#endif
+
 #ifndef __Unikraft__
 static ena_admin_db_hook *s_db_hook;
 static void *s_db_cookie;
@@ -21,7 +25,8 @@ void ena_admin_set_db_hook(ena_admin_db_hook *hook, void *cookie)
 #endif
 
 /* Reset the driver-side software state of one ring to a fresh condition.
- * The request pool is re-armed, in-flight flags cleared, and all indices,
+ * Buffers still held by outstanding requests are released first. Then
+ * the request pool is re-armed, in-flight flags cleared, and all indices,
  * phase bits, queue ids, and doorbell pointers zeroed. The caller holds
  * the ring lock. */
 static void ena_ring_reset_sw_state(struct ena_ring *ring)
@@ -39,6 +44,29 @@ static void ena_ring_reset_sw_state(struct ena_ring *ring)
 	ring->sq_db = NULL;
 	ring->cq_db = NULL;
 
+	/* The reset drops every outstanding request without a completion.
+	 * Release the buffer each slot still holds, then clear the slot,
+	 * so the reset does not leak a netbuf. [Ticket ed4a65fc89] */
+	if (ring->buffers.raw_bufs) {
+		for (i = 0; i < ring->sq_depth; i++) {
+			void *netbuf = (ring->ring_type == ENA_RING_TYPE_TX)
+					   ? ring->buffers.tx_bufs[i].netbuf
+					   : ring->buffers.rx_bufs[i].netbuf;
+
+			if (!netbuf)
+				continue;
+
+			if (ring->drop_netbuf_cb)
+				ring->drop_netbuf_cb(ring->drop_netbuf_arg,
+						     netbuf);
+#ifdef __Unikraft__
+			else
+				uk_netbuf_free((struct uk_netbuf *)netbuf);
+#endif
+			ena_ring_slot_clear(ring, i);
+		}
+	}
+
 	if (ring->free_req_ids) {
 		for (i = 0; i < ring->sq_depth; i++)
 			ring->free_req_ids[i] = i;
@@ -49,6 +77,12 @@ static void ena_ring_reset_sw_state(struct ena_ring *ring)
 
 	if (ring->req_in_flight)
 		memset(ring->req_in_flight, 0, ring->sq_depth);
+
+	/* Request ids are all back in the pool, so the ownership marks
+	 * must say the same. A stale mark makes the next release of that
+	 * id a no-op and the id is lost. [Ticket ed4a65fc89] */
+	if (ring->req_allocated)
+		memset(ring->req_allocated, 0, ring->sq_depth);
 }
 
 void ena_adapter_invalidate_io_rings(struct ena_adapter *adapter)
@@ -77,6 +111,93 @@ void ena_adapter_invalidate_io_rings(struct ena_adapter *adapter)
 			}
 		}
 	}
+}
+
+/*
+ * Re-create the hardware state of the IO rings after a device reset.
+ * A reset deletes every SQ and CQ on the device. The software rings keep
+ * their configuration, so this repeats the hardware part of the device
+ * start: create the CQ and SQ, map the doorbells, and refill the RX
+ * buffer pool. IO queue q is bound to MSI-X vector q+1, the same binding
+ * the start path uses. A device without an MSI-X table uses vector 0 for
+ * every ring. Rings that are still valid in hardware are left alone.
+ *
+ * The caller must not hold the admin lock. Queue creation runs admin
+ * commands, and the admin lock is not recursive.
+ *
+ * Only RX queue 0 is refilled here. Each run-to-completion core refills
+ * its own queue on its first poll, so buffers stay on the heap of the
+ * core that owns the queue. Returns the first create error, or 0 when
+ * every ring is live again. [Ticket f51ac5d736]
+ */
+int ena_adapter_recover_io_rings(struct ena_adapter *adapter)
+{
+	uint16_t q;
+	uint16_t tx_created = 0;
+	uint16_t rx_created = 0;
+	int ret = 0;
+
+	if (!adapter)
+		return -EINVAL;
+
+	for (q = 0; q < adapter->num_tx_rings; q++) {
+		struct ena_ring *ring;
+		uint32_t vector;
+		int r;
+
+		ring = (adapter->tx_rings) ? adapter->tx_rings[q] : NULL;
+		if (ring == NULL || ring->hw_valid)
+			continue;
+
+		vector = (adapter->irq_vectors) ? (uint32_t)(q + 1) : 0u;
+		r = ena_ring_create_hw(ring, vector);
+		if (r != 0) {
+			ena_err("recover: create tx queue %u failed (%d)",
+				(unsigned)q, r);
+			if (ret == 0)
+				ret = r;
+			continue;
+		}
+		tx_created++;
+	}
+
+	for (q = 0; q < adapter->num_rx_rings; q++) {
+		struct ena_ring *ring;
+		uint32_t vector;
+		int r;
+
+		ring = (adapter->rx_rings) ? adapter->rx_rings[q] : NULL;
+		if (ring == NULL || ring->hw_valid)
+			continue;
+
+		vector = (adapter->irq_vectors) ? (uint32_t)(q + 1) : 0u;
+		r = ena_ring_create_hw(ring, vector);
+		if (r != 0) {
+			ena_err("recover: create rx queue %u failed (%d)",
+				(unsigned)q, r);
+			if (ret == 0)
+				ret = r;
+			continue;
+		}
+		rx_created++;
+
+		if (q == 0 && ring->refill_netbuf != NULL) {
+			int posted = ena_rx_refill(
+			    ring, (unsigned int)(ring->sq_depth - 1),
+			    ring->refill_netbuf, ring->refill_arg, NULL);
+
+			if (posted < 0)
+				ena_warn("recover: rx queue 0 refill failed "
+					 "(%d)",
+					 posted);
+		}
+	}
+
+	if (tx_created || rx_created)
+		ena_info("recover: %u tx / %u rx queues re-created after reset",
+			 (unsigned)tx_created, (unsigned)rx_created);
+
+	return ret;
 }
 
 static int ena_depth_ok(uint16_t depth)
@@ -182,7 +303,12 @@ int ena_admin_init(struct ena_adapter *adapter, uint16_t aq_depth,
 	adapter->aenq_base = aenq;
 	adapter->aenq_phys = aenq_phys;
 	adapter->aenq_depth = aenq_depth;
-	adapter->aenq_head = 0;
+	/* The head is a monotonic consumer counter, and the doorbell
+	 * starts at the depth. Match the software counter to it, so the
+	 * first poll writes depth+1 and the value never goes back.
+	 * Masking the head still selects slot 0, the first slot the
+	 * device posts to. [Ticket f3cf310548] */
+	adapter->aenq_head = aenq_depth;
 	adapter->aenq_phase = 1;
 
 	adapter->aenq_handler = NULL;
@@ -576,6 +702,7 @@ int ena_aenq_default_handler(void *arg, uint16_t group, uint16_t syndrome,
 		uint16_t acq_d;
 		uint16_t aenq_d;
 		int rret;
+		int iret = -1;
 
 		ena_err("aenq: fatal error (syndrome %u), resetting device",
 			(unsigned)syndrome);
@@ -591,8 +718,6 @@ int ena_aenq_default_handler(void *arg, uint16_t group, uint16_t syndrome,
 		ena_device_reset(adapter);
 		rret = ena_device_wait_reset_complete(adapter, 1000);
 		if (rret == 0) {
-			int iret;
-
 			aq_d = adapter->aq_depth ? adapter->aq_depth : 32;
 			acq_d = adapter->acq_depth ? adapter->acq_depth : 32;
 			aenq_d = adapter->aenq_depth ? adapter->aenq_depth : 32;
@@ -600,13 +725,23 @@ int ena_aenq_default_handler(void *arg, uint16_t group, uint16_t syndrome,
 			if (iret == 0 && handler)
 				ena_admin_aenq_register(adapter, handler,
 							handler_arg);
-			/* The reset cleared the AENQ configuration.
-			 * Restore it so keep-alive events resume.
-			 * [Ticket 1152cbcaca] */
-			if (iret == 0 && adapter->aenq_enabled_groups)
-				ena_init_config_aenq(adapter);
 		}
 		ena_admin_lock_drop(&adapter->admin_lock);
+
+		/* The reset cleared the AENQ configuration and deleted the
+		 * IO queues. Restore both, so traffic resumes without a
+		 * reboot. [Ticket 1152cbcaca] [Ticket f51ac5d736]
+		 *
+		 * Run this work outside the admin lock. Both steps issue
+		 * admin commands, and the admin lock is not recursive. */
+		if (rret == 0 && iret == 0) {
+			if (adapter->aenq_enabled_groups)
+				ena_init_config_aenq(adapter);
+			rret = ena_adapter_recover_io_rings(adapter);
+			if (rret != 0)
+				ena_err("aenq: io queue recovery failed (%d)",
+					rret);
+		}
 
 		if (rret != 0)
 			ena_err("aenq: reset recovery failed (%d)", rret);

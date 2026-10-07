@@ -779,6 +779,8 @@ ena_netdev_rxq_configure(struct uk_netdev *dev, uint16_t queue_id,
 
 	ring->drop_netbuf_cb = ena_netdev_rxq_drop_netbuf;
 	ring->drop_netbuf_arg = &edev->rx_queues[queue_id];
+	ring->refill_netbuf = ena_netbuf_alloc_helper;
+	ring->refill_arg = &edev->rx_queues[queue_id];
 
 	/* Allocate per-slot bounce buffers for low memory descriptors */
 	edev->rx_queues[queue_id].bounce_buf =
@@ -1415,6 +1417,8 @@ static int ena_netdev_rxq_configure(struct uk_netdev *dev, uint16_t queue_id,
 
 	ring->drop_netbuf_cb = ena_netdev_rxq_drop_netbuf;
 	ring->drop_netbuf_arg = &dev->rx_queues[queue_id];
+	ring->refill_netbuf = ena_netbuf_alloc_helper;
+	ring->refill_arg = &dev->rx_queues[queue_id];
 
 	/* Allocate per-slot bounce buffers for low memory descriptors */
 	dev->rx_queues[queue_id].bounce_buf =

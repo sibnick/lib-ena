@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include "ena_plat.h"
 #include "ena_admin.h"
@@ -279,6 +280,14 @@ struct ena_ring {
 	void (*tx_complete_cb)(void *arg, uint16_t req_id);
 	void *tx_complete_arg;
 
+	/* RX refill callback: allocate and post receive buffers into a
+	 * freshly created hardware RX queue. Only the netdev layer owns the
+	 * netbuf allocator, so it stores the allocator and its context here
+	 * in rxq_configure. Device recovery calls it. [Ticket f51ac5d736] */
+	void *(*refill_netbuf)(void *arg, uint64_t *phys_out,
+			       uint32_t *len_out);
+	void *refill_arg;
+
 	/* Tracking Buffers (allocated to depth entries, indexed by req_id) */
 	union {
 		struct ena_tx_buffer *tx_bufs;
@@ -313,6 +322,19 @@ static inline void ena_ring_lock(struct ena_ring *ring)
 static inline void ena_ring_unlock(struct ena_ring *ring)
 {
 	__sync_lock_release(&ring->ring_lock);
+}
+
+/* Clear one request slot in the ring buffer tracking array. The
+ * request-ID release path and the ring reset path share this
+ * clearing, so a released slot always has the same empty content. */
+static inline void ena_ring_slot_clear(struct ena_ring *ring, uint16_t req_id)
+{
+	if (ring->ring_type == ENA_RING_TYPE_TX)
+		memset(&ring->buffers.tx_bufs[req_id], 0,
+		       sizeof(struct ena_tx_buffer));
+	else
+		memset(&ring->buffers.rx_bufs[req_id], 0,
+		       sizeof(struct ena_rx_buffer));
 }
 
 /* -------------------------------------------------------------------------

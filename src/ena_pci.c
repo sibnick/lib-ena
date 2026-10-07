@@ -43,13 +43,25 @@ int ena_pci_match_id(uint16_t vendor_id, uint16_t device_id)
 
 #include "ena_intr.h"
 
+/*
+ * Ports 0xCF8 and 0xCFC are one shared address and data pair. A second
+ * core can write the address port between this core's address write and
+ * its data access, so the pair needs a lock. [Ticket 6ea5533105]
+ */
+static uint32_t s_pci_cfg_lock;
+
 static inline uint32_t pci_read32(const struct pci_address *addr, uint32_t reg)
 {
 	uint32_t config_addr = (1u << 31) | ((uint32_t)addr->bus << 16) |
 			       ((uint32_t)addr->devid << 11) |
 			       ((uint32_t)addr->function << 8) | (reg & 0xFC);
+	uint32_t val;
+
+	ena_spin_lock(&s_pci_cfg_lock);
 	uk_arch_x86_64_outl(PCI_CONFIG_ADDR, config_addr);
-	return uk_arch_x86_64_inl(PCI_CONFIG_DATA);
+	val = uk_arch_x86_64_inl(PCI_CONFIG_DATA);
+	ena_spin_unlock(&s_pci_cfg_lock);
+	return val;
 }
 
 static inline void pci_write32(const struct pci_address *addr, uint32_t reg,
@@ -58,8 +70,11 @@ static inline void pci_write32(const struct pci_address *addr, uint32_t reg,
 	uint32_t config_addr = (1u << 31) | ((uint32_t)addr->bus << 16) |
 			       ((uint32_t)addr->devid << 11) |
 			       ((uint32_t)addr->function << 8) | (reg & 0xFC);
+
+	ena_spin_lock(&s_pci_cfg_lock);
 	uk_arch_x86_64_outl(PCI_CONFIG_ADDR, config_addr);
 	uk_arch_x86_64_outl(PCI_CONFIG_DATA, val);
+	ena_spin_unlock(&s_pci_cfg_lock);
 }
 
 static inline void pci_enable_device(const struct pci_address *addr)
@@ -218,18 +233,21 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 	void *bar0;
 	uint64_t bar0_phys;
 	uint32_t bar0_size;
+	uint64_t bar2_phys = 0;
+	uint64_t bar2_size = 0;
 	uint32_t sts;
 	int ret;
 
-	/* 1. Enable PCI Memory Space & Bus Mastering (DMA) */
-	pci_enable_device(&pdev->addr);
-
+	/* 1. Read the BAR addresses and measure their sizes before Memory
+	 * Space is enabled. The size probe writes all ones to the BAR.
+	 * With Memory Space enabled the device decodes that address, and
+	 * the access can collide with another device or end in a PCI bus
+	 * abort. [Ticket 6be168f7ea] */
 	for (int b = 0; b < 6; b++) {
 		uint32_t bar_val = pci_read32(&pdev->addr, 0x10 + b * 4);
 		ena_info("PCI BAR%d = 0x%08x", b, bar_val);
 	}
 
-	/* 2. Read full 64-bit BAR0 MMIO address and size */
 	bar0_size = (uint32_t)pci_read_bar_size(&pdev->addr, 0x10);
 	if (bar0_size == 0)
 		bar0_size = 0x4000;
@@ -238,6 +256,24 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 
 	bar0_phys = pci_read_bar(&pdev->addr, 0x10);
 	bar0 = (void *)(uintptr_t)bar0_phys;
+
+	{
+		uint32_t bar2_lo = pci_read32(&pdev->addr, 0x18);
+
+		if ((bar2_lo & 0x01) == 0) { /* memory BAR */
+			bar2_phys = pci_read_bar(&pdev->addr, 0x18);
+			bar2_size = pci_read_bar_size(&pdev->addr, 0x18);
+			if (bar2_phys == 0 || bar2_size == 0)
+				ena_info("probe: BAR2 unimplemented (no LLQ "
+					 "push region)");
+		} else {
+			ena_info("probe: BAR2 is I/O space (no LLQ push "
+				 "region)");
+		}
+	}
+
+	/* 2. Enable PCI Memory Space & Bus Mastering (DMA) */
+	pci_enable_device(&pdev->addr);
 
 	edev = uk_calloc(uk_alloc_get_default(), 1, sizeof(*edev));
 	if (!edev) {
@@ -256,33 +292,18 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 	}
 
 	/* 3b. Map the optional LLQ BAR2 (64-bit MMIO push region). The
-	 * scaffold call above zeros the adapter, so the BAR2 pointers are
-	 * set here before feature negotiation reads them. */
-	{
-		uint32_t bar2_lo = pci_read32(&pdev->addr, 0x18);
-
-		if ((bar2_lo & 0x01) == 0) { /* memory BAR */
-			uint64_t bar2_phys = pci_read_bar(&pdev->addr, 0x18);
-			uint64_t bar2_size =
-			    pci_read_bar_size(&pdev->addr, 0x18);
-
-			if (bar2_phys != 0 && bar2_size != 0) {
-				edev->bar2_vaddr = (void *)(uintptr_t)bar2_phys;
-				edev->adapter.bar2_base =
-				    (volatile uint8_t *)(uintptr_t)bar2_phys;
-				edev->adapter.bar2_size = (size_t)bar2_size;
-				ena_info(
-				    "probe: bar2=%p (phys=0x%lx, size=0x%lx)",
-				    edev->bar2_vaddr, (unsigned long)bar2_phys,
-				    (unsigned long)bar2_size);
-			} else {
-				ena_info("probe: BAR2 unimplemented (no LLQ "
-					 "push region)");
-			}
-		} else {
-			ena_info(
-			    "probe: BAR2 is I/O space (no LLQ push region)");
-		}
+	 * probe read its address and size before Memory Space was
+	 * enabled. The scaffold call above zeros the adapter, so the
+	 * BAR2 pointers are set here before feature negotiation reads
+	 * them. */
+	if (bar2_phys != 0 && bar2_size != 0) {
+		edev->bar2_vaddr = (void *)(uintptr_t)bar2_phys;
+		edev->adapter.bar2_base =
+		    (volatile uint8_t *)(uintptr_t)bar2_phys;
+		edev->adapter.bar2_size = (size_t)bar2_size;
+		ena_info("probe: bar2=%p (phys=0x%lx, size=0x%lx)",
+			 edev->bar2_vaddr, (unsigned long)bar2_phys,
+			 (unsigned long)bar2_size);
 	}
 
 	sts = ena_reg_read32(edev->adapter.bar0_base + ENA_REGS_DEV_STS_OFF);

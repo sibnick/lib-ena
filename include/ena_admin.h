@@ -303,6 +303,23 @@ struct ena_ring;
 void ena_adapter_invalidate_io_rings(struct ena_adapter *adapter);
 
 /**
+ * Re-create the hardware queues of all IO rings after a device reset.
+ *
+ * A device reset deletes the SQ and CQ of every IO queue. This function
+ * repeats the hardware part of the device start for the rings that the
+ * adapter holds: create the CQ and SQ with the same MSI-X vector binding
+ * as the start path, map the doorbells, and refill the RX buffer pool of
+ * queue 0. Rings that are still valid in hardware are left unchanged.
+ * The caller must not hold the admin lock, because queue creation runs
+ * admin commands.
+ *
+ * @param adapter Pointer to the master ENA adapter structure.
+ * @return 0 when every ring is live again, or the first negative errno
+ * value encountered.
+ */
+int ena_adapter_recover_io_rings(struct ena_adapter *adapter);
+
+/**
  * Default AENQ handler registered by the probe path.
  *
  * A FATAL_ERROR event resets the device and re-initializes the admin queues.

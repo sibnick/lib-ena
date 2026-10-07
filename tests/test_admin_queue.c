@@ -38,6 +38,21 @@ static int test_aenq_handler(void *arg, uint16_t group, uint16_t syndrome,
 	return 0;
 }
 
+/* Ring drop callback that records the buffers it is asked to release. */
+struct drop_log {
+	int count;
+	void *bufs[8];
+};
+
+static void test_drop_netbuf_cb(void *arg, void *netbuf)
+{
+	struct drop_log *log = (struct drop_log *)arg;
+
+	if (log->count < 8)
+		log->bufs[log->count] = netbuf;
+	log->count++;
+}
+
 static void test_admin_init_success(void)
 {
 	printf("[TEST] Running test_admin_init_success...\n");
@@ -281,10 +296,14 @@ static void test_admin_timeout_invalidates_io_queues(void)
 	assert(ena_device_wait_reset_complete(&adapter, 100) == 0);
 	assert(ena_admin_init(&adapter, 8, 8, 8) == 0);
 	assert(adapter.state == ENA_STATE_ADMIN_READY);
-	assert(ena_ring_create_hw(tx_ring, 0) == 0);
-	assert(ena_ring_create_hw(rx_ring, 0) == 0);
+	/* The driver-side restart of the queues is the same one the
+	 * fatal-error AENQ path runs. [Ticket f51ac5d736] */
+	assert(ena_adapter_recover_io_rings(&adapter) == 0);
 	assert(tx_ring->hw_valid == true);
 	assert(rx_ring->hw_valid == true);
+	/* Rings that are already valid are left alone, so a second call
+	 * changes nothing. */
+	assert(ena_adapter_recover_io_rings(&adapter) == 0);
 	req_id = 0;
 	assert(ena_tx_submit(tx_ring, &pkt, &req_id) == 0);
 
@@ -296,6 +315,219 @@ static void test_admin_timeout_invalidates_io_queues(void)
 	ena_device_set_reset_poll_hook(NULL, NULL);
 
 	printf("[PASS] test_admin_timeout_invalidates_io_queues passed\n");
+}
+
+/* A device reset drops outstanding requests without a completion. The
+ * reset must release the buffers those requests still hold and clear the
+ * request-ID ownership marks. [Ticket ed4a65fc89] */
+static void test_admin_reset_frees_held_netbufs(void)
+{
+	printf("[TEST] Running test_admin_reset_frees_held_netbufs...\n");
+
+	struct mock_ena_hw hw;
+	mock_ena_hw_init(&hw);
+	ena_admin_set_db_hook(mock_ena_hw_aq_doorbell_hook, &hw);
+
+	struct ena_adapter adapter;
+	ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0));
+	assert(ena_admin_init(&adapter, 8, 8, 8) == 0);
+
+	struct ena_ring *tx_ring = NULL;
+	struct ena_ring *rx_ring = NULL;
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8, &tx_ring) ==
+	       0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 8, 8, &rx_ring) ==
+	       0);
+	assert(ena_ring_create_hw(tx_ring, 0) == 0);
+	assert(ena_ring_create_hw(rx_ring, 0) == 0);
+
+	/* The reset path walks the adapter ring arrays. */
+	adapter.tx_rings = calloc(1, sizeof(struct ena_ring *));
+	adapter.rx_rings = calloc(1, sizeof(struct ena_ring *));
+	adapter.tx_rings[0] = tx_ring;
+	adapter.rx_rings[0] = rx_ring;
+	adapter.num_tx_rings = 1;
+	adapter.num_rx_rings = 1;
+
+	/* The drop callback is how the netdev layer returns a buffer.
+	 * Record what the reset releases. */
+	struct drop_log log;
+	memset(&log, 0, sizeof(log));
+	tx_ring->drop_netbuf_cb = test_drop_netbuf_cb;
+	tx_ring->drop_netbuf_arg = &log;
+	rx_ring->drop_netbuf_cb = test_drop_netbuf_cb;
+	rx_ring->drop_netbuf_arg = &log;
+
+	/* Put one TX and one RX request in flight. The driver treats the
+	 * netbuf as an opaque pointer, so plain objects stand in for it. */
+	char tx_nb[64];
+	char rx_nb[64];
+	struct ena_tx_pkt pkt;
+	uint16_t tx_req = 0;
+	uint16_t rx_req = 0;
+
+	memset(&pkt, 0, sizeof(pkt));
+	pkt.netbuf = tx_nb;
+	pkt.len = sizeof(tx_nb);
+	pkt.phys_addr = 0x50001000;
+	assert(ena_tx_submit(tx_ring, &pkt, &tx_req) == 0);
+	assert(ena_rx_submit_one(rx_ring, rx_nb, 0x50002000, sizeof(rx_nb),
+				 &rx_req) == 0);
+	assert(tx_ring->req_allocated[tx_req] == 1);
+	assert(rx_ring->req_allocated[rx_req] == 1);
+
+	/* Reset the rings, as the device reset path does. */
+	ena_adapter_invalidate_io_rings(&adapter);
+
+	/* Both buffers went through the drop callback, and the slots are
+	 * empty. */
+	assert(log.count == 2);
+	assert(log.bufs[0] == &tx_nb || log.bufs[1] == &tx_nb);
+	assert(log.bufs[0] == &rx_nb || log.bufs[1] == &rx_nb);
+	assert(tx_ring->buffers.tx_bufs[tx_req].netbuf == NULL);
+	assert(rx_ring->buffers.rx_bufs[rx_req].netbuf == NULL);
+
+	/* Ownership marks and the in-flight flags are clear, and the pool
+	 * is whole again, so the ids stay usable. */
+	for (int i = 0; i < 8; i++) {
+		assert(tx_ring->req_allocated[i] == 0);
+		assert(rx_ring->req_allocated[i] == 0);
+		assert(tx_ring->req_in_flight[i] == 0);
+		assert(rx_ring->req_in_flight[i] == 0);
+	}
+	assert(tx_ring->free_req_count == 8);
+	assert(rx_ring->free_req_count == 8);
+
+	/* A released id is handed out again and its slot is free. */
+	uint16_t reuse = 0;
+	assert(ena_ring_req_id_alloc(tx_ring, &reuse) == 0);
+	assert(ena_ring_req_id_free(tx_ring, reuse) == 0);
+	assert(tx_ring->free_req_count == 8);
+
+	ena_ring_free(tx_ring);
+	ena_ring_free(rx_ring);
+	free(adapter.tx_rings);
+	free(adapter.rx_rings);
+	ena_admin_fini(&adapter);
+	printf("[PASS] test_admin_reset_frees_held_netbufs passed\n");
+}
+
+/* RX buffers handed to the recovery refill hook. The pool is static, so
+ * the test leak check does not see it. */
+struct test_rx_pool {
+	int count;
+	char buf[16][64];
+};
+
+static struct test_rx_pool s_rx_pool;
+
+static void *test_rx_alloc_cb(void *arg, uint64_t *phys_out, uint32_t *len_out)
+{
+	char *b;
+
+	(void)arg;
+	if (s_rx_pool.count >= 16)
+		return NULL;
+	b = s_rx_pool.buf[s_rx_pool.count];
+	s_rx_pool.count++;
+	if (phys_out)
+		*phys_out = (uint64_t)(uintptr_t)b;
+	if (len_out)
+		*len_out = 64u;
+	return b;
+}
+
+/* A fatal-error event resets the device and deletes every IO queue. The
+ * driver must re-create the queues and refill the RX buffer pool, so
+ * traffic resumes without a reboot. [Ticket f51ac5d736] */
+static void test_aenq_fatal_recovers_io_queues(void)
+{
+	printf("[TEST] Running test_aenq_fatal_recovers_io_queues...\n");
+
+	struct mock_ena_hw hw;
+	mock_ena_hw_init(&hw);
+	ena_admin_set_db_hook(mock_ena_hw_aq_doorbell_hook, &hw);
+	ena_device_set_reset_poll_hook(mock_ena_hw_reset_poll_hook, &hw);
+
+	struct ena_adapter adapter;
+	ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0));
+	assert(ena_admin_init(&adapter, 8, 8, 8) == 0);
+	assert(ena_init_run(&adapter, 1500) == 0);
+
+	struct ena_ring *tx_ring = NULL;
+	struct ena_ring *rx_ring = NULL;
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8, &tx_ring) ==
+	       0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 8, 8, &rx_ring) ==
+	       0);
+	assert(ena_ring_create_hw(tx_ring, 0) == 0);
+	assert(ena_ring_create_hw(rx_ring, 0) == 0);
+
+	adapter.tx_rings = calloc(1, sizeof(struct ena_ring *));
+	adapter.rx_rings = calloc(1, sizeof(struct ena_ring *));
+	adapter.tx_rings[0] = tx_ring;
+	adapter.num_tx_rings = 1;
+	adapter.rx_rings[0] = rx_ring;
+	adapter.num_rx_rings = 1;
+
+	/* The netdev layer owns the RX allocator. The test plays that part
+	 * through the refill hook stored on the ring. */
+	memset(&s_rx_pool, 0, sizeof(s_rx_pool));
+	rx_ring->refill_netbuf = test_rx_alloc_cb;
+	rx_ring->refill_arg = NULL;
+	assert(ena_rx_refill(rx_ring, 4, test_rx_alloc_cb, NULL, NULL) == 4);
+	assert(rx_ring->free_req_count == 4);
+
+	/* Traffic runs before the event. */
+	struct ena_tx_pkt pkt;
+	char pkt_data[32];
+	uint16_t req_id = 0;
+
+	memset(&pkt, 0, sizeof(pkt));
+	pkt.len = sizeof(pkt_data);
+	pkt.phys_addr = 0x50001000;
+	assert(ena_tx_submit(tx_ring, &pkt, &req_id) == 0);
+
+	/* The default handler owns fatal-error recovery. */
+	assert(ena_admin_aenq_register(&adapter, ena_aenq_default_handler,
+				       &adapter) == 0);
+
+	/* The device finishes its reset on the first poll. */
+	hw.reset_polls_to_finish = 1;
+
+	mock_ena_hw_inject_aenq(&hw, ENA_ADMIN_FATAL_ERROR, 0);
+	assert(ena_admin_aenq_poll(&adapter, 4) == 1);
+
+	/* The reset ran, and the driver re-created both queues. */
+	assert(hw.reset_polls >= 1);
+	assert(tx_ring->hw_valid == true);
+	assert(rx_ring->hw_valid == true);
+	assert(tx_ring->sq_db != NULL);
+	assert(rx_ring->sq_db != NULL);
+	assert(hw.last_opcode == ENA_ADMIN_CREATE_SQ);
+
+	/* The RX buffer pool of queue 0 is refilled: seven buffers for a
+	 * ring of eight slots, the same depth the start path posts. The
+	 * pool also holds the four buffers posted before the reset. */
+	assert(s_rx_pool.count == 11);
+	assert(rx_ring->free_req_count == 1);
+	assert(rx_ring->req_allocated[0] == 1);
+
+	/* The handler is registered again, so later events still arrive. */
+	assert(adapter.aenq_handler == ena_aenq_default_handler);
+
+	/* Traffic resumes without a reboot. */
+	req_id = 0;
+	assert(ena_tx_submit(tx_ring, &pkt, &req_id) == 0);
+
+	ena_ring_free(tx_ring);
+	ena_ring_free(rx_ring);
+	free(adapter.tx_rings);
+	free(adapter.rx_rings);
+	ena_admin_fini(&adapter);
+	ena_device_set_reset_poll_hook(NULL, NULL);
+
+	printf("[PASS] test_aenq_fatal_recovers_io_queues passed\n");
 }
 
 static void test_admin_acq_phase_flip(void)
@@ -364,6 +596,46 @@ static void test_admin_aenq_dispatch(void)
 
 	ena_admin_fini(&adapter);
 	printf("[PASS] test_admin_aenq_dispatch passed\n");
+}
+
+/* The AENQ head is a monotonic consumer counter. Init writes the depth
+ * to the head doorbell, so the software head must start at the depth.
+ * A poll then writes depth+1, never 1. [Ticket f3cf310548] */
+static void test_admin_aenq_head_monotonic(void)
+{
+	printf("[TEST] Running test_admin_aenq_head_monotonic...\n");
+
+	struct mock_ena_hw hw;
+	mock_ena_hw_init(&hw);
+	ena_admin_set_db_hook(mock_ena_hw_aq_doorbell_hook, &hw);
+
+	struct ena_adapter adapter;
+	ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0));
+	assert(ena_admin_init(&adapter, 8, 8, 8) == 0);
+
+	/* Init publishes the depth, and the software head matches it. */
+	assert(adapter.aenq_head == 8);
+	assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_AENQ_HEAD_DB_OFF) == 8);
+
+	/* The first event sits at slot 0 and carries phase 1. The poll
+	 * must find it and acknowledge with depth+1, not 1. */
+	mock_ena_hw_inject_aenq(&hw, ENA_ADMIN_LINK_CHANGE, 0);
+	assert(ena_admin_aenq_poll(&adapter, 16) == 1);
+	assert(adapter.aenq_head == 9);
+	assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_AENQ_HEAD_DB_OFF) == 9);
+
+	/* Later polls keep increasing. A full pass of the ring flips the
+	 * expected phase, and the next slot is still delivered. */
+	for (int i = 0; i < 8; i++) {
+		mock_ena_hw_inject_aenq(&hw, ENA_ADMIN_WARNING, (uint16_t)i);
+		assert(ena_admin_aenq_poll(&adapter, 16) == 1);
+	}
+	assert(adapter.aenq_head == 17);
+	assert(adapter.aenq_phase == 0);
+	assert(mock_ena_hw_get_reg32(&hw, ENA_REGS_AENQ_HEAD_DB_OFF) == 17);
+
+	ena_admin_fini(&adapter);
+	printf("[PASS] test_admin_aenq_head_monotonic passed\n");
 }
 
 static void test_admin_fini_clears(void)
@@ -792,8 +1064,11 @@ int main(void)
 	test_admin_cmd_error_status();
 	test_admin_cmd_timeout();
 	test_admin_timeout_invalidates_io_queues();
+	test_admin_reset_frees_held_netbufs();
 	test_admin_acq_phase_flip();
 	test_admin_aenq_dispatch();
+	test_admin_aenq_head_monotonic();
+	test_aenq_fatal_recovers_io_queues();
 	test_admin_fini_clears();
 	test_admin_caps_entry_size();
 	test_admin_acq_tail_register();
