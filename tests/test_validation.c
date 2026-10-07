@@ -585,7 +585,7 @@ static void test_validation_audit_security_fixes(void)
 	rcdesc->length = ena_cpu_to_le16(1024);
 	rcdesc->status =
 	    ena_cpu_to_le32((1u << ENA_ETH_IO_RX_CDESC_BASE_PHASE_SHIFT));
-	assert(ena_rx_poll(rx_ring, &rx_pkt, 1) == 0);
+	assert(ena_rx_poll(rx_ring, &rx_pkt, 1, NULL) == 0);
 
 	/* TX completion with unsubmitted req_id dropped */
 	assert(ena_ring_alloc(&g_adapter, 0, ENA_RING_TYPE_TX, 8, 8,
@@ -1102,7 +1102,7 @@ static void test_validation_fault_rx_corrupt_length(void)
 
 	/* Corrupted completion is dropped: no packet, slot cleared, id returned
 	 */
-	assert(ena_rx_poll(rx_ring, &rx_pkt, 1) == 0);
+	assert(ena_rx_poll(rx_ring, &rx_pkt, 1, NULL) == 0);
 	assert(rx_ring->rx_packets == 0);
 	assert(rx_ring->buffers.rx_bufs[0].netbuf == NULL);
 	assert(rx_ring->free_req_count == 5);
@@ -1112,7 +1112,7 @@ static void test_validation_fault_rx_corrupt_length(void)
 	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 512, 0x11223344,
 			       ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK);
 	memset(&rx_pkt, 0, sizeof(rx_pkt));
-	assert(ena_rx_poll(rx_ring, &rx_pkt, 1) == 1);
+	assert(ena_rx_poll(rx_ring, &rx_pkt, 1, NULL) == 1);
 	assert(rx_pkt.len == 512);
 	assert(rx_pkt.hash == 0x11223344);
 

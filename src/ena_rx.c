@@ -184,12 +184,13 @@ void ena_rx_doorbell(struct ena_ring *ring)
 }
 
 int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
-		unsigned int max_pkts)
+		unsigned int max_pkts, unsigned int *dropped_count)
 {
 	const struct ena_eth_io_rx_cdesc_base *cdesc_ring;
 	const struct ena_eth_io_rx_cdesc_base *cdesc;
 	struct ena_rx_buffer *rx_buf;
 	unsigned int rcvd = 0;
+	unsigned int dropped = 0;
 	uint16_t req_id;
 	uint16_t pkt_len;
 	uint8_t phase;
@@ -197,6 +198,9 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 	if (!ring || !pkts || ring->ring_type != ENA_RING_TYPE_RX ||
 	    !ring->cq_virt || max_pkts == 0)
 		return -EINVAL;
+
+	if (dropped_count)
+		*dropped_count = 0;
 
 	/* After a reset the CQ memory may hold stale entries and the
 	 * indices are fresh. Do not consume them until the queue is
@@ -249,6 +253,10 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 				"capacity %u",
 				pkt_len, rx_buf->data_len);
 			ring->rx_dropped++;
+			/* Report the drop to the caller. The netdev layer
+			 * keeps a partial frame, and this completion was
+			 * one of its descriptors. [Ticket 664f7a0ec4] */
+			dropped++;
 			struct uk_netdev_rx_queue *rxq =
 			    (struct uk_netdev_rx_queue *)ring->drop_netbuf_arg;
 			if (rxq && rxq->bounce_map && req_id < rxq->nb_desc &&
@@ -328,6 +336,12 @@ int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
 		ena_reg_write32(ring->cq_db, ring->cq_head);
 
 	ena_ring_unlock(ring);
+
+	/* Report the ring-layer drops even when no packet came back. The
+	 * caller keeps frame state across polls and must end a frame
+	 * whose descriptor was dropped. [Ticket 664f7a0ec4] */
+	if (dropped_count)
+		*dropped_count = dropped;
 
 #ifdef CONFIG_LIBENA_VERBOSE_STATS
 	if (rcvd > 0) {

@@ -161,7 +161,7 @@ static void test_rx_poll_completions(void)
 	/* Mock receives 2 packets */
 	mock_ena_hw_emulate_rx(&hw, ring, 2, 512, 0xABCDEF01, 0);
 
-	count = ena_rx_poll(ring, pkts, 8);
+	count = ena_rx_poll(ring, pkts, 8, NULL);
 	assert(count == 2);
 	assert(pkts[0].len == 512);
 	assert(pkts[0].hash == 0xABCDEF01);
@@ -178,7 +178,7 @@ static void test_rx_poll_completions(void)
 	/* Mock receives remaining 2 packets */
 	mock_ena_hw_emulate_rx(&hw, ring, 2, 1024, 0x99887766, 0);
 
-	count = ena_rx_poll(ring, pkts, 8);
+	count = ena_rx_poll(ring, pkts, 8, NULL);
 	assert(count == 2);
 	assert(pkts[0].len == 1024);
 	assert(pkts[0].hash == 0x99887766);
@@ -193,7 +193,7 @@ static void test_rx_poll_completions(void)
 	assert(ena_rx_free_space(ring) == 8); /* All 4 IDs recycled */
 
 	/* No more packets */
-	assert(ena_rx_poll(ring, pkts, 8) == 0);
+	assert(ena_rx_poll(ring, pkts, 8, NULL) == 0);
 
 	assert(ena_ring_destroy_hw(ring) == 0);
 	ena_ring_free(ring);
@@ -223,7 +223,7 @@ static void test_rx_checksum_and_frag_flags(void)
 	/* Packet 1: Checksum checked and OK */
 	mock_ena_hw_emulate_rx(&hw, ring, 1, 64, 0,
 			       ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK);
-	assert(ena_rx_poll(ring, pkts, 1) == 1);
+	assert(ena_rx_poll(ring, pkts, 1, NULL) == 1);
 	assert(pkts[0].l4_csum_checked == true);
 	assert(pkts[0].l4_csum_err == false);
 	assert(pkts[0].l3_csum_err == false);
@@ -235,7 +235,7 @@ static void test_rx_checksum_and_frag_flags(void)
 	    ENA_ETH_IO_RX_CDESC_BASE_L3_CSUM_ERR_MASK |
 		ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_ERR_MASK |
 		ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK);
-	assert(ena_rx_poll(ring, pkts, 1) == 1);
+	assert(ena_rx_poll(ring, pkts, 1, NULL) == 1);
 	assert(pkts[0].l3_csum_err == true);
 	assert(pkts[0].l4_csum_err == true);
 	assert(pkts[0].l4_csum_checked == true);
@@ -244,7 +244,7 @@ static void test_rx_checksum_and_frag_flags(void)
 	/* Packet 3: Fragmented packet */
 	mock_ena_hw_emulate_rx(&hw, ring, 1, 256, 0,
 			       ENA_ETH_IO_RX_CDESC_BASE_IPV4_FRAG_MASK);
-	assert(ena_rx_poll(ring, pkts, 1) == 1);
+	assert(ena_rx_poll(ring, pkts, 1, NULL) == 1);
 	assert(pkts[0].frag == true);
 
 	assert(ena_ring_destroy_hw(ring) == 0);
@@ -278,7 +278,7 @@ static void test_rx_phase_flip_multicycle(void)
 
 	/* Complete 4 packets (phase = 1) */
 	mock_ena_hw_emulate_rx(&hw, ring, 4, 100, 0, 0);
-	assert(ena_rx_poll(ring, pkts, 4) == 4);
+	assert(ena_rx_poll(ring, pkts, 4, NULL) == 4);
 	assert(ring->cq_head == 4);
 	assert((ring->cq_head & (ring->cq_depth - 1)) == 0);
 	assert(ring->cq_phase == 0); /* flipped */
@@ -294,7 +294,7 @@ static void test_rx_phase_flip_multicycle(void)
 
 	/* Complete 4 packets (phase = 0) */
 	mock_ena_hw_emulate_rx(&hw, ring, 4, 200, 0, 0);
-	assert(ena_rx_poll(ring, pkts, 4) == 4);
+	assert(ena_rx_poll(ring, pkts, 4, NULL) == 4);
 	assert(ring->cq_head == 8);
 	assert((ring->cq_head & (ring->cq_depth - 1)) == 0);
 	assert(ring->cq_phase == 1); /* flipped back to 1 */
@@ -339,7 +339,7 @@ static void test_rx_invalid_args(void)
 	       -EINVAL);
 	assert(ena_rx_refill(tx_ring, 4, mock_alloc_netbuf_helper, NULL,
 			     NULL) == -EINVAL);
-	assert(ena_rx_poll(tx_ring, pkts, 4) == -EINVAL);
+	assert(ena_rx_poll(tx_ring, pkts, 4, NULL) == -EINVAL);
 
 	ena_ring_free(tx_ring);
 	ena_ring_free(rx_ring);
@@ -367,14 +367,14 @@ static void test_rx_multi_descriptor_flags(void)
 	/* First segment of multi-descriptor packet */
 	mock_ena_hw_emulate_rx(&hw, ring, 1, 1500, 0,
 			       ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK);
-	assert(ena_rx_poll(ring, pkts, 1) == 1);
+	assert(ena_rx_poll(ring, pkts, 1, NULL) == 1);
 	assert(pkts[0].first == true);
 	assert(pkts[0].last == false);
 
 	/* Last segment of multi-descriptor packet */
 	mock_ena_hw_emulate_rx(&hw, ring, 1, 500, 0,
 			       ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK);
-	assert(ena_rx_poll(ring, pkts, 1) == 1);
+	assert(ena_rx_poll(ring, pkts, 1, NULL) == 1);
 	assert(pkts[0].first == false);
 	assert(pkts[0].last == true);
 
@@ -409,7 +409,7 @@ static void test_rx_doorbell_rearm_across_wrap_and_idle(void)
 	/* Drain all eight, then refill across the ring wrap. The
 	 * doorbell value tracks the unmasked submission pointer. */
 	mock_ena_hw_emulate_rx(&hw, ring, 8, 100, 0, 0);
-	assert(ena_rx_poll(ring, pkts, 8) == 8);
+	assert(ena_rx_poll(ring, pkts, 8, NULL) == 8);
 	assert(ena_rx_refill(ring, 8, mock_alloc_netbuf_helper, NULL,
 			     &refilled) == 8);
 	assert(ring->sq_tail == 16);
@@ -430,7 +430,7 @@ static void test_rx_doorbell_rearm_across_wrap_and_idle(void)
 	 * posts the freed slot. The doorbell stays equal to the
 	 * submission pointer. */
 	mock_ena_hw_emulate_rx(&hw, ring, 1, 120, 0, 0);
-	assert(ena_rx_poll(ring, pkts, 1) == 1);
+	assert(ena_rx_poll(ring, pkts, 1, NULL) == 1);
 	assert(ena_rx_refill(ring, 1, mock_alloc_netbuf_helper, NULL,
 			     &refilled) == 1);
 	assert(ring->sq_tail == 17);
@@ -469,14 +469,14 @@ static void test_rx_poll_reports_buffer_offset(void)
 	/* Device writes the packet 64 bytes into the buffer */
 	hw.rx_cdesc_offset = 64;
 	mock_ena_hw_emulate_rx(&hw, ring, 1, 512, 0, 0);
-	assert(ena_rx_poll(ring, pkts, 1) == 1);
+	assert(ena_rx_poll(ring, pkts, 1, NULL) == 1);
 	assert(pkts[0].offset == 64);
 	assert(pkts[0].len == 512);
 
 	/* A normal completion reports offset 0 */
 	hw.rx_cdesc_offset = 0;
 	mock_ena_hw_emulate_rx(&hw, ring, 1, 300, 0, 0);
-	assert(ena_rx_poll(ring, pkts, 1) == 1);
+	assert(ena_rx_poll(ring, pkts, 1, NULL) == 1);
 	assert(pkts[0].offset == 0);
 	assert(pkts[0].len == 300);
 

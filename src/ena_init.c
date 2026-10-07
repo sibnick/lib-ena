@@ -478,3 +478,66 @@ int ena_init_run(struct ena_adapter *adapter, uint32_t mtu)
 		 adapter->mac_addr[4], adapter->mac_addr[5]);
 	return 0;
 }
+
+/* Re-apply the device feature settings after a device reset. A reset
+ * clears every setting in the device, and the adapter keeps the values
+ * the driver negotiated at bring-up. This sends them again with the same
+ * commands the bring-up sequence uses.
+ *
+ * The caller runs this after it re-creates the IO queues. The RSS
+ * indirection table names RX queue ids, so the queues must exist first.
+ *
+ * Each step stands on its own. A step that fails is logged and the next
+ * step still runs, so one rejected command does not leave the rest of
+ * the device at its default. Returns the first error it saw. [Ticket
+ * 775997c726] */
+int ena_init_reapply_device_features(struct ena_adapter *adapter)
+{
+	int ret = 0;
+	int r;
+
+	if (!adapter)
+		return -EINVAL;
+
+	/* The MAC address and the MTU limit are fields of the device
+	 * attributes. Read them again, so the driver cache matches the
+	 * device. */
+	r = ena_init_get_device_attributes(adapter);
+	if (r != 0) {
+		ena_warn("recover: device attributes read failed (%d)", r);
+		if (ret == 0)
+			ret = r;
+	}
+
+	if (adapter->mtu != 0) {
+		r = ena_init_set_mtu(adapter, adapter->mtu);
+		if (r != 0) {
+			ena_warn("recover: MTU %u re-apply failed (%d)",
+				 adapter->mtu, r);
+			if (ret == 0)
+				ret = r;
+		}
+	}
+
+	if (adapter->aenq_enabled_groups != 0) {
+		r = ena_init_config_aenq(adapter);
+		if (r != 0) {
+			ena_warn("recover: AENQ re-apply failed (%d)", r);
+			if (ret == 0)
+				ret = r;
+		}
+	}
+
+	/* One RX queue needs no distribution, so this matches the rule
+	 * the device start uses. */
+	if (adapter->num_rx_rings > 1) {
+		r = ena_rss_configure(adapter, adapter->num_rx_rings);
+		if (r != 0) {
+			ena_warn("recover: RSS re-apply failed (%d)", r);
+			if (ret == 0)
+				ret = r;
+		}
+	}
+
+	return ret;
+}

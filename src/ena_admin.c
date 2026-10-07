@@ -83,6 +83,12 @@ static void ena_ring_reset_sw_state(struct ena_ring *ring)
 	 * id a no-op and the id is lost. [Ticket ed4a65fc89] */
 	if (ring->req_allocated)
 		memset(ring->req_allocated, 0, ring->sq_depth);
+
+	/* The reset also drops every deferred buffer release. Its request
+	 * id is back in the pool now, so the next owner poll must not
+	 * read the entry again: that release would return an id that a
+	 * new request already holds. [Ticket 858c34b035] */
+	ring->tx_foreign_count = 0;
 }
 
 void ena_adapter_invalidate_io_rings(struct ena_adapter *adapter)
@@ -128,7 +134,13 @@ void ena_adapter_invalidate_io_rings(struct ena_adapter *adapter)
  * Only RX queue 0 is refilled here. Each run-to-completion core refills
  * its own queue on its first poll, so buffers stay on the heap of the
  * core that owns the queue. Returns the first create error, or 0 when
- * every ring is live again. [Ticket f51ac5d736]
+ * every ring is live again.
+ *
+ * When this re-creates a queue, the device lost its feature settings at
+ * the same reset. The function then re-applies those settings through
+ * ena_init_reapply_device_features. A ring that is still valid in
+ * hardware saw no reset, so its settings still stand. [Ticket
+ * f51ac5d736] [Ticket 775997c726]
  */
 int ena_adapter_recover_io_rings(struct ena_adapter *adapter)
 {
@@ -193,9 +205,25 @@ int ena_adapter_recover_io_rings(struct ena_adapter *adapter)
 		}
 	}
 
-	if (tx_created || rx_created)
+	if (tx_created || rx_created) {
+		int fret;
+
 		ena_info("recover: %u tx / %u rx queues re-created after reset",
 			 (unsigned)tx_created, (unsigned)rx_created);
+
+		/* The reset cleared every feature setting in the device.
+		 * Send the negotiated settings again, so the recovered
+		 * queues run with the MTU, MAC, AENQ groups, and RSS the
+		 * driver configured at bring-up. The queues exist now, so
+		 * the RSS table can name their ids. [Ticket 775997c726] */
+		fret = ena_init_reapply_device_features(adapter);
+		if (fret != 0) {
+			ena_err("recover: device feature re-apply failed (%d)",
+				fret);
+			if (ret == 0)
+				ret = fret;
+		}
+	}
 
 	return ret;
 }
@@ -729,14 +757,13 @@ int ena_aenq_default_handler(void *arg, uint16_t group, uint16_t syndrome,
 		ena_admin_lock_drop(&adapter->admin_lock);
 
 		/* The reset cleared the AENQ configuration and deleted the
-		 * IO queues. Restore both, so traffic resumes without a
-		 * reboot. [Ticket 1152cbcaca] [Ticket f51ac5d736]
+		 * IO queues. Queue recovery restores both, so traffic
+		 * resumes without a reboot. [Ticket 1152cbcaca]
+		 * [Ticket f51ac5d736] [Ticket 775997c726]
 		 *
 		 * Run this work outside the admin lock. Both steps issue
 		 * admin commands, and the admin lock is not recursive. */
 		if (rret == 0 && iret == 0) {
-			if (adapter->aenq_enabled_groups)
-				ena_init_config_aenq(adapter);
 			rret = ena_adapter_recover_io_rings(adapter);
 			if (rret != 0)
 				ena_err("aenq: io queue recovery failed (%d)",
