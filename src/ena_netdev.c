@@ -1039,7 +1039,16 @@ int ena_netdev_rx_one(struct uk_netdev *dev, struct uk_netdev_rx_queue *queue,
 	ena_netdev_rx_refill_helper(ring, queue);
 
 	while (1) {
-		ret = ena_rx_poll(ring, &rx_pkt, 1);
+		unsigned int dropped_count = 0;
+
+		ret = ena_rx_poll(ring, &rx_pkt, 1, &dropped_count);
+		if (dropped_count > 0) {
+			/* The ring layer dropped a completion, so this
+			 * poll never saw that fragment. A chain that
+			 * waits for it is incomplete: free it and clear
+			 * the pointers. [Ticket 664f7a0ec4] */
+			ena_netdev_rxq_drop_chain(queue);
+		}
 		if (ret <= 0) {
 			ena_netdev_rx_refill_helper(ring, queue);
 			return 0;
@@ -1641,7 +1650,16 @@ static int ena_netdev_rxq_recv(struct uk_netdev *dev, uint16_t queue_id,
 	}
 
 	while (1) {
-		ret = ena_rx_poll(ring, &rx_pkt, 1);
+		unsigned int dropped_count = 0;
+
+		ret = ena_rx_poll(ring, &rx_pkt, 1, &dropped_count);
+		if (dropped_count > 0) {
+			/* The ring layer dropped a completion, so this
+			 * poll never saw that fragment. A chain that
+			 * waits for it is incomplete: free it and clear
+			 * the pointers. [Ticket 664f7a0ec4] */
+			ena_netdev_rxq_drop_chain(rxq);
+		}
 		if (ret <= 0) {
 			if (ring->free_req_count > 0 && rxq->alloc_rxpkts) {
 				unsigned int refilled = 0;

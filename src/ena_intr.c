@@ -339,7 +339,7 @@ int ena_poll_step(struct ena_poll_ctx *ctx, unsigned int *work_done)
 
 			count = ena_rx_poll(
 			    ctx->adapter->rx_rings[q], rx_pkts,
-			    ctx->rx_budget > 32 ? 32 : ctx->rx_budget);
+			    ctx->rx_budget > 32 ? 32 : ctx->rx_budget, NULL);
 			if (count > 0) {
 				for (i = 0; i < count; i++)
 					if (ctx->rx_handler)

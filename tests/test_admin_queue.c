@@ -285,7 +285,7 @@ static void test_admin_timeout_invalidates_io_queues(void)
 	assert(ena_tx_poll_completions(tx_ring, 8, NULL) == 0);
 	{
 		struct ena_rx_pkt pkts[4];
-		assert(ena_rx_poll(rx_ring, pkts, 4) == 0);
+		assert(ena_rx_poll(rx_ring, pkts, 4, NULL) == 0);
 	}
 
 	/* Recovery: the reset completes (the device re-initializes its

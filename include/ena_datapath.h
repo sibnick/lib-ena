@@ -624,10 +624,14 @@ void ena_rx_doorbell(struct ena_ring *ring);
  * @param ring Pointer to the RX ring structure.
  * @param pkts Array of packet structures where received packet info is written.
  * @param max_pkts Maximum number of received packets to process.
+ * @param dropped_count Optional output pointer. The ring layer writes the
+ * number of completions it dropped in this call, so the caller can end a
+ * partial frame it no longer receives. Pass NULL when the caller keeps no
+ * frame state.
  * @return Number of packets received, or a negative errno value on error.
  */
 int ena_rx_poll(struct ena_ring *ring, struct ena_rx_pkt *pkts,
-		unsigned int max_pkts);
+		unsigned int max_pkts, unsigned int *dropped_count);
 
 /**
  * Dump ring diagnostic state to the log.

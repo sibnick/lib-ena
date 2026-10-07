@@ -1671,6 +1671,98 @@ static void test_netdev_rx_chain_drop_clears_chain(void)
 	ena_netdev_free(netdev);
 }
 
+/*
+ * The ring layer drops a completion whose length is past the capacity of
+ * the buffer that holds it. The netdev layer never sees that fragment, so
+ * it must end the frame it already started. [Ticket 664f7a0ec4]
+ */
+static void test_netdev_rx_ring_drop_clears_chain(void)
+{
+	struct uk_netdev *netdev;
+	struct uk_netdev_conf conf;
+	struct uk_netdev_rxqueue_conf rx_conf;
+	struct uk_netdev_txqueue_conf tx_conf;
+	struct ena_ring *rx_ring;
+	struct uk_netdev_rx_queue *rxq;
+	struct uk_netbuf *rx_buf = NULL;
+	unsigned int refilled;
+	uint8_t *slot_virt;
+	uint16_t next_slot;
+
+	assert(setup_test_adapter(&g_hw, &g_adapter) == 0);
+	netdev = ena_netdev_alloc(&g_adapter);
+	assert(netdev != NULL);
+
+	memset(&conf, 0, sizeof(conf));
+	conf.nb_rx_queues = 1;
+	conf.nb_tx_queues = 1;
+	assert(netdev->ops->configure(netdev, &conf) == 0);
+
+	memset(&rx_conf, 0, sizeof(rx_conf));
+	memset(&tx_conf, 0, sizeof(tx_conf));
+	assert(netdev->ops->rxq_configure(netdev, 0, 8, &rx_conf) == 0);
+	assert(netdev->ops->txq_configure(netdev, 0, 8, &tx_conf) == 0);
+	assert(netdev->ops->dev_start(netdev) == 0);
+
+	rx_ring = g_adapter.rx_rings[0];
+	rxq = &netdev->rx_queues[0];
+
+	assert(ena_rx_refill(rx_ring, 2, mock_rx_undersized_alloc_cb, rxq,
+			     &refilled) == 2);
+
+	/* First fragment of a two-descriptor frame: the driver chains
+	 * it and waits for the rest. */
+	slot_virt = (uint8_t *)(uintptr_t)rxq->bounce_phys;
+	memset(slot_virt, 0xAA, 40);
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 40, 0,
+			       ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK);
+
+	rx_buf = NULL;
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 0);
+	assert(rx_buf == NULL);
+	assert(rxq->chain_head != NULL);
+	assert(rxq->chain_tail == rxq->chain_head);
+
+	/* The second completion reports a length past the buffer
+	 * capacity, so the ring layer drops it. The netdev layer gets no
+	 * packet, and it must clear the chain with the first fragment. */
+	mock_pci_inject_fault(&g_hw, MOCK_PCI_FAULT_CORRUPT_LENGTH, 0xFFFF);
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 512, 0,
+			       ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK);
+	mock_pci_clear_faults(&g_hw);
+
+	rx_buf = NULL;
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 0);
+	assert(rx_buf == NULL);
+	assert(rxq->chain_head == NULL);
+	assert(rxq->chain_tail == NULL);
+	assert(rx_ring->rx_dropped == 1);
+
+	/* The next packet is delivered on its own. It must not carry the
+	 * fragment of the dropped frame. */
+	assert(ena_rx_refill(rx_ring, 1, mock_rx_undersized_alloc_cb, rxq,
+			     &refilled) == 1);
+	next_slot =
+	    (uint16_t)
+		rxq->bounce_map[rx_ring->sq_head & (rx_ring->sq_depth - 1)];
+	slot_virt = (uint8_t *)(uintptr_t)rxq->bounce_phys +
+		    (size_t)next_slot * ENA_RX_BUF_SIZE;
+	memset(slot_virt, 0xCC, 40);
+	mock_ena_hw_emulate_rx(&g_hw, rx_ring, 1, 40, 0, 0);
+
+	rx_buf = NULL;
+	assert(netdev->ops->rxq_recv(netdev, 0, &rx_buf) == 1);
+	assert(rx_buf != NULL);
+	assert(rx_buf->len == 40);
+	assert(rx_buf->next == NULL);
+	untrack_and_free_netbuf(rx_buf);
+
+	assert(netdev->ops->dev_stop(netdev) == 0);
+	free_remaining_tracked_netbufs();
+	teardown_test_adapter(&g_adapter);
+	ena_netdev_free(netdev);
+}
+
 /* Stop must not leave a partial frame behind in a queue. */
 static void test_netdev_rx_stop_clears_chain(void)
 {
@@ -1821,6 +1913,7 @@ int main(void)
 	RUN_TEST(test_netdev_rx_cdesc_offset);
 	RUN_TEST(test_netdev_rx_cdesc_offset_highmem);
 	RUN_TEST(test_netdev_rx_chain_drop_clears_chain);
+	RUN_TEST(test_netdev_rx_ring_drop_clears_chain);
 	RUN_TEST(test_netdev_rx_stop_clears_chain);
 	RUN_TEST(test_netdev_rx_refill_submit_failure_reclaims);
 	RUN_TEST(test_netdev_invalid_ops);
@@ -1833,7 +1926,7 @@ int main(void)
 	RUN_TEST(test_netdev_rx_more_flag);
 
 	printf("========================================\n");
-	printf("ALL PHASE 7 NETDEV TESTS PASSED (24/24) \n");
+	printf("ALL PHASE 7 NETDEV TESTS PASSED (25/25) \n");
 	printf("========================================\n");
 	return 0;
 }
