@@ -193,6 +193,10 @@ void ena_plat_set_mock_msix_vectors(uint32_t num_vectors);
 
 /* Host test hook: set the CPU index reported by ena_plat_cpu_id. */
 void ena_plat_set_mock_cpu_id(uint32_t cpu_id);
+
+/* Host test hook: make the nth_call-th ena_dma_alloc call return NULL.
+ * The calls before it succeed. A value below one turns the hook off. */
+void ena_plat_set_mock_dma_alloc_fail(int nth_call);
 #endif
 
 #endif /* LIBENA_ENA_PLAT_H */

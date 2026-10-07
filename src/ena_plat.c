@@ -21,10 +21,29 @@
  * Host Test Suite Implementations (Mock DMA and Logging)
  * ------------------------------------------------------------------------- */
 
+/* Host test hook: make the nth_call-th ena_dma_alloc call fail. The
+ * calls before it succeed. A value below one turns the hook off. */
+static int s_mock_dma_alloc_fail_at = -1;
+
+void ena_plat_set_mock_dma_alloc_fail(int nth_call)
+{
+	s_mock_dma_alloc_fail_at = (nth_call > 0) ? (nth_call - 1) : -1;
+}
+
 void *ena_dma_alloc(size_t size, uint64_t *phys_out)
 {
 	void *virt = NULL;
-	int ret = posix_memalign(&virt, 4096, size);
+	int ret;
+
+	if (s_mock_dma_alloc_fail_at >= 0) {
+		if (s_mock_dma_alloc_fail_at == 0) {
+			s_mock_dma_alloc_fail_at = -1;
+			return NULL;
+		}
+		s_mock_dma_alloc_fail_at--;
+	}
+
+	ret = posix_memalign(&virt, 4096, size);
 	if (ret != 0 || !virt)
 		return NULL;
 
