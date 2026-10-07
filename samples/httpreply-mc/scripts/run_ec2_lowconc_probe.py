@@ -43,6 +43,7 @@ Usage:
 import argparse
 import json
 import re
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -72,6 +73,10 @@ DEFAULT_OUTDIR = "/tmp/opencode/ca72834ec7"
 DATE_STR = time.strftime("%Y-%m-%d")
 THREADS = 4
 DURATION = "60s"
+# Seconds to wait for a launched instance to report running with a public
+# IP. A transient AWS CLI error must not end a benchmark run, and an
+# instance that never becomes ready must not stay running.
+LAUNCH_TIMEOUT = 300
 
 
 def comma_ints(text):
@@ -189,25 +194,55 @@ def launch_instance(ami_id, ip, instance_type, tag, user_data=None, monitoring=F
     )
     instance_id = json.loads(out)["Instances"][0]["InstanceId"]
     print(f"[SUCCESS] Launched {tag}: {instance_id}")
-    while True:
-        d = run_cmd(
-            [
-                "aws",
-                "ec2",
-                "describe-instances",
-                "--instance-ids",
-                instance_id,
-                "--region",
-                AWS_REGION,
-                "--output",
-                "json",
-            ]
-        )
-        inst = json.loads(d)["Reservations"][0]["Instances"][0]
+    deadline = time.time() + LAUNCH_TIMEOUT
+    while time.time() < deadline:
+        try:
+            d = run_cmd(
+                [
+                    "aws",
+                    "ec2",
+                    "describe-instances",
+                    "--instance-ids",
+                    instance_id,
+                    "--region",
+                    AWS_REGION,
+                    "--output",
+                    "json",
+                ]
+            )
+            inst = json.loads(d)["Reservations"][0]["Instances"][0]
+        except (
+            subprocess.CalledProcessError,
+            json.JSONDecodeError,
+            KeyError,
+            IndexError,
+        ) as exc:
+            # The AWS CLI fails now and then: throttling, or a service
+            # error that clears on the next call. Keep polling. One run
+            # lost a whole benchmark this way, and left the peer
+            # instance running with no owner to clean it up.
+            print(f"[WARN] {tag}: describe-instances failed ({exc}), retrying")
+            time.sleep(5)
+            continue
         if inst["State"]["Name"] == "running" and inst.get("PublicIpAddress"):
             print(f"[SUCCESS] {tag} RUNNING. Public IP: {inst['PublicIpAddress']}")
             return instance_id, inst["PublicIpAddress"]
         time.sleep(3)
+    # The caller never sees this instance id, so a bare raise would leave
+    # the instance running. Terminate it first.
+    print(f"[WARN] {tag}: not ready in {LAUNCH_TIMEOUT} s, terminating {instance_id}")
+    run_cmd(
+        [
+            "aws",
+            "ec2",
+            "terminate-instances",
+            "--instance-ids",
+            instance_id,
+            "--region",
+            AWS_REGION,
+        ]
+    )
+    raise RuntimeError(f"{tag} did not reach running state in {LAUNCH_TIMEOUT} s")
 
 
 def client_user_data(args):

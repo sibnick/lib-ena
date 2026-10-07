@@ -18,10 +18,21 @@ CONFIG_UKPLAT_CPU_MAXCOUNT and CONFIG_LIBUKNETDEV_MAXNBQUEUES to the
 same value. Keep CONFIG_APPHTTPREPLYMC_CONSOLE_STATS and
 CONFIG_APPHTTPREPLYMC_NETLOG off: a stats build changes throughput.
 
+Two ways to repeat a measurement, and they answer different questions:
+
+  --repeat N   runs N phases against one target instance. The spread it
+               reports is phase-to-phase noise only. The instance keeps
+               one host placement for all N phases.
+  --placements N   launches a fresh target and a fresh client for each
+               measurement, so each one gets a new host placement. Use
+               this to compare two instance types. Placement is the
+               largest noise source in these runs, and --repeat cannot
+               see it.
+
 Usage:
   python3 scripts/run_ec2_size_ab.py --kernel PATH
       [--instances c6i.large,c6i.xlarge] [--client-instance TYPE]
-      [--concurrency 25] [--repeat 3] [--variant LABEL]
+      [--concurrency 25] [--repeat 3] [--placements 3] [--variant LABEL]
       [--outdir DIR] [--build-rev REV] [--dry-run]
 """
 
@@ -73,6 +84,7 @@ CSV_FIELDS = [
     "availability_zone",
     "concurrency",
     "repeat",
+    "placement",
     "requests_sec",
     "latency_avg_ms",
     "latency_stdev_ms",
@@ -133,6 +145,14 @@ def parse_args(argv=None):
         help="measurement(s) per concurrency level per size (default: %(default)s)",
     )
     p.add_argument(
+        "--placements",
+        type=int,
+        metavar="N",
+        default=1,
+        help="fresh target and client per measurement, so each one gets a "
+        "new host placement. Overrides --repeat with 1. (default: %(default)s)",
+    )
+    p.add_argument(
         "--kernel",
         type=Path,
         default=DEFAULT_KERNEL,
@@ -163,6 +183,12 @@ def parse_args(argv=None):
     args.concurrency = [int(c) for c in args.concurrency]
     if args.repeat < 1:
         p.error("--repeat must be 1 or more")
+    if args.placements < 1:
+        p.error("--placements must be 1 or more")
+    if args.placements > 1:
+        # One measurement per placement. A second phase on the same
+        # instance measures phase noise, not placement noise.
+        args.repeat = 1
     if args.client_instance is None:
         args.client_instance = max(args.instances, key=instance_vcpus)
     return args
@@ -238,10 +264,19 @@ def sha256_file(path):
     return out.split()[0]
 
 
-def run_arm(ami_id, instance_type, meta, args, client_meta, az):
-    """Run one target size and return one row per repeat."""
+def run_arm(ami_id, instance_type, meta, args, client_meta, az, placement=1):
+    """Run one target size and return one row per repeat.
+
+    With --placements the caller calls this once per host placement and
+    forces repeat to 1. The label carries the placement index, so the
+    files of one placement do not overwrite another.
+    """
+    vtag = args.variant if args.placements <= 1 else f"{args.variant}-p{placement}"
     print("\n" + "#" * 60)
-    print(f"# ARM: target={instance_type} client={args.client_instance}")
+    print(
+        f"# ARM: target={instance_type} client={args.client_instance} "
+        f"placement={placement}"
+    )
     print(
         f"# vcpus={meta['vcpus']} physical_cores={meta['physical_cores']} "
         f"threads_per_core={meta['threads_per_core']}"
@@ -260,14 +295,14 @@ def run_arm(ami_id, instance_type, meta, args, client_meta, az):
             ami_id,
             TARGET_PRIVATE_IP,
             instance_type,
-            f"unikraft-mc-{args.variant}-{instance_type}-target",
+            f"unikraft-mc-{vtag}-{instance_type}-target",
             monitoring=True,
         )
         client_id, client_pub = launch_instance(
             UBUNTU_AMI,
             CLIENT_PRIVATE_IP,
             args.client_instance,
-            f"wrk-mc-{args.variant}-client",
+            f"wrk-mc-{vtag}-client",
             user_data=client_user_data(probe_args),
         )
 
@@ -297,9 +332,9 @@ def run_arm(ami_id, instance_type, meta, args, client_meta, az):
             except Exception as e:
                 print(f"[WARN] fetch {name} failed: {e}")
                 text = ""
-            (
-                args.outdir / f"{args.variant}_{instance_type}_{name}_{DATE_STR}.txt"
-            ).write_text(text)
+            (args.outdir / f"{vtag}_{instance_type}_{name}_{DATE_STR}.txt").write_text(
+                text
+            )
             if name == "step_times.txt":
                 windows = parse_step_times(text)
 
@@ -312,8 +347,7 @@ def run_arm(ami_id, instance_type, meta, args, client_meta, az):
                     print(f"[WARN] fetch wrk_{tag}.txt failed: {e}")
                     content = ""
                 (
-                    args.outdir / f"{args.variant}_{instance_type}_wrk_{tag}_"
-                    f"{DATE_STR}.txt"
+                    args.outdir / f"{vtag}_{instance_type}_wrk_{tag}_{DATE_STR}.txt"
                 ).write_text(content)
                 p = parse_wrk_closed_loop(content)
 
@@ -334,6 +368,7 @@ def run_arm(ami_id, instance_type, meta, args, client_meta, az):
                         "availability_zone": az,
                         "concurrency": c,
                         "repeat": r,
+                        "placement": placement,
                         "cpu_avg_pct": avg,
                         "cpu_max_pct": mx,
                         "cpu_datapoints": npts,
@@ -353,24 +388,33 @@ def run_arm(ami_id, instance_type, meta, args, client_meta, az):
                 )
 
         time.sleep(5)
-        out = run_cmd(
-            [
-                "aws",
-                "ec2",
-                "get-console-output",
-                "--instance-id",
-                target_id,
-                "--region",
-                AWS_REGION,
-                "--output",
-                "text",
-            ]
-        )
+        # get-console-output returns an empty body now and then for an
+        # instance that is up and logging. Retry, because the guest shape
+        # in this capture is the evidence that the run measured what it
+        # claims to have measured.
+        out = ""
+        for attempt in range(4):
+            out = run_cmd(
+                [
+                    "aws",
+                    "ec2",
+                    "get-console-output",
+                    "--instance-id",
+                    target_id,
+                    "--region",
+                    AWS_REGION,
+                    "--output",
+                    "text",
+                ]
+            )
+            if len(out) > 120:
+                break
+            print(f"[WARN] {instance_type}: empty console body, retrying")
+            time.sleep(10)
         (
-            args.outdir / f"{args.variant}_{instance_type}_target_console_"
-            f"{DATE_STR}.txt"
+            args.outdir / f"{vtag}_{instance_type}_target_console_{DATE_STR}.txt"
         ).write_text(out)
-        print(f"[size-ab] {instance_type} target console saved")
+        print(f"[size-ab] {instance_type} target console saved ({len(out)} bytes)")
     finally:
         ids = [i for i in (target_id, client_id) if i]
         if ids:
@@ -416,6 +460,18 @@ def summarize(rows):
             f"min={min(vals):.0f} max={max(vals):.0f} "
             f"spread={(max(vals) - min(vals)) / statistics.mean(vals) * 100:.1f}%"
         )
+        if args_placements(rs) > 1:
+            print(
+                "  "
+                + " ".join(
+                    f"p{r.get('placement', 1)}={r['requests_sec']:.0f}" for r in rs
+                )
+            )
+
+
+def args_placements(rows):
+    """Highest placement index in these rows."""
+    return max((r.get("placement", 1) for r in rows), default=1)
 
 
 def print_dry_run(args, meta, client_meta, az):
@@ -430,6 +486,15 @@ def print_dry_run(args, meta, client_meta, az):
         f"  repeat : {args.repeat}, concs {args.concurrency}, "
         f"wrk -t{THREADS} -d{DURATION} --latency, stats off"
     )
+    if args.placements > 1:
+        print(
+            f"  placements : {args.placements} per size, fresh target and "
+            "client each, repeat forced to 1"
+        )
+        print(
+            f"  launches   : {args.placements * len(args.instances)} targets "
+            f"+ {args.placements * len(args.instances)} clients"
+        )
     for t in args.instances:
         m = meta[t]
         print(
@@ -466,8 +531,9 @@ def main():
     rows = []
     try:
         for t in args.instances:
-            rows += run_arm(ami_id, t, meta[t], args, client_meta, az)
-            time.sleep(15)
+            for p in range(1, args.placements + 1):
+                rows += run_arm(ami_id, t, meta[t], args, client_meta, az, p)
+                time.sleep(15)
     finally:
         run_cmd(
             [
@@ -517,6 +583,7 @@ def main():
                 "instance_meta": meta,
                 "concurrency": args.concurrency,
                 "repeat": args.repeat,
+                "placements": args.placements,
                 "wrk_threads": THREADS,
                 "wrk_duration": DURATION,
                 "rows": rows,
