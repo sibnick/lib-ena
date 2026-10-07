@@ -110,6 +110,21 @@ static inline void ena_pause(void)
 #endif
 }
 
+/* Atomic test-and-set spinlock built from the compiler atomic builtins.
+ * The same pattern as the ring lock and the admin lock, so the code
+ * needs no threading library and runs on the host test harness and
+ * under Unikraft. An uncontended acquire is one atomic instruction. */
+static inline void ena_spin_lock(uint32_t *lock)
+{
+	while (__sync_lock_test_and_set(lock, 1u) != 0u)
+		ena_pause();
+}
+
+static inline void ena_spin_unlock(uint32_t *lock)
+{
+	__sync_lock_release(lock);
+}
+
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 #define ena_le16_to_cpu(x) ((uint16_t)(x))
 #define ena_cpu_to_le16(x) ((uint16_t)(x))

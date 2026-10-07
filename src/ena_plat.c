@@ -134,14 +134,24 @@ void ena_debug(const char *fmt, ...)
 #include <uk/plat/time.h>
 #include <uk/arch/util.h>
 
-/* PCI config space access (same method as the probe path in ena_pci.c). */
+/* PCI config space access (same method as the probe path in ena_pci.c).
+ * The address and data port pair is guarded by the same lock, so a
+ * config read or write is atomic against other cores.
+ * [Ticket 6ea5533105] */
+static uint32_t s_plat_cfg_lock;
+
 static uint32_t plat_pci_cfg_read(const struct pci_address *addr, uint32_t reg)
 {
 	uint32_t config_addr = (1u << 31) | ((uint32_t)addr->bus << 16) |
 			       ((uint32_t)addr->devid << 11) |
 			       ((uint32_t)addr->function << 8) | (reg & 0xFC);
+	uint32_t val;
+
+	ena_spin_lock(&s_plat_cfg_lock);
 	uk_arch_x86_64_outl(PCI_CONFIG_ADDR, config_addr);
-	return uk_arch_x86_64_inl(PCI_CONFIG_DATA);
+	val = uk_arch_x86_64_inl(PCI_CONFIG_DATA);
+	ena_spin_unlock(&s_plat_cfg_lock);
+	return val;
 }
 
 static void plat_pci_cfg_write(const struct pci_address *addr, uint32_t reg,
@@ -150,8 +160,11 @@ static void plat_pci_cfg_write(const struct pci_address *addr, uint32_t reg,
 	uint32_t config_addr = (1u << 31) | ((uint32_t)addr->bus << 16) |
 			       ((uint32_t)addr->devid << 11) |
 			       ((uint32_t)addr->function << 8) | (reg & 0xFC);
+
+	ena_spin_lock(&s_plat_cfg_lock);
 	uk_arch_x86_64_outl(PCI_CONFIG_ADDR, config_addr);
 	uk_arch_x86_64_outl(PCI_CONFIG_DATA, val);
+	ena_spin_unlock(&s_plat_cfg_lock);
 }
 
 /* PCI capability ID for MSI-X (PCI revision 3.x). */
