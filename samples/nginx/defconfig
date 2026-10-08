@@ -1,0 +1,85 @@
+# Nginx on Unikraft with native AWS ENA driver.
+# Target: x86_64 KVM, one vCPU, one ENA queue pair.
+# The root filesystem is an embedded CPIO initrd. See scripts/build_rootfs.sh.
+
+# Architecture and platform
+CONFIG_ARCH_X86_64=y
+CONFIG_PLAT_KVM=y
+CONFIG_KVM_PCI=y
+
+# ELF loader application
+CONFIG_APPELFLOADER=y
+CONFIG_APPELFLOADER_VFSEXEC=y
+CONFIG_APPELFLOADER_CUSTOMAPPNAME=n
+CONFIG_APPELFLOADER_VFSEXEC_PATH="/usr/sbin/nginx"
+CONFIG_APPELFLOADER_STACK_NBPAGES=256
+
+# Demand paging and virtual memory, needed to map shared libraries
+CONFIG_HAVE_PAGING=y
+CONFIG_PAGING=y
+CONFIG_LIBUKVMEM=y
+CONFIG_LIBELF=y
+
+# Virtual filesystem. The CPIO initrd is loaded by GRUB as a multiboot
+# module and unpacked into ramfs at boot.
+CONFIG_LIBVFSCORE=y
+CONFIG_LIBVFSCORE_AUTOMOUNT_CI=y
+CONFIG_LIBVFSCORE_AUTOMOUNT_CI_INITRD=y
+CONFIG_LIBRAMFS=y
+CONFIG_LIBUKCPIO=y
+
+# Device files used by nginx
+CONFIG_LIBDEVFS=y
+CONFIG_LIBDEVFS_DEV_NULL=y
+CONFIG_LIBDEVFS_DEV_ZERO=y
+
+# POSIX layer used by nginx
+CONFIG_LIBSYSCALL_SHIM=y
+CONFIG_LIBSYSCALL_SHIM_HANDLER=y
+CONFIG_LIBPOSIX_PROCESS=y
+CONFIG_LIBPOSIX_PROCESS_ARCH_PRCTL=y
+CONFIG_LIBPOSIX_PROCESS_MULTITHREADING=y
+CONFIG_LIBPOSIX_FILE=y
+CONFIG_LIBPOSIX_POLL=y
+CONFIG_LIBPOSIX_POLL_YIELD=y
+CONFIG_LIBPOSIX_SIGNAL=y
+CONFIG_LIBPOSIX_TIME=y
+CONFIG_LIBPOSIX_ENVIRON=y
+CONFIG_LIBPOSIX_SYSINFO=y
+CONFIG_LIBPOSIX_USER=y
+CONFIG_LIBUKSIGNAL=y
+CONFIG_LIBUKRANDOM=y
+CONFIG_LIBUKRANDOM_GETRANDOM=y
+CONFIG_LIBPOSIX_FUTEX=y
+CONFIG_LIBPOSIX_EVENT=y
+
+# Network stack: lwIP in threaded mode with DHCP. The stack runs in its
+# own thread and drives the netdev.
+CONFIG_LIBUKNETDEV=y
+# Enables the netdev.ip boot parameter used by scripts/build_disk.sh.
+CONFIG_LIBUKNETDEV_EINFO_LIBPARAM=y
+CONFIG_LIBLWIP=y
+CONFIG_LWIP_IPV4=y
+CONFIG_LWIP_TCP=y
+CONFIG_LWIP_THREADS=y
+CONFIG_LWIP_SOCKET=y
+CONFIG_LWIP_DHCP=y
+CONFIG_LWIP_AUTOIFACE=y
+CONFIG_LIBUKNETDEV_DISPATCHERTHREADS=y
+
+# Native AWS ENA driver, one queue pair, software polling mode.
+# MSI-X needs the local unikraft patch that the httpreply samples carry.
+CONFIG_LIBENA=y
+CONFIG_LIBENA_LLQ=y
+CONFIG_LIBENA_MSIX=n
+
+# virtio-net is not present on EC2. It lets the same image run in QEMU
+# for local checks (see README section 9).
+CONFIG_LIBVIRTIO_NET=y
+
+# Scheduler and boot
+CONFIG_LIBUKSCHED=y
+CONFIG_LIBUKBOOT=y
+
+# Console output level
+CONFIG_LIBUKPRINT_KLVL_INFO=y

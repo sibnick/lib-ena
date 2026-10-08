@@ -39,7 +39,19 @@
 #define ENA_UK_HAS_LINK_STATE_GET 0
 #define ENA_UK_HAS_STOP 0
 #endif
+#if defined(CONFIG_LIBUKPAGING) && CONFIG_LIBUKPAGING
+#include <uk/paging.h>
+#endif
 #endif /* __Unikraft__ */
+
+static inline uint64_t ena_netbuf_phys_addr(void *vaddr)
+{
+#if defined(__Unikraft__) && defined(CONFIG_LIBUKPAGING) && CONFIG_LIBUKPAGING
+	return (uint64_t)uk_paging_virt_to_phys((__vaddr_t)vaddr);
+#else
+	return (uint64_t)(uintptr_t)vaddr;
+#endif
+}
 
 /* -------------------------------------------------------------------------
  * Shared Datapath and Netdev Helper Functions
@@ -536,7 +548,7 @@ static void *ena_netbuf_alloc_helper(void *arg, uint64_t *phys_out,
 #endif
 	}
 
-	phys = (uint64_t)(uintptr_t)nb->data;
+	phys = ena_netbuf_phys_addr(nb->data);
 	if (phys < ENA_DMA_LOW_MEM_LIMIT && rxq && rxq->bounce_buf) {
 		if (rxq->bounce_free_count == 0) {
 			/* No free bounce slots available */
@@ -1198,7 +1210,7 @@ int ena_netdev_tx_one(struct uk_netdev *dev __attribute__((unused)),
 		}
 	}
 
-	phys = (uint64_t)(uintptr_t)pkt->data;
+	phys = ena_netbuf_phys_addr(pkt->data);
 	if (phys < ENA_DMA_LOW_MEM_LIMIT) {
 		if (queue->bounce_free_count == 0) {
 			ring->tx_dropped++;
@@ -1845,7 +1857,7 @@ static int ena_netdev_txq_xmit(struct uk_netdev *dev, uint16_t queue_id,
 		}
 	}
 
-	phys = pkt->phys_addr ? pkt->phys_addr : (uint64_t)(uintptr_t)pkt->data;
+	phys = pkt->phys_addr ? pkt->phys_addr : ena_netbuf_phys_addr(pkt->data);
 	if (phys < ENA_DMA_LOW_MEM_LIMIT) {
 		if (txq->bounce_free_count == 0) {
 			ring->tx_dropped++;
