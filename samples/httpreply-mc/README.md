@@ -61,7 +61,7 @@ graph TD
 | `Makefile` | Top-level build entry point with automated patch application |
 | `Makefile.uk` | Build definitions for Unikraft build system |
 | `Kraftfile` | KraftKit specification referencing `lib-ena` from repository root |
-| `patches/` | Submodule patches for lwIP and Unikraft core |
+| `patches/` | Submodule patches for lwIP and Unikraft core, with [problem and approach notes](patches/README.md) |
 | `scripts/apply_patches.sh` | Idempotent patch application script |
 | `scripts/build_disk.sh` | Builds raw bootable disk image with GRUB |
 | `scripts/deploy_aws.py` | Deploys image to AWS EBS and launches EC2 instance |

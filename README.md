@@ -102,6 +102,14 @@ Benchmark measurements for the HTTP reply server on AWS EC2 `c6i.large` instance
 
 Store raw benchmark reports outside version control, for example in the Fossil unversioned store (`fossil uv`). Do not store unmeasured numbers in this repository.
 
+## Submodule Patches
+
+The sample applications build against local patches for the lwIP port and the
+Unikraft core. Each patch has a problem statement and an approach description:
+
+- [samples/httpreply/patches/README.md](samples/httpreply/patches/README.md)
+- [samples/httpreply-mc/patches/README.md](samples/httpreply-mc/patches/README.md)
+
 ## License
 
 This project is licensed under the BSD-3-Clause License. See [COPYING.md](COPYING.md) for details.
