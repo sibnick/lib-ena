@@ -152,6 +152,14 @@ void ena_debug(const char *fmt, ...)
 #include <uk/plat/memory.h>
 #include <uk/plat/time.h>
 #include <uk/arch/util.h>
+#if defined(CONFIG_LIBUKVMEM) && CONFIG_LIBUKVMEM
+#include <uk/vmem.h>
+#include <uk/vmem/vma_types.h>
+#include <uk/falloc.h>
+#endif
+#if defined(CONFIG_LIBUKPAGING) && CONFIG_LIBUKPAGING
+#include <uk/paging.h>
+#endif
 
 /* PCI config space access (same method as the probe path in ena_pci.c).
  * The address and data port pair is guarded by the same lock, so a
@@ -675,6 +683,31 @@ void ena_plat_msix_diag(uint32_t *msgctl, uint32_t *t1_addr, uint32_t *t1_data,
 
 void *ena_dma_alloc(size_t size, uint64_t *phys_out)
 {
+#if defined(CONFIG_LIBUKVMEM) && CONFIG_LIBUKVMEM
+	struct uk_vas *vas = uk_vas_get_active();
+	__sz len = UK_PAGING_PAGE_ALIGN_UP(size);
+	unsigned long pages = len >> UK_PAGING_PAGE_SHIFT;
+	__paddr_t paddr;
+	__vaddr_t vaddr = UK_PAGING_VADDR_ANY;
+	int ret;
+
+	paddr = uk_falloc(vas->pt->fa, pages);
+	if (paddr == UK_PAGING_PADDR_INV)
+		return NULL;
+
+	ret = uk_vma_map_dma(vas, &vaddr, len,
+			     UK_PAGING_PAGE_ATTR_PROT_RW,
+			     UK_VMA_MAP_POPULATE, "ena_dma", paddr);
+	if (ret) {
+		uk_ffree(vas->pt->fa, paddr, pages);
+		return NULL;
+	}
+
+	memset((void *)vaddr, 0, size);
+	if (phys_out)
+		*phys_out = (uint64_t)paddr;
+	return (void *)vaddr;
+#else
 	void *virt = uk_memalign(uk_alloc_get_default(), 4096, size);
 	if (!virt)
 		return NULL;
@@ -682,15 +715,36 @@ void *ena_dma_alloc(size_t size, uint64_t *phys_out)
 	memset(virt, 0, size);
 
 	if (phys_out)
+#if defined(CONFIG_LIBUKPAGING) && CONFIG_LIBUKPAGING
+		*phys_out = (uint64_t)uk_paging_virt_to_phys((__vaddr_t)virt);
+#else
 		*phys_out = (uint64_t)(uintptr_t)virt;
+#endif
 
 	return virt;
+#endif
 }
 
 void ena_dma_free(void *virt, uint64_t phys)
 {
+#if defined(CONFIG_LIBUKVMEM) && CONFIG_LIBUKVMEM
+	if (virt) {
+		struct uk_vas *vas = uk_vas_get_active();
+		const struct uk_vma *vma = uk_vma_find(vas, (__vaddr_t)virt);
+		if (vma) {
+			__sz len = vma->end - vma->start;
+			unsigned long pages = len >> UK_PAGING_PAGE_SHIFT;
+			__paddr_t paddr = (__paddr_t)phys;
+
+			uk_vma_unmap(vas, vma->start, len, 0);
+			uk_ffree(vas->pt->fa, paddr, pages);
+			return;
+		}
+	}
+#else
 	(void)phys;
 	uk_free(uk_alloc_get_default(), virt);
+#endif
 }
 
 void ena_delay_us(unsigned int us)

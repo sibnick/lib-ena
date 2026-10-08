@@ -40,6 +40,13 @@ int ena_pci_match_id(uint16_t vendor_id, uint16_t device_id)
 #include <uk/arch/util.h>
 #include <uk/bus/pci.h>
 #include <uk/netdev_driver.h>
+#if defined(CONFIG_LIBUKVMEM) && CONFIG_LIBUKVMEM
+#include <uk/vmem.h>
+#include <uk/vmem/vma_types.h>
+#endif
+#if defined(CONFIG_LIBUKPAGING) && CONFIG_LIBUKPAGING
+#include <uk/paging.h>
+#endif
 
 #include "ena_intr.h"
 
@@ -142,6 +149,62 @@ static inline uint64_t pci_read_bar_size(const struct pci_address *addr,
 	return (~mask) + 1;
 }
 
+static void *ena_pci_map_bar(uint64_t phys_addr, uint64_t size, const char *name)
+{
+#if defined(CONFIG_LIBUKVMEM) && CONFIG_LIBUKVMEM
+	__vaddr_t vaddr = UK_PAGING_VADDR_ANY;
+	__paddr_t paddr_aligned = UK_PAGING_PAGE_ALIGN_DOWN(phys_addr);
+	__sz offset = phys_addr - paddr_aligned;
+	__sz len = UK_PAGING_PAGE_ALIGN_UP(size + offset);
+	int ret;
+
+	ret = uk_vma_map_dma(uk_vas_get_active(), &vaddr, len,
+			     UK_PAGING_PAGE_ATTR_PROT_RW,
+			     UK_VMA_MAP_POPULATE, name, paddr_aligned);
+	if (ret) {
+		ena_err("probe: failed to map BAR %s: paddr=0x%lx len=0x%lx (%d)",
+			name, (unsigned long)paddr_aligned, (unsigned long)len, ret);
+		return NULL;
+	}
+	return (void *)(vaddr + offset);
+#elif defined(CONFIG_LIBUKPAGING) && CONFIG_LIBUKPAGING
+	__paddr_t paddr_aligned = UK_PAGING_PAGE_ALIGN_DOWN(phys_addr);
+	__sz offset = phys_addr - paddr_aligned;
+	__sz len = UK_PAGING_PAGE_ALIGN_UP(size + offset);
+	__vaddr_t vaddr = paddr_aligned;
+	struct uk_pagetable *pt = uk_paging_pt_get_active();
+	int ret;
+
+	ret = uk_paging_page_map(pt, vaddr, paddr_aligned,
+				 len >> UK_PAGING_PAGE_SHIFT,
+				 UK_PAGING_PAGE_ATTR_PROT_RW, 0);
+	if (ret && ret != -EEXIST) {
+		ena_err("probe: failed to map BAR %s: paddr=0x%lx len=0x%lx (%d)",
+			name, (unsigned long)paddr_aligned, (unsigned long)len, ret);
+		return NULL;
+	}
+	return (void *)(vaddr + offset);
+#else
+	(void)size;
+	(void)name;
+	return (void *)(uintptr_t)phys_addr;
+#endif
+}
+
+static void ena_pci_unmap_bar(void *vaddr)
+{
+#if defined(CONFIG_LIBUKVMEM) && CONFIG_LIBUKVMEM
+	if (vaddr) {
+		struct uk_vas *vas = uk_vas_get_active();
+		const struct uk_vma *vma = uk_vma_find(vas, (__vaddr_t)vaddr);
+		if (vma)
+			uk_vma_unmap(vas, vma->start, vma->end - vma->start, 0);
+	}
+#else
+	(void)vaddr;
+#endif
+}
+
 static const struct pci_device_id ena_pci_ids[] = {
     {PCI_DEVICE_ID(ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_RESERVED)},
     {PCI_DEVICE_ID(ENA_PCI_VENDOR_ID, ENA_PCI_DEV_ID_PF)},
@@ -213,6 +276,9 @@ void ena_pci_remove_dev(struct pci_device *pdev)
 
 	ena_netdev_teardown(edev);
 
+	ena_pci_unmap_bar(edev->bar0_vaddr);
+	ena_pci_unmap_bar(edev->bar2_vaddr);
+
 	edev->netdev.ops = NULL;
 	edev->netdev.rx_one = NULL;
 	edev->netdev.tx_one = NULL;
@@ -255,7 +321,11 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 		bar0_size = 0x104;
 
 	bar0_phys = pci_read_bar(&pdev->addr, 0x10);
-	bar0 = (void *)(uintptr_t)bar0_phys;
+	bar0 = ena_pci_map_bar(bar0_phys, bar0_size, "ena_bar0");
+	if (!bar0) {
+		ena_err("probe: failed to map BAR0");
+		return -ENOMEM;
+	}
 
 	{
 		uint32_t bar2_lo = pci_read32(&pdev->addr, 0x18);
@@ -278,6 +348,7 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 	edev = uk_calloc(uk_alloc_get_default(), 1, sizeof(*edev));
 	if (!edev) {
 		ena_err("probe: allocation failed");
+		ena_pci_unmap_bar(bar0);
 		return -ENOMEM;
 	}
 
@@ -287,6 +358,7 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 	ret = ena_device_init_scaffold(&edev->adapter, bar0, bar0_size);
 	if (ret) {
 		ena_err("probe: init scaffold failed (%d)", ret);
+		ena_pci_unmap_bar(bar0);
 		uk_free(uk_alloc_get_default(), edev);
 		return ret;
 	}
@@ -297,13 +369,15 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 	 * BAR2 pointers are set here before feature negotiation reads
 	 * them. */
 	if (bar2_phys != 0 && bar2_size != 0) {
-		edev->bar2_vaddr = (void *)(uintptr_t)bar2_phys;
-		edev->adapter.bar2_base =
-		    (volatile uint8_t *)(uintptr_t)bar2_phys;
-		edev->adapter.bar2_size = (size_t)bar2_size;
-		ena_info("probe: bar2=%p (phys=0x%lx, size=0x%lx)",
-			 edev->bar2_vaddr, (unsigned long)bar2_phys,
-			 (unsigned long)bar2_size);
+		edev->bar2_vaddr = ena_pci_map_bar(bar2_phys, bar2_size, "ena_bar2");
+		if (edev->bar2_vaddr) {
+			edev->adapter.bar2_base =
+			    (volatile uint8_t *)edev->bar2_vaddr;
+			edev->adapter.bar2_size = (size_t)bar2_size;
+			ena_info("probe: bar2=%p (phys=0x%lx, size=0x%lx)",
+				 edev->bar2_vaddr, (unsigned long)bar2_phys,
+				 (unsigned long)bar2_size);
+		}
 	}
 
 	sts = ena_reg_read32(edev->adapter.bar0_base + ENA_REGS_DEV_STS_OFF);
