@@ -220,6 +220,12 @@ Use unversioned storage for build binaries, test reports, logs, and benchmark re
 
 When mirroring the primary Fossil repository to GitHub:
 
+- **Recommended: use this script**:
+  ```bash
+  scripts/git_export.sh
+  ```
+  It runs `fossil sync`, then `fossil git export`, then repairs the mirror state
+  (see below), and prints `fossil git status`.
 - **Incremental sync to mirror**:
   ```bash
   fossil git export ../git-mirror --mainbranch main --autopush https://github.com/org/repo.git
@@ -232,6 +238,16 @@ When mirroring the primary Fossil repository to GitHub:
   ```bash
   fossil git status
   ```
+
+> [!NOTE]
+> `fossil git export` fills the mirror with `git fast-import` and pushes with
+> `git push --mirror <url>`. It does not update the mirror index or
+> `refs/remotes/origin/*`. After a bare export, run these two commands so
+> `git status` and `git branch -vv` report correctly:
+> ```bash
+> git reset -q      # Match the index to the exported tip, and keep the working tree.
+> git fetch -q origin
+> ```
 
 ---
 

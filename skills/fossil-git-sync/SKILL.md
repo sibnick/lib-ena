@@ -23,6 +23,7 @@ Fossil SCM features built-in, native Git interoperability (`fossil git`). It all
 | **Export with Auto-Push** | `fossil git export <MIRROR_DIR> --autopush <GIT_REMOTE_URL>` | Exports check-ins to Git mirror and automatically runs `git push` to GitHub. |
 | **Check Mirror Status** | `fossil git status` | Displays status of active Git mirror. |
 | **Specify Main Branch** | `fossil git export <MIRROR_DIR> --mainbranch main` | Maps Fossil's `trunk` branch to `main` (or `master`) in Git. |
+| **Export and Repair Mirror State** | `scripts/git_export.sh` | Repository helper: runs `fossil sync`, then `fossil git export`, repairs the mirror index and remote-tracking refs, and prints `fossil git status`. |
 
 ---
 
@@ -45,9 +46,19 @@ Fossil SCM features built-in, native Git interoperability (`fossil git`). It all
 3. **Subsequent Synchronization**:
    After committing new check-ins in Fossil, run:
    ```bash
-   fossil git export
+   scripts/git_export.sh
    ```
    Fossil automatically remembers the mirror directory and `--autopush` target URL and updates GitHub incrementally.
+
+4. **Repair State After a Bare Export**:
+   `fossil git export` fills the mirror with `git fast-import` and pushes with
+   `git push --mirror <url>`. The mirror index lags HEAD, and the push does not
+   update `refs/remotes/origin/*`. If you run `fossil git export` directly, run
+   these commands after it:
+   ```bash
+   git reset -q      # Match the index to the exported tip, and keep the working tree.
+   git fetch -q origin
+   ```
 
 ### B. Branch Name Translation
 - Fossil branch `trunk` $\rightarrow$ Git branch `main` (if `--mainbranch main` is specified) or `master`.
@@ -60,3 +71,4 @@ Fossil SCM features built-in, native Git interoperability (`fossil git`). It all
 1. **Single Source of Truth**: Always perform core development, ticket edits, and commits inside Fossil. Treat the Git repository as a read-only mirror.
 2. **Do Not Touch `.mirror_state`**: Fossil stores internal export state in `<MIRROR_DIR>/.mirror_state`. Never modify or delete files in this directory.
 3. **Automate After Fossil Commit**: If working on a project with an active Git mirror, run `fossil git export` after major Fossil commits to keep GitHub in sync.
+4. **Use the Repository Helper**: Prefer `scripts/git_export.sh` over a bare `fossil git export`. It repairs the mirror index and the remote-tracking refs, so `git status` and `git branch -vv` stay readable in the mirror checkout.
