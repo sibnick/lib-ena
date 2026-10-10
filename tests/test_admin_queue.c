@@ -702,6 +702,165 @@ static void test_aenq_fatal_reapplies_device_features(void)
 	printf("[PASS] test_aenq_fatal_reapplies_device_features passed\n");
 }
 
+#ifndef __Unikraft__
+/* One timed-out admin command, run in a worker so the caller can tell a slow
+ * path from a stuck one. */
+struct timeout_run {
+	struct ena_adapter *adapter;
+	int ret;
+	volatile int done;
+};
+
+static void *timeout_cmd_worker(void *arg)
+{
+	struct timeout_run *run = (struct timeout_run *)arg;
+	uint16_t command_id = 0;
+
+	run->ret = ena_admin_exec_cmd(run->adapter, ENA_ADMIN_GET_FEATURE, NULL,
+				      0, NULL, 0, &command_id, 50);
+	run->done = 1;
+	return NULL;
+}
+
+/* An admin command that times out must reset the device and rebuild what the
+ * reset cleared: the admin queues, the AENQ groups, and the IO queues. The
+ * old code restored the AENQ groups while it held the non-recursive admin
+ * lock, so it never returned, and it left the IO queues deleted.
+ * [Ticket 2d9483d1f0] [Ticket 59b0ba7409] */
+static void test_admin_timeout_recovers_after_reset(void)
+{
+	printf("[TEST] Running test_admin_timeout_recovers_after_reset...\n");
+
+	struct mock_ena_hw hw;
+	mock_ena_hw_init(&hw);
+	ena_admin_set_db_hook(mock_ena_hw_aq_doorbell_hook, &hw);
+	ena_device_set_reset_poll_hook(mock_ena_hw_reset_poll_hook, &hw);
+
+	/* Report AENQ groups, so bring-up enables them and recovery has
+	 * something to restore. */
+	hw.dev_supported_features |= (1u << ENA_ADMIN_AENQ_CONFIG);
+
+	struct ena_adapter adapter;
+	ena_device_init_scaffold(&adapter, hw.bar0, sizeof(hw.bar0));
+	assert(ena_admin_init(&adapter, 8, 8, 8) == 0);
+	assert(ena_init_run(&adapter, 1500) == 0);
+
+	/* Bring-up enabled the event groups. */
+	assert(adapter.aenq_enabled_groups != 0);
+	assert(hw.aenq_set_count == 1);
+
+	struct ena_ring *tx_ring = NULL;
+	struct ena_ring *rx_ring = NULL;
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_TX, 8, 8, &tx_ring) ==
+	       0);
+	assert(ena_ring_alloc(&adapter, 0, ENA_RING_TYPE_RX, 8, 8, &rx_ring) ==
+	       0);
+	assert(ena_ring_create_hw(tx_ring, 0) == 0);
+	assert(ena_ring_create_hw(rx_ring, 0) == 0);
+
+	adapter.tx_rings = calloc(1, sizeof(struct ena_ring *));
+	adapter.rx_rings = calloc(1, sizeof(struct ena_ring *));
+	adapter.tx_rings[0] = tx_ring;
+	adapter.num_tx_rings = 1;
+	adapter.rx_rings[0] = rx_ring;
+	adapter.num_rx_rings = 1;
+
+	memset(&s_rx_pool, 0, sizeof(s_rx_pool));
+	rx_ring->refill_netbuf = test_rx_alloc_cb;
+	rx_ring->refill_arg = NULL;
+
+	assert(ena_admin_aenq_register(&adapter, ena_aenq_default_handler,
+				       &adapter) == 0);
+
+	struct ena_tx_pkt pkt;
+	char pkt_data[32];
+	uint16_t req_id = 0;
+
+	memset(&pkt, 0, sizeof(pkt));
+	pkt.len = sizeof(pkt_data);
+	pkt.phys_addr = 0x50001000;
+	assert(ena_tx_submit(tx_ring, &pkt, &req_id) == 0);
+
+	/* The device finishes its reset on the first poll and answers again
+	 * afterwards. */
+	hw.reset_polls_to_finish = 1;
+
+	uint32_t sq_before = hw.sq_created_count;
+	uint32_t cq_before = hw.cq_created_count;
+	uint32_t aenq_before = hw.aenq_set_count;
+
+	/* Stop the device from answering, then run one command. Recovery runs
+	 * inside that call. */
+	mock_ena_hw_hang_admin(&hw);
+
+	struct timeout_run run;
+	pthread_t worker;
+
+	memset(&run, 0, sizeof(run));
+	run.adapter = &adapter;
+	assert(pthread_create(&worker, NULL, timeout_cmd_worker, &run) == 0);
+
+	/* Wait a bounded time. The old code spun on the admin lock forever,
+	 * so this is the check that turns the deadlock into a failure. */
+	for (int waited = 0; !run.done && waited < 1000; waited++) {
+		struct timespec nap = {0, 10 * 1000 * 1000}; /* 10 ms */
+
+		nanosleep(&nap, NULL);
+	}
+	assert(run.done == 1);
+	assert(pthread_join(worker, NULL) == 0);
+
+	/* The command still reports its own failure. */
+	assert(run.ret == -ETIMEDOUT);
+
+	/* No lock is left held, and the recovery guard is clear. */
+	assert(adapter.admin_lock == 0);
+	assert(adapter.recover_active == 0);
+
+	/* The device was reset and the admin queues were rebuilt. */
+	assert(hw.reset_polls >= 1);
+	assert(adapter.state == ENA_STATE_ADMIN_READY);
+	assert(adapter.aq_base != NULL);
+
+	/* The AENQ groups were sent again. [Ticket 2d9483d1f0] */
+	assert(hw.aenq_set_count >= aenq_before + 1);
+	assert(hw.aenq_enabled_groups == adapter.aenq_enabled_groups);
+
+	/* The IO queues exist again, and the handler is registered for later
+	 * events. [Ticket 59b0ba7409] */
+	assert(tx_ring->hw_valid == true);
+	assert(rx_ring->hw_valid == true);
+	assert(tx_ring->sq_db != NULL);
+	assert(hw.sq_created_count == sq_before + 2);
+	assert(hw.cq_created_count == cq_before + 2);
+	assert(adapter.aenq_handler == ena_aenq_default_handler);
+
+	/* The reset cleared the device settings, and recovery sent them
+	 * again. */
+	assert(hw.attrs_read == 1);
+	assert(hw.negotiated_mtu == 1500);
+
+	/* RX queue 0 is refilled, so receive can run. */
+	assert(rx_ring->free_req_count > 0);
+
+	/* The control plane answers, and traffic resumes. */
+	uint16_t command_id = 0;
+	assert(ena_admin_exec_cmd(&adapter, ENA_ADMIN_GET_FEATURE, NULL, 0,
+				  NULL, 0, &command_id, 100) == 0);
+	req_id = 0;
+	assert(ena_tx_submit(tx_ring, &pkt, &req_id) == 0);
+
+	ena_ring_free(tx_ring);
+	ena_ring_free(rx_ring);
+	free(adapter.tx_rings);
+	free(adapter.rx_rings);
+	ena_admin_fini(&adapter);
+	ena_device_set_reset_poll_hook(NULL, NULL);
+
+	printf("[PASS] test_admin_timeout_recovers_after_reset passed\n");
+}
+#endif /* !__Unikraft__ */
+
 static void test_admin_acq_phase_flip(void)
 {
 	printf("[TEST] Running test_admin_acq_phase_flip...\n");
@@ -1249,6 +1408,7 @@ int main(void)
 	test_admin_cmd_id_mismatch();
 	test_admin_cmd_id_wrap();
 #ifndef __Unikraft__
+	test_admin_timeout_recovers_after_reset();
 	test_admin_exec_locking();
 	test_admin_exec_concurrent();
 #endif

@@ -73,6 +73,9 @@ struct ena_adapter {
 	uint8_t aq_phase;	  /* AQ phase bit for submitted entries */
 	uint16_t next_command_id; /* Next command id to assign */
 	uint32_t admin_lock;	  /* Busy flag serializing exec_cmd */
+	uint32_t recover_active;  /* Set while reset-and-recover runs. Stops a
+				   * recovery command from starting another
+				   * recovery. [Ticket 59b0ba7409] */
 
 	/* Phase 2: Admin Completion Queue (response ring) */
 	void *acq_base;	    /* Virtual base of the ACQ ring */
