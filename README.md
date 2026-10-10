@@ -114,3 +114,12 @@ Unikraft core. Each patch has a problem statement and an approach description:
 
 This project is licensed under the BSD-3-Clause License. See [COPYING.md](COPYING.md) for details.
 
+Every `.c` and `.h` file that this project builds and ships carries the
+BSD-3-Clause header. `make license-check` fails when a new source file has no
+SPDX header, or names another license.
+
+The `reference/` directory holds unmodified copies of the upstream ENA headers,
+kept as a specification reference. They keep their upstream identifier,
+`GPL-2.0 OR Linux-OpenIB`. The build does not use them: no source file needs
+the `-Ireference` include path.
+

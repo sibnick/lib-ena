@@ -59,6 +59,11 @@ Unikraft-ENA/
  * Copyright (c) 2026, Unikraft ENA Contributors. All rights reserved.
  */
 ```
+`make license-check` fails when a source file under `src/`, `include/`,
+`tests/`, `samples/`, or `examples/` has no SPDX header, or names another
+license. The vendored upstream headers in `reference/` keep their own
+identifier (`GPL-2.0 OR Linux-OpenIB`) and are outside that check. The build
+does not include them.
 
 2. **Types**: Use standard fixed-width integer types from `<stdint.h>` (`uint8_t`, `uint16_t`, `uint32_t`, `uint64_t`).
 3. **Hardware Endianness & Memory Access**:
