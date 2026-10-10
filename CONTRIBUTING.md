@@ -29,9 +29,9 @@ Follow the Unikraft commit message conventions:
 ## Pull Request Workflow
 
 1. Create a feature or bugfix branch from `main` (or `trunk`) for your changes.
-2. Implement your code changes and add tests.
+2. Implement your code changes and add tests. [docs/testing.md](docs/testing.md) explains the host test harness, the mock device controls, and how to add a test to the build.
 3. Make sure all unit tests pass before you commit.
-4. Run `make clean && make test` to verify your changes.
+4. Run `make clean && make test` to verify your changes. Also run `make format-check`, `make license-check`, and `make sanitize`, which are the other gates of the host CI job.
 5. Commit your changes with a DCO sign-off line.
 6. Open a pull request against the `main` branch.
 
