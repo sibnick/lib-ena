@@ -13,13 +13,9 @@ import time
 import urllib.request
 from pathlib import Path
 
-AWS_REGION = "us-east-1"
-INSTANCE_TYPE = "c6i.large"
-SUBNET_ID = "subnet-0e6ba9e8b1e7dcdf0"
-SG_ID = "sg-0ac75f6a09207fcfe"
-UBUNTU_AMI = "ami-0045d7fc2ad003464"
-TARGET_PRIVATE_IP = "172.31.16.153"
-CLIENT_PRIVATE_IP = "172.31.16.161"
+from aws_env import (AWS_REGION, INSTANCE_TYPE, SUBNET_ID, SG_ID, UBUNTU_AMI, TARGET_PRIVATE_IP, CLIENT_PRIVATE_IP,
+)
+from aws_env import summary as aws_settings
 
 
 def run_cmd(cmd, check=True):
@@ -138,6 +134,7 @@ echo "ALL_DONE $(date)" | tee -a /root/wrk_sweep.log
 
 
 def main():
+    print(f"[CONFIG] {aws_settings()}")
     target_id = client_id = None
     try:
         target_id = launch_target()

@@ -35,6 +35,17 @@ Follow the Unikraft commit message conventions:
 5. Commit your changes with a DCO sign-off line.
 6. Open a pull request against the `main` branch.
 
+## Issue Tracking
+
+Public reports live in the issue tracker of the Git mirror:
+<https://github.com/sibnick/lib-ena/issues>. Use the bug or feature template in
+`.github/ISSUE_TEMPLATE/`.
+
+Some commit messages carry a reference such as `[Ticket 67bdd392c0]`. That id
+names an entry in the project's internal Fossil ticket database, which is not
+served over HTTP. Keep the reference in your commit, and open a GitHub issue as
+well when you want the work discussed in public.
+
 ## Coding Conventions
 
 Follow the coding conventions defined in [docs/conventions.md](docs/conventions.md).
