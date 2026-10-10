@@ -61,6 +61,10 @@ make clean
 make test
 ```
 
+The suite runs on a normal machine against a mock ENA device. See
+[docs/testing.md](docs/testing.md) for what each binary covers, the mock device
+controls, and how to add a test.
+
 ## Samples and Examples
 
 This repository includes working samples and test applications:

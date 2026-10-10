@@ -47,6 +47,11 @@ Unikraft-ENA/
     └── test_pci_scaffold.c # Phase 1 verification tests
 ```
 
+The `tests/` tree holds 14 host test programs, a mock ENA device, and a small
+test framework. [docs/testing.md](testing.md) explains how to run them, what
+each binary covers, the controls the mock device offers, and how to add a test
+to the build.
+
 ---
 
 ## 3. Coding Style Rules
