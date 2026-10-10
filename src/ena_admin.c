@@ -541,33 +541,12 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 	}
 
 	if (!found) {
-		int reset_ret;
-
-		ena_err("exec_cmd: timeout after %u polls (resetting device)",
+		/* Recovery runs in ena_admin_exec_cmd, outside the admin
+		 * lock. Every recovery step issues an admin command, and the
+		 * admin lock is not recursive. [Ticket 2d9483d1f0] */
+		ena_err("exec_cmd: timeout after %u polls (recovering device)",
 			max_polls);
 		adapter->state = ENA_STATE_ERROR;
-		/* The reset destroys every IO queue on the device. Invalidate
-		 * the driver-side rings now so the data path stops touching
-		 * stale indices and doorbells while the reset runs. */
-		ena_adapter_invalidate_io_rings(adapter);
-		ena_device_reset(adapter);
-		ena_admin_lock_drop(&adapter->admin_lock);
-		reset_ret = ena_device_wait_reset_complete(adapter, 1000);
-		ena_admin_lock_take(&adapter->admin_lock);
-		if (reset_ret == 0) {
-			uint16_t aq_d =
-			    adapter->aq_depth ? adapter->aq_depth : 32;
-			uint16_t acq_d =
-			    adapter->acq_depth ? adapter->acq_depth : 32;
-			uint16_t aenq_d =
-			    adapter->aenq_depth ? adapter->aenq_depth : 32;
-			ena_admin_init(adapter, aq_d, acq_d, aenq_d);
-			/* The reset cleared the AENQ configuration.
-			 * Restore it so keep-alive events resume.
-			 * [Ticket 1152cbcaca] */
-			if (adapter->aenq_enabled_groups)
-				ena_init_config_aenq(adapter);
-		}
 		return -ETIMEDOUT;
 	}
 
@@ -629,6 +608,116 @@ static int ena_admin_exec_locked(struct ena_adapter *adapter, uint8_t opcode,
 	return 0;
 }
 
+/* True when the adapter owns at least one IO ring. */
+static bool ena_adapter_has_io_rings(const struct ena_adapter *adapter)
+{
+	uint16_t q;
+
+	if (!adapter)
+		return false;
+
+	for (q = 0; q < adapter->num_tx_rings; q++)
+		if (adapter->tx_rings && adapter->tx_rings[q])
+			return true;
+	for (q = 0; q < adapter->num_rx_rings; q++)
+		if (adapter->rx_rings && adapter->rx_rings[q])
+			return true;
+
+	return false;
+}
+
+/*
+ * Reset the device and rebuild everything a reset clears: the admin queues,
+ * the AENQ configuration, and the IO queues. Both recovery entry points use
+ * this one path: the FATAL_ERROR event handler and an admin command that
+ * times out. Before this, the timeout path restored the AENQ groups while
+ * it held the non-recursive admin lock, so it spun forever, and it never
+ * re-created the IO queues, so traffic stayed down. [Ticket 2d9483d1f0]
+ * [Ticket 59b0ba7409]
+ *
+ * The caller must not hold the admin lock. Every step here issues admin
+ * commands, and the admin lock is not recursive.
+ *
+ * Returns 0 when the device answers again and the rings are live, or the
+ * first error seen. A failed reset leaves the adapter in ENA_STATE_ERROR,
+ * so later admin commands return -ENODEV.
+ */
+static int ena_adapter_reset_and_recover(struct ena_adapter *adapter)
+{
+	ena_aenq_handler *handler;
+	void *handler_arg;
+	int rret;
+	int iret = -1;
+
+	if (!adapter)
+		return -EINVAL;
+
+	/* An admin command inside this function may time out and call the
+	 * recovery again. One pass is enough: it already covers every step.
+	 * [Ticket 59b0ba7409] */
+	if (adapter->recover_active) {
+		ena_warn(
+		    "recover: a reset is already running, skipping this one");
+		return -EBUSY;
+	}
+	adapter->recover_active = 1u;
+
+	/* ena_admin_init clears the registered handler, so keep the caller's
+	 * handler and register it again after the re-init. */
+	handler = adapter->aenq_handler;
+	handler_arg = adapter->aenq_handler_arg;
+
+	adapter->state = ENA_STATE_ERROR;
+	/* The reset destroys every IO queue on the device. Invalidate the
+	 * driver-side rings first, so the data path stops touching stale
+	 * indices and doorbells while the reset runs. */
+	ena_adapter_invalidate_io_rings(adapter);
+
+	ena_admin_lock_take(&adapter->admin_lock);
+	ena_device_reset(adapter);
+	rret = ena_device_wait_reset_complete(adapter, 1000);
+	if (rret == 0) {
+		uint16_t aq_d = adapter->aq_depth ? adapter->aq_depth : 32;
+		uint16_t acq_d = adapter->acq_depth ? adapter->acq_depth : 32;
+		uint16_t aenq_d =
+		    adapter->aenq_depth ? adapter->aenq_depth : 32;
+
+		iret = ena_admin_init(adapter, aq_d, acq_d, aenq_d);
+		if (iret == 0 && handler)
+			ena_admin_aenq_register(adapter, handler, handler_arg);
+	}
+	ena_admin_lock_drop(&adapter->admin_lock);
+
+	if (rret != 0 || iret != 0) {
+		ena_err("recover: device reset %d, admin re-init %d", rret,
+			iret);
+		adapter->recover_active = 0u;
+		return (rret != 0) ? rret : iret;
+	}
+
+	/* Outside the lock from here on. Queue creation and feature setup
+	 * both issue admin commands.
+	 *
+	 * Queue recovery re-applies the device features, and that includes
+	 * the AENQ groups, when it re-creates a queue. [Ticket
+	 * 775997c726] An adapter with no IO queues has no queue to
+	 * re-create, so restore the event groups here instead. */
+	if (!ena_adapter_has_io_rings(adapter) &&
+	    adapter->aenq_enabled_groups) {
+		int aret = ena_init_config_aenq(adapter);
+
+		if (aret != 0)
+			ena_warn("recover: aenq re-config failed (%d)", aret);
+	}
+
+	rret = ena_adapter_recover_io_rings(adapter);
+	if (rret != 0)
+		ena_err("recover: io queue recovery failed (%d)", rret);
+
+	adapter->recover_active = 0u;
+	return rret;
+}
+
 int ena_admin_exec_cmd(struct ena_adapter *adapter, uint8_t opcode,
 		       const void *req, size_t req_len, void *resp,
 		       size_t resp_cap, uint16_t *out_command_id,
@@ -650,6 +739,19 @@ int ena_admin_exec_cmd(struct ena_adapter *adapter, uint8_t opcode,
 				    resp_cap, out_command_id, max_polls);
 
 	ena_admin_lock_drop(&adapter->admin_lock);
+
+	/* A timeout means the device stopped answering. Reset it and rebuild
+	 * what the reset cleared, outside the lock. Report the timeout to the
+	 * caller either way: the command did not complete. [Ticket
+	 * 2d9483d1f0] [Ticket 59b0ba7409] */
+	if (ret == -ETIMEDOUT) {
+		int rrec = ena_adapter_reset_and_recover(adapter);
+
+		if (rrec != 0)
+			ena_err("exec_cmd: recovery after timeout failed (%d)",
+				rrec);
+	}
+
 	return ret;
 }
 
@@ -724,52 +826,16 @@ int ena_aenq_default_handler(void *arg, uint16_t group, uint16_t syndrome,
 
 	switch (group) {
 	case ENA_ADMIN_FATAL_ERROR: {
-		ena_aenq_handler *handler = adapter->aenq_handler;
-		void *handler_arg = adapter->aenq_handler_arg;
-		uint16_t aq_d;
-		uint16_t acq_d;
-		uint16_t aenq_d;
 		int rret;
-		int iret = -1;
 
 		ena_err("aenq: fatal error (syndrome %u), resetting device",
 			(unsigned)syndrome);
-		adapter->state = ENA_STATE_ERROR;
-		/* The reset destroys every IO queue on the device. Invalidate
-		 * the driver-side rings now so the data path stops touching
-		 * stale indices and doorbells while the reset runs. */
-		ena_adapter_invalidate_io_rings(adapter);
-
-		/* The poll path does not hold the admin lock. Take it here so
-		 * the reset and re-init serialize with admin command use. */
-		ena_admin_lock_take(&adapter->admin_lock);
-		ena_device_reset(adapter);
-		rret = ena_device_wait_reset_complete(adapter, 1000);
-		if (rret == 0) {
-			aq_d = adapter->aq_depth ? adapter->aq_depth : 32;
-			acq_d = adapter->acq_depth ? adapter->acq_depth : 32;
-			aenq_d = adapter->aenq_depth ? adapter->aenq_depth : 32;
-			iret = ena_admin_init(adapter, aq_d, acq_d, aenq_d);
-			if (iret == 0 && handler)
-				ena_admin_aenq_register(adapter, handler,
-							handler_arg);
-		}
-		ena_admin_lock_drop(&adapter->admin_lock);
-
-		/* The reset cleared the AENQ configuration and deleted the
-		 * IO queues. Queue recovery restores both, so traffic
-		 * resumes without a reboot. [Ticket 1152cbcaca]
-		 * [Ticket f51ac5d736] [Ticket 775997c726]
-		 *
-		 * Run this work outside the admin lock. Both steps issue
-		 * admin commands, and the admin lock is not recursive. */
-		if (rret == 0 && iret == 0) {
-			rret = ena_adapter_recover_io_rings(adapter);
-			if (rret != 0)
-				ena_err("aenq: io queue recovery failed (%d)",
-					rret);
-		}
-
+		/* The poll path does not hold the admin lock, which is what
+		 * the recovery path needs. It resets the device, rebuilds the
+		 * admin queues, restores the AENQ configuration, and
+		 * re-creates the IO queues. [Ticket 1152cbcaca]
+		 * [Ticket f51ac5d736] [Ticket 775997c726] */
+		rret = ena_adapter_reset_and_recover(adapter);
 		if (rret != 0)
 			ena_err("aenq: reset recovery failed (%d)", rret);
 		return rret;

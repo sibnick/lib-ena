@@ -92,6 +92,9 @@ void mock_ena_hw_init(struct mock_ena_hw *hw)
 	/* Phase 3: negotiation records and controls */
 	hw->attrs_read = 0;
 	hw->negotiated_mtu = 0;
+	hw->aenq_set_count = 0;
+	hw->dev_aenq_groups = ENA_ADMIN_AENQ_GROUPS_ALL;
+	hw->aenq_enabled_groups = 0;
 	hw->host_info_base = NULL;
 	hw->host_info_debug_size = 0;
 	hw->last_feat_flags = 0;
@@ -203,6 +206,10 @@ void mock_ena_hw_reset_poll_hook(void *cookie)
 		 * 775997c726] */
 		hw->attrs_read = 0;
 		hw->negotiated_mtu = 0;
+		/* A finished reset brings the device back, so its admin queue
+		 * answers again. A hang that outlived the reset would not
+		 * match a real device. [Ticket 2d9483d1f0] */
+		hw->admin_hang = 0;
 		mock_ena_hw_set_reg32(hw, ENA_REGS_DEV_STS_OFF,
 				      ENA_DEV_STS_RESET_FIN_MASK |
 					  ENA_DEV_STS_READY_MASK);
@@ -423,6 +430,17 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 					filled = 1;
 					break;
 				}
+				case ENA_ADMIN_AENQ_CONFIG: {
+					struct ena_admin_feature_aenq_desc *a;
+
+					a = (struct ena_admin_feature_aenq_desc
+						 *)comp->response_specific_data;
+					memset(a, 0, sizeof(*a));
+					a->supported_groups =
+					    hw->dev_aenq_groups;
+					filled = 1;
+					break;
+				}
 				case ENA_ADMIN_RSS_INDIRECTION_TABLE_CONFIG: {
 					struct ena_admin_feature_rss_ind_table
 					    *ind;
@@ -465,6 +483,17 @@ static void mock_dispatch_feature(struct mock_ena_hw *hw,
 				if (hw->require_attrs_first &&
 				    !hw->attrs_read) {
 					status = ENA_ADMIN_ILLEGAL_PARAMETER;
+				} else if (feat->feature_id ==
+					   ENA_ADMIN_AENQ_CONFIG) {
+					const struct ena_admin_feature_aenq_desc
+					    *a = (const struct
+						  ena_admin_feature_aenq_desc *)
+						     feat->raw;
+
+					hw->aenq_enabled_groups =
+					    a->enabled_groups;
+					hw->aenq_set_count++;
+					filled = 1;
 				} else if (feat->feature_id == ENA_ADMIN_MTU) {
 					uint32_t mtu = feat->raw[0];
 

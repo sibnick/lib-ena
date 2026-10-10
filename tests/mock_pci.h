@@ -95,6 +95,14 @@ struct mock_ena_hw {
 	/* Phase 3: records of accepted settings for assertions */
 	uint8_t attrs_read;
 	uint32_t negotiated_mtu;
+	/* SET_FEATURE calls that carried the AENQ group bitmap. Recovery must
+	 * send this again after a reset. [Ticket 2d9483d1f0] */
+	uint32_t aenq_set_count;
+	/* AENQ groups the emulated device reports, and the groups the driver
+	 * asked to enable. The driver only asks when the test advertises
+	 * ENA_ADMIN_AENQ_CONFIG in dev_supported_features. */
+	uint32_t dev_aenq_groups;
+	uint32_t aenq_enabled_groups;
 	uint8_t *host_info_base;
 	uint32_t host_info_debug_size;
 
