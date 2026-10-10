@@ -165,5 +165,9 @@ flag for a fixed period, assert the flag is set, then join.
 The host suite never touches real ENA hardware. Device behaviour that only
 appears on EC2, such as LLQ push after idle or a real AENQ keep-alive stream,
 needs an instance. Use the scripts under `samples/httpreply-mc/scripts/` and
-the steps in [docs/ec2_deployment.md](ec2_deployment.md). Store the console
-logs and CSV results with `fossil uv add`, not in a commit.
+the steps in [docs/ec2_deployment.md](ec2_deployment.md). For a quick check of
+bring-up after a driver change, build the sample image and run
+`samples/httpreply-mc/scripts/run_ec2_verification.py --smoke`. It boots the
+target, fetches three pages, saves the console output, and tears everything
+down. Store the console logs and CSV results with `fossil uv add`, not in a
+commit.
