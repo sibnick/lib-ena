@@ -1,36 +1,26 @@
-# Build artifacts
-build/
-.unikraft/
-benchmark-results/
-bin/
+build/*
+*/build/*
 *.o
 *.a
-*.d
-/test_*
-samples/**/build/
-samples/**/bin/
-samples/**/.libs/
-samples/**/.unikraft/
-samples/**/cmake-build-debug/
-*.log
-.ipynb_checkpoints/
-
-# Fossil SCM internal files and local binary
-.fossil
-.fossil-home/
-*.fossil
-.fslckout
-fossil
-
-# Session cache
+*.so
+*.bin
+*.elf
+*.iso
+.config
+.config.old
 opencode.session
-
-# IDE and Editor files
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
+.opencode/*
+*.log
+*.tmp
+reports/*
+fossil
+configs/*.config.old
+samples/nginx/.unikraft/*
+samples/nginx/.libs/*
+samples/nginx/initrd.cpio
+samples/nginx/.config.*
+__pycache__/*
+*/__pycache__/*
 
 # Run output from the EC2 and QEMU test scripts
 samples/**/*console*.txt
@@ -41,6 +31,12 @@ samples/**/netlog_*
 samples/**/smoke_diag_*
 samples/**/diag.txt
 samples/**/*.pcap
+samples/**/benchmark_results_*.csv
+samples/**/benchmark_results_*.json
+samples/**/*.raw
+samples/*/repro_*
+samples/*/epoll_ab_*
+compile_commands.json
 samples/**/benchmark_*_*.csv
 samples/**/benchmark_*_*.json
 samples/**/offsubnet_arp_check_*
@@ -49,6 +45,3 @@ samples/**/*.bak
 samples/**/*-original
 samples/*/unikraft
 samples/*/configs/*.config
-
-# Generated compile database
-compile_commands.json

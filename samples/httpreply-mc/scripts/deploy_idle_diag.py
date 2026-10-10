@@ -25,11 +25,9 @@ ROOT = Path(__file__).resolve().parent.parent
 BUILD_DIR = ROOT / "build"
 STAGING_DIR = BUILD_DIR / "staging"
 
-AWS_REGION = "us-east-1"
-INSTANCE_TYPE = "c6i.large"
-SUBNET_ID = "subnet-0e6ba9e8b1e7dcdf0"
-SG_ID = "sg-0ac75f6a09207fcfe"
-TARGET_PRIVATE_IP = "172.31.16.153"
+from aws_env import ( AWS_REGION, INSTANCE_TYPE, SUBNET_ID, SG_ID, GATEWAY_IP, TARGET_PRIVATE_IP,
+)
+from aws_env import summary as aws_settings
 GATEWAY_IP = "172.31.16.1"
 BLOCK_SIZE = 524288  # 512 KiB EBS direct block size
 NAME_TAG = "unikraft-mc-apicdiag"
@@ -286,6 +284,7 @@ def launch_instance(ami_id):
 
 
 def main():
+    print(f"[CONFIG] {aws_settings()}")
     kernels = [
         p for p in BUILD_DIR.glob("*_qemu-x86_64")
         if not p.name.endswith((".dbg", ".cmd", ".bootinfo"))

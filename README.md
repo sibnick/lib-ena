@@ -114,6 +114,16 @@ Unikraft core. Each patch has a problem statement and an approach description:
 - [samples/httpreply/patches/README.md](samples/httpreply/patches/README.md)
 - [samples/httpreply-mc/patches/README.md](samples/httpreply-mc/patches/README.md)
 
+## Releases and Issue Reporting
+
+The current release is `v0.1.0`. See [CHANGELOG.md](CHANGELOG.md) for what each
+release adds, the limits of this version, and how to verify a checkout.
+
+Report defects and feature requests in the issue tracker of the public Git
+mirror: <https://github.com/sibnick/lib-ena/issues>. The `[Ticket ...]` ids that
+appear in commit messages name entries in the project's internal Fossil ticket
+database, which is not served over HTTP.
+
 ## License
 
 This project is licensed under the BSD-3-Clause License. See [COPYING.md](COPYING.md) for details.

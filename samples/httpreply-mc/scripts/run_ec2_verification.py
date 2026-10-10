@@ -25,17 +25,9 @@ import re
 import csv
 from pathlib import Path
 
-AWS_REGION = "us-east-1"
-INSTANCE_TYPE = "c6i.large"
-SUBNET_ID = "subnet-0e6ba9e8b1e7dcdf0"
-SG_ID = "sg-0ac75f6a09207fcfe"
-GATEWAY_IP = "172.31.16.1"
-NETMASK = "255.255.240.0"
-TARGET_PRIVATE_IP = "172.31.16.153"
-CLIENT_PRIVATE_IP = "172.31.16.161"
-UBUNTU_AMI = "ami-0045d7fc2ad003464"
-# Smoke mode runs no benchmark, so its client may be a burstable type.
-SMOKE_CLIENT_TYPE = "t3.micro"
+from aws_env import (AWS_REGION, INSTANCE_TYPE, SMOKE_CLIENT_TYPE, SUBNET_ID, SG_ID, UBUNTU_AMI, GATEWAY_IP, NETMASK, TARGET_PRIVATE_IP, CLIENT_PRIVATE_IP,
+)
+from aws_env import summary as aws_settings
 BLOCK_SIZE = 524288  # 512 KiB EBS direct block size
 
 def run_cmd(cmd, check=True, capture=True):
@@ -607,6 +599,7 @@ def parse_args():
 def main():
     args = parse_args()
     smoke = args.smoke
+    print(f"[CONFIG] {aws_settings()}")
     repo_root = Path(__file__).resolve().parent.parent.parent.parent
     sample_dir = repo_root / "samples/httpreply-mc"
     kernel_path = sample_dir / "build/httpreply-mc_qemu-x86_64"
