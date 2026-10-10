@@ -18,6 +18,5 @@ targets:
   - name: kvm
     plat: qemu
     arch: x86_64
-  - name: kvm
-    plat: qemu
-    arch: arm64
+  # No arm64 target. The driver needs x86 port I/O today. Ticket 658166ee81
+  # tracks the ECAM path that makes an arm64 target possible.

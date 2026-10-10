@@ -1,5 +1,9 @@
 menuconfig LIBENA
 	bool "ena: AWS Elastic Network Adapter (ENA) native driver"
+	# The driver reads PCI config space with x86 port I/O on ports
+	# 0xCF8 and 0xCFC, so it builds only for x86_64. Ticket 658166ee81
+	# tracks the ECAM path that removes this guard.
+	depends on ARCH_X86_64
 	default n
 	select LIBUKALLOC
 	select LIBUKBUS_PCI

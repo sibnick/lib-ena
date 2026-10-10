@@ -1857,7 +1857,8 @@ static int ena_netdev_txq_xmit(struct uk_netdev *dev, uint16_t queue_id,
 		}
 	}
 
-	phys = pkt->phys_addr ? pkt->phys_addr : ena_netbuf_phys_addr(pkt->data);
+	phys =
+	    pkt->phys_addr ? pkt->phys_addr : ena_netbuf_phys_addr(pkt->data);
 	if (phys < ENA_DMA_LOW_MEM_LIMIT) {
 		if (txq->bounce_free_count == 0) {
 			ring->tx_dropped++;

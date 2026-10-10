@@ -38,6 +38,7 @@ gantt
     Scatter-Gather RX Reassembly                 :p12, after p11, 14d
     Hardware TCP Segmentation Offload (TSO)      :p13, after p12, 14d
     Hardware Receive Side Scaling (RSS)          :done, p14, after p13, 14d
+    AWS Graviton (ARM64) Support                :crit, p15, 2026-09-20, 60d
 ```
 
 ### Phase 1: PCI Driver Scaffold and Device Discovery
@@ -101,7 +102,7 @@ gantt
 
 ---
 
-## 3. Future Roadmap and Enhancements (Phases 11 to 14)
+## 3. Future Roadmap and Enhancements (Phases 11 to 15)
 
 ### Phase 11: Multi-Descriptor Scatter-Gather (SG) Transmit
 - **Status**: Planned
@@ -126,3 +127,16 @@ gantt
 - `ena_rss.c` implements RSS hash key and 128-entry indirection table configuration via Admin Queue feature commands (`CONFIG_LIBENA_RSS`).
 - Validated on real AWS EC2 hardware (`c6i.large`). Steers TCP connections across two queues with balanced 50/50 packet distribution.
 - Confirmed with 25 driver validation unit tests and real hardware benchmark runs.
+
+### Phase 15: AWS Graviton (ARM64) Support
+- **Status**: Deferred, review date 2027-04-01
+- The driver reads PCI config space with x86 port I/O on ports `0xCF8` and `0xCFC`, so it builds only for x86_64. `Config.uk` states this with `depends on ARCH_X86_64`, and `include/ena_plat.h` stops an unsupported build with a named error instead of an unknown function name.
+- Work order, in dependency sequence. Each item is a Fossil ticket:
+  1. `pci: implement ECAM config space access for ARM64` [Ticket 658166ee81]
+  2. `plat: implement ARM64 MSI-X and GIC interrupt handling` [Ticket cc1ad62c78]
+  3. `plat: adapt DMA memory allocation and cache coherency for ARM64` [Ticket e3c25fc2d6]
+  4. `ci: enable and validate ARM64 build in GitHub Actions workflow` [Ticket 49a6bea44f]
+  5. `docs: update documentation for AWS Graviton and ARM64 support` [Ticket 32a0c54343]
+- Check the upstream state before driver work starts. The `drivers/ukbus/pci` library in Unikraft already has an arm64 path through `pci_ecam.c`, and `LIBUKBUS_PCI_ECAM` is selected when `LIBUKBUS_PCI`, `LIBFDT` and `LIBUKOFW` are set. An arm64 configuration still reports unmet dependencies for `LIBUKBUS_PCI`, so confirm `HAVE_PCI` first.
+- Partial support exists today: `include/ena_plat.h` already selects ARM64 memory barriers and the `yield` pause instruction.
+- Until this phase lands, the driver does not build or run on Graviton instance types. `README.md` and `docs/ec2_deployment.md` state the x86_64-only limit.
