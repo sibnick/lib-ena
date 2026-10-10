@@ -42,6 +42,9 @@ samples/**/benchmark_*_*.json
 samples/**/offsubnet_arp_check_*
 samples/**/run_notes_2*-*-*.*
 samples/**/*.bak
+*-original
+*.bak
 samples/**/*-original
+samples/**/*.bak
 samples/*/unikraft
 samples/*/configs/*.config
