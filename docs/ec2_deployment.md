@@ -106,9 +106,17 @@ Recommended instance types (x86_64 only; ARM64 Graviton is not supported at this
    aws ec2 get-console-output --instance-id i-0123456789abcdef0
    ```
 2. Verify that the ENA driver initializes and attaches to the network device.
-3. Run the benchmark template to create an empty report file and the step-by-step measurement instructions:
+3. Run the automated bring-up check with no benchmark:
+   ```bash
+   python3 samples/httpreply-mc/scripts/run_ec2_verification.py --smoke
+   ```
+   The script boots the image on a `c6i.large` instance, fetches three pages from
+   a small check client in the same subnet, saves the console output, and removes
+   every cloud resource it created. A clean run answers HTTP 200 and shows no
+   device reset line and no admin command timeout.
+4. Run the benchmark template to create an empty report file and the step-by-step measurement instructions:
    ```bash
    ./scripts/ec2_benchmark.sh
    ```
    The script does not run measurements and does not write any numbers. You run `iperf3` and `netperf` yourself and record the real output.
-4. Store the finished report outside version control, for example in the Fossil unversioned store (`fossil uv`). Do not commit reports to this repository.
+5. Store the finished report outside version control, for example in the Fossil unversioned store (`fossil uv`). Do not commit reports to this repository.
