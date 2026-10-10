@@ -4,10 +4,15 @@ Automated End-to-End EC2 Performance and Verification Benchmark.
 Deploys Unikraft httpreply-mc and an Ubuntu 24.04 wrk client into AWS EC2 (c6i.large),
 executes the full concurrency benchmark sweep, captures console logs and diagnostics,
 stores results, and cleans up all cloud resources.
+
+With --smoke the script skips the wrk sweep. It boots the target, fetches
+three pages from a small check client, saves the console output, and tears
+everything down. Use that to check bring-up after a driver change.
 """
 
 import os
 import sys
+import argparse
 import json
 import time
 import base64
@@ -29,6 +34,8 @@ NETMASK = "255.255.240.0"
 TARGET_PRIVATE_IP = "172.31.16.153"
 CLIENT_PRIVATE_IP = "172.31.16.161"
 UBUNTU_AMI = "ami-0045d7fc2ad003464"
+# Smoke mode runs no benchmark, so its client may be a burstable type.
+SMOKE_CLIENT_TYPE = "t3.micro"
 BLOCK_SIZE = 524288  # 512 KiB EBS direct block size
 
 def run_cmd(cmd, check=True, capture=True):
@@ -452,6 +459,86 @@ echo "ALL_DONE $(date)" | tee -a /root/wrk_sweep.log /root/diag.txt
             return instance_id, public_ip
         time.sleep(3)
 
+def launch_smoke_client_instance():
+    """
+    Launches a small Ubuntu instance that fetches one page from the target.
+    It writes the same markers the monitor loop reads: UK_HEALTH, GATE_FAIL,
+    ALL_DONE. No wrk runs here, so a burstable client type is enough.
+    """
+    print("==================================================")
+    print(f"Step 5 (smoke): Launching check client ({SMOKE_CLIENT_TYPE})...")
+    print("==================================================")
+    wait_for_ip_free(CLIENT_PRIVATE_IP)
+    user_data = f"""#!/bin/bash
+set -e
+exec > >(tee -a /root/diag.txt) 2>&1
+
+echo "=== SMOKE_START $(date) target={TARGET_PRIVATE_IP} ==="
+
+cd /root
+python3 -m http.server 80 &
+echo "HTTPD_STARTED $(date)"
+
+echo "Curl gate: waiting for target http://{TARGET_PRIVATE_IP}/ ..."
+UK_OK=0
+for i in $(seq 1 60); do
+    CODE=$(curl -s -o /dev/null --max-time 5 -w "%{{http_code}}" http://{TARGET_PRIVATE_IP}/ || echo "000")
+    if [ "$CODE" = "200" ]; then
+        UK_OK=1
+        echo "UK_HEALTH private=200 $(date) after $i tries"
+        break
+    fi
+    sleep 2
+done
+
+if [ "$UK_OK" != "1" ]; then
+    echo "GATE_FAIL: target never returned HTTP 200" >> /root/diag.txt
+    echo "ALL_DONE $(date)" >> /root/diag.txt
+    exit 0
+fi
+
+for n in 1 2 3; do
+    R=$(curl -s -o /root/body_$n.html --max-time 5 -w "code=%{{http_code}} bytes=%{{size_download}} t=%{{time_total}}s" http://{TARGET_PRIVATE_IP}/ || echo FAIL)
+    echo "GET$n $R $(date)"
+    sleep 1
+done
+
+echo "SMOKE_DONE $(date)" >> /root/diag.txt
+echo "ALL_DONE $(date)" >> /root/diag.txt
+"""
+
+    launch_out = run_cmd([
+        "aws", "ec2", "run-instances",
+        "--image-id", UBUNTU_AMI,
+        "--instance-type", SMOKE_CLIENT_TYPE,
+        "--security-group-ids", SG_ID,
+        "--subnet-id", SUBNET_ID,
+        "--private-ip-address", CLIENT_PRIVATE_IP,
+        "--user-data", user_data,
+        "--count", "1",
+        "--tag-specifications", "ResourceType=instance,Tags=[{Key=Name,Value=smoke-mc-client}]",
+        "--region", AWS_REGION,
+        "--output", "json"
+    ])
+    instance_id = json.loads(launch_out)["Instances"][0]["InstanceId"]
+    print(f"[SUCCESS] Launched check client: {instance_id}")
+
+    print("[INFO] Waiting for the check client to become 'running'...")
+    while True:
+        inst_desc = run_cmd([
+            "aws", "ec2", "describe-instances",
+            "--instance-ids", instance_id,
+            "--region", AWS_REGION,
+            "--output", "json"
+        ])
+        inst = json.loads(inst_desc)["Reservations"][0]["Instances"][0]
+        state = inst["State"]["Name"]
+        public_ip = inst.get("PublicIpAddress", "")
+        if state == "running" and public_ip:
+            print(f"[SUCCESS] Client is RUNNING! Public IP: {public_ip}, Private IP: {CLIENT_PRIVATE_IP}")
+            return instance_id, public_ip
+        time.sleep(3)
+
 def parse_wrk_file(content):
     data = {
         "requests_sec": 0.0,
@@ -507,7 +594,19 @@ def parse_wrk_file(content):
 
     return data
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Deploy httpreply-mc on EC2, check it answers HTTP, and measure it.")
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Boot the target, fetch three pages from a small client, collect the "
+             "console, then tear down. No wrk sweep and no CSV output.")
+    return parser.parse_args()
+
 def main():
+    args = parse_args()
+    smoke = args.smoke
     repo_root = Path(__file__).resolve().parent.parent.parent.parent
     sample_dir = repo_root / "samples/httpreply-mc"
     kernel_path = sample_dir / "build/httpreply-mc_qemu-x86_64"
@@ -566,10 +665,16 @@ def main():
             print("[INFO] Public IP path does not answer (expected in this VPC).")
             print("[INFO] The gate is the client-side curl to the private IP on port 80.")
 
-        client_id, client_pub_ip = launch_client_instance()
+        if smoke:
+            client_id, client_pub_ip = launch_smoke_client_instance()
+        else:
+            client_id, client_pub_ip = launch_client_instance()
 
         print("==================================================")
-        print("Step 6: Waiting for wrk Client to execute benchmark sweep...")
+        if smoke:
+            print("Step 6 (smoke): Waiting for the check client to fetch pages...")
+        else:
+            print("Step 6: Waiting for wrk Client to execute benchmark sweep...")
         print(f"Target Public IP: {target_pub_ip}, Client Public IP: {client_pub_ip}")
         print("==================================================")
 
@@ -593,8 +698,9 @@ def main():
         console_poll_count = 0
         last_console = ""
         silent_polls = 0
+        monitor_budget = 600 if smoke else 2400
         start_wait = time.time()
-        while time.time() - start_wait < 2400:
+        while time.time() - start_wait < monitor_budget:
             try:
                 with urllib.request.urlopen(f"http://{client_pub_ip}/wrk_sweep.log", timeout=3) as resp:
                     curr_log = resp.read().decode("utf-8", errors="replace")
@@ -613,7 +719,10 @@ def main():
                         bench_done = True
                         if "GATE_FAIL" in diag:
                             gate_failed = True
-                        print("\n[SUCCESS] Benchmark run completed on client!")
+                        if smoke:
+                            print("\n[SUCCESS] The check client finished its requests.")
+                        else:
+                            print("\n[SUCCESS] Benchmark run completed on client!")
                         break
             except Exception:
                 pass
@@ -649,7 +758,7 @@ def main():
             time.sleep(5)
 
         if not bench_done:
-            print("[WARN] Benchmark timed out after 10 minutes.")
+            print(f"[WARN] The client did not report ALL_DONE within {monitor_budget} s.")
 
         # Download client artifacts
         print("==================================================")
@@ -664,94 +773,105 @@ def main():
         except Exception as e:
             print(f"[WARN] Failed to download diag.txt: {e}")
 
-        sweep_log_content = ""
-        try:
-            with urllib.request.urlopen(f"http://{client_pub_ip}/wrk_sweep.log", timeout=5) as resp:
-                sweep_log_content = resp.read().decode("utf-8", errors="replace")
-                (sample_dir / "wrk_sweep.log").write_text(sweep_log_content)
-                print("[INFO] Downloaded wrk_sweep.log")
-        except Exception as e:
-            print(f"[WARN] Failed to download wrk_sweep.log: {e}")
+        if smoke:
+            smoke_path = sample_dir / f"smoke_diag_{date_str}.txt"
+            smoke_path.write_text(diag_content)
+            if "SMOKE_DONE" in diag_content:
+                print(f"[SUCCESS] The check client fetched the page. Saved {smoke_path}")
+            else:
+                print(f"[WARN] The check client did not report SMOKE_DONE. Saved {smoke_path}")
 
-        # Download wrk output files and parse metrics
-        concurrencies = [10, 25, 50, 100, 200]
-        benchmark_results = []
-        try:
-            for i in range(1, len(concurrencies) + 1):
-                try:
-                    with urllib.request.urlopen(f"http://{client_pub_ip}/cap_{i}.txt", timeout=5) as resp:
-                        cap = resp.read().decode("utf-8", errors="replace")
-                        (sample_dir / f"client_tcpdump_step{i}.txt").write_text(cap)
-                        print(f"[INFO] Downloaded client_tcpdump_step{i}.txt")
-                except Exception as e:
-                    print(f"[WARN] Could not retrieve cap_{i}.txt: {e}")
-        except Exception as e:
-            print(f"[WARN] cap retrieval failed: {e}")
-        for c in concurrencies:
-            fname = f"wrk_s1_c{c}.txt"
+        if not smoke:
+            sweep_log_content = ""
             try:
-                with urllib.request.urlopen(f"http://{client_pub_ip}/{fname}", timeout=5) as resp:
-                    txt = resp.read().decode("utf-8", errors="replace")
-                    (sample_dir / fname).write_text(txt)
-                    print(f"[INFO] Downloaded {fname}")
-                    metrics = parse_wrk_file(txt)
-                    metrics["concurrency"] = c
-                    metrics["target"] = "Unikraft Multi-Core (httpreply-mc) [verified]"
-                    metrics["url"] = f"http://{TARGET_PRIVATE_IP}/"
-                    benchmark_results.append(metrics)
+                with urllib.request.urlopen(f"http://{client_pub_ip}/wrk_sweep.log", timeout=5) as resp:
+                    sweep_log_content = resp.read().decode("utf-8", errors="replace")
+                    (sample_dir / "wrk_sweep.log").write_text(sweep_log_content)
+                    print("[INFO] Downloaded wrk_sweep.log")
             except Exception as e:
-                print(f"[WARN] Could not retrieve {fname}: {e}")
-                benchmark_results.append({
-                    "concurrency": c,
-                    "target": "Unikraft Multi-Core (httpreply-mc) [verified]",
-                    "url": f"http://{TARGET_PRIVATE_IP}/",
-                    "requests_sec": 0.0,
-                    "transfer_kb_sec": 0.0,
-                    "latency_avg_ms": 0.0,
-                    "latency_stdev_ms": 0.0,
-                    "latency_max_ms": 0.0,
-                    "total_requests": 0,
-                    "socket_errors": 0,
-                    "p50_ms": 0.0,
-                    "p75_ms": 0.0,
-                    "p90_ms": 0.0,
-                    "p99_ms": 0.0
-                })
+                print(f"[WARN] Failed to download wrk_sweep.log: {e}")
 
-        # Download the gate-phase packet capture (tcpdump on the client eth0)
-        try:
-            with urllib.request.urlopen(f"http://{client_pub_ip}/cap.pcap", timeout=15) as resp:
-                pcap_bytes = resp.read()
-                pcap_path = sample_dir / f"cap_{date_str}.pcap"
-                pcap_path.write_bytes(pcap_bytes)
-                print(f"[INFO] Downloaded cap.pcap ({len(pcap_bytes)} bytes) -> {pcap_path}")
-        except Exception as e:
-            print(f"[WARN] Could not retrieve cap.pcap: {e}")
+        if not smoke:
+            # Download wrk output files and parse metrics
+            concurrencies = [10, 25, 50, 100, 200]
+            benchmark_results = []
+            try:
+                for i in range(1, len(concurrencies) + 1):
+                    try:
+                        with urllib.request.urlopen(f"http://{client_pub_ip}/cap_{i}.txt", timeout=5) as resp:
+                            cap = resp.read().decode("utf-8", errors="replace")
+                            (sample_dir / f"client_tcpdump_step{i}.txt").write_text(cap)
+                            print(f"[INFO] Downloaded client_tcpdump_step{i}.txt")
+                    except Exception as e:
+                        print(f"[WARN] Could not retrieve cap_{i}.txt: {e}")
+            except Exception as e:
+                print(f"[WARN] cap retrieval failed: {e}")
+            for c in concurrencies:
+                fname = f"wrk_s1_c{c}.txt"
+                try:
+                    with urllib.request.urlopen(f"http://{client_pub_ip}/{fname}", timeout=5) as resp:
+                        txt = resp.read().decode("utf-8", errors="replace")
+                        (sample_dir / fname).write_text(txt)
+                        print(f"[INFO] Downloaded {fname}")
+                        metrics = parse_wrk_file(txt)
+                        metrics["concurrency"] = c
+                        metrics["target"] = "Unikraft Multi-Core (httpreply-mc) [verified]"
+                        metrics["url"] = f"http://{TARGET_PRIVATE_IP}/"
+                        benchmark_results.append(metrics)
+                except Exception as e:
+                    print(f"[WARN] Could not retrieve {fname}: {e}")
+                    benchmark_results.append({
+                        "concurrency": c,
+                        "target": "Unikraft Multi-Core (httpreply-mc) [verified]",
+                        "url": f"http://{TARGET_PRIVATE_IP}/",
+                        "requests_sec": 0.0,
+                        "transfer_kb_sec": 0.0,
+                        "latency_avg_ms": 0.0,
+                        "latency_stdev_ms": 0.0,
+                        "latency_max_ms": 0.0,
+                        "total_requests": 0,
+                        "socket_errors": 0,
+                        "p50_ms": 0.0,
+                        "p75_ms": 0.0,
+                        "p90_ms": 0.0,
+                        "p99_ms": 0.0
+                    })
 
-        # Save JSON & CSV
-        json_path = sample_dir / f"benchmark_results_{date_str}.json"
-        csv_path = sample_dir / f"benchmark_results_{date_str}.csv"
+            # Download the gate-phase packet capture (tcpdump on the client eth0)
+            try:
+                with urllib.request.urlopen(f"http://{client_pub_ip}/cap.pcap", timeout=15) as resp:
+                    pcap_bytes = resp.read()
+                    pcap_path = sample_dir / f"cap_{date_str}.pcap"
+                    pcap_path.write_bytes(pcap_bytes)
+                    print(f"[INFO] Downloaded cap.pcap ({len(pcap_bytes)} bytes) -> {pcap_path}")
+            except Exception as e:
+                print(f"[WARN] Could not retrieve cap.pcap: {e}")
 
-        with open(json_path, "w") as f:
-            json.dump(benchmark_results, f, indent=2)
+        if not smoke:
+            # Save JSON & CSV
+            json_path = sample_dir / f"benchmark_results_{date_str}.json"
+            csv_path = sample_dir / f"benchmark_results_{date_str}.csv"
 
-        csv_fields = ["concurrency", "target", "requests_sec", "latency_avg_ms", "latency_stdev_ms", "latency_max_ms", "transfer_kb_sec", "total_requests", "socket_errors", "p50_ms", "p75_ms", "p90_ms", "p99_ms"]
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=csv_fields, extrasaction='ignore')
-            writer.writeheader()
-            for row in benchmark_results:
-                writer.writerow(row)
-        print(f"[SUCCESS] Saved results to {json_path} and {csv_path}")
-
-        if any(r.get("requests_sec", 0) > 0 for r in benchmark_results):
-            with open(sample_dir / "benchmark_results.json", "w") as f:
+            with open(json_path, "w") as f:
                 json.dump(benchmark_results, f, indent=2)
-            with open(sample_dir / "benchmark_results.csv", "w", newline="") as f:
+
+            csv_fields = ["concurrency", "target", "requests_sec", "latency_avg_ms", "latency_stdev_ms", "latency_max_ms", "transfer_kb_sec", "total_requests", "socket_errors", "p50_ms", "p75_ms", "p90_ms", "p99_ms"]
+            with open(csv_path, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=csv_fields, extrasaction='ignore')
                 writer.writeheader()
                 for row in benchmark_results:
                     writer.writerow(row)
-            print(f"[SUCCESS] Updated latest {sample_dir / 'benchmark_results.json'} and {sample_dir / 'benchmark_results.csv'}")
+            print(f"[SUCCESS] Saved results to {json_path} and {csv_path}")
+
+            if any(r.get("requests_sec", 0) > 0 for r in benchmark_results):
+                with open(sample_dir / "benchmark_results.json", "w") as f:
+                    json.dump(benchmark_results, f, indent=2)
+                with open(sample_dir / "benchmark_results.csv", "w", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=csv_fields, extrasaction='ignore')
+                    writer.writeheader()
+                    for row in benchmark_results:
+                        writer.writerow(row)
+                print(f"[SUCCESS] Updated latest {sample_dir / 'benchmark_results.json'} and {sample_dir / 'benchmark_results.csv'}")
 
         # Capture EC2 console output of Unikraft instance
         print("Waiting 15s for console ring buffer to flush...")

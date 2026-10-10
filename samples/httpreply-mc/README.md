@@ -66,6 +66,7 @@ graph TD
 | `scripts/build_disk.sh` | Builds raw bootable disk image with GRUB |
 | `scripts/deploy_aws.py` | Deploys image to AWS EBS and launches EC2 instance |
 | `scripts/run_ec2_benchmark.py` | Automated multi-concurrency benchmark runner |
+| `scripts/run_ec2_verification.py` | Full EC2 benchmark with console capture. Add `--smoke` for a bring-up check with no `wrk` sweep |
 | `benchmark_results.csv` | Measured benchmark metrics in CSV format |
 | `benchmark_results.json` | Measured benchmark metrics in JSON format |
 
@@ -119,6 +120,21 @@ Test connectivity to the instance:
 ```bash
 curl -i http://<instance-public-or-private-ip>/
 ```
+
+### Smoke check after a driver change
+
+Build the image first, then run the short path. It boots the target on
+`c6i.large`, fetches three pages from a small `t3.micro` check client, saves
+the console output, and tears everything down. No `wrk` sweep and no CSV.
+
+```bash
+python3 scripts/run_ec2_verification.py --smoke
+```
+
+The run is good when the client log shows `UK_HEALTH private=200`, three lines
+with `code=200`, and `SMOKE_DONE`. The console file shows probe, MSI-X arm,
+queue creation, and RSS setup. A clean bring-up has no reset line and no admin
+command timeout.
 
 Run the automated benchmark suite with `wrk`:
 
