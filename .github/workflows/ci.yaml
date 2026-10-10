@@ -12,6 +12,9 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@v4
 
+      - name: Check code style
+        run: make format-check
+
       - name: Run unit tests
         run: make clean && make test
 
@@ -50,6 +53,10 @@ jobs:
         run: |
           kraft build --no-prompt --log-type basic --target kvm --plat qemu --arch x86_64 examples/ci-app < /dev/null
 
+  # No arm64 build job here. The driver reads PCI config space with x86 port
+  # I/O, so it builds only for x86_64. Ticket 658166ee81 tracks the ECAM
+  # path, and ticket 49a6bea44f re-adds an arm64 job when that work lands.
+
   unikraft-mc-x86_64:
     name: unikraft multi-core build (x86_64)
     runs-on: ubuntu-latest
@@ -87,36 +94,3 @@ jobs:
           cd samples/httpreply-mc
           make
 
-  unikraft-arm64:
-    name: unikraft build (arm64)
-    runs-on: ubuntu-latest
-    if: false
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@v4
-
-      - name: Install aarch64 cross toolchain and build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bison flex build-essential
-
-      - name: Install KraftKit
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://get.kraftkit.sh | sudo sh -s -- -y || {
-            KRAFTKIT_VERSION=$(curl -fsSL https://get.kraftkit.sh/latest.txt 2>/dev/null || echo "0.12.15")
-            curl -fsSL "https://github.com/unikraft/kraftkit/releases/download/v${KRAFTKIT_VERSION}/kraftkit_${KRAFTKIT_VERSION}_linux_amd64.deb" -o /tmp/kraftkit.deb
-            sudo dpkg -i /tmp/kraftkit.deb
-            rm -f /tmp/kraftkit.deb
-          }
-          echo "KRAFTKIT_NO_CHECK_UPDATES=true" >> "$GITHUB_ENV"
-          kraft version
-
-      - name: Configure KraftKit manifests
-        run: |
-          kraft pkg source https://manifests.kraftkit.sh/index.yaml
-          kraft pkg update
-
-      - name: Build ENA application for KVM/QEMU arm64
-        run: |
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          kraft build --no-prompt --log-type basic --target kvm --plat qemu --arch arm64 examples/ci-app < /dev/null

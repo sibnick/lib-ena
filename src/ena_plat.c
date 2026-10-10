@@ -695,8 +695,7 @@ void *ena_dma_alloc(size_t size, uint64_t *phys_out)
 	if (paddr == UK_PAGING_PADDR_INV)
 		return NULL;
 
-	ret = uk_vma_map_dma(vas, &vaddr, len,
-			     UK_PAGING_PAGE_ATTR_PROT_RW,
+	ret = uk_vma_map_dma(vas, &vaddr, len, UK_PAGING_PAGE_ATTR_PROT_RW,
 			     UK_VMA_MAP_POPULATE, "ena_dma", paddr);
 	if (ret) {
 		uk_ffree(vas->pt->fa, paddr, pages);

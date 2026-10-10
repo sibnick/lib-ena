@@ -149,7 +149,8 @@ static inline uint64_t pci_read_bar_size(const struct pci_address *addr,
 	return (~mask) + 1;
 }
 
-static void *ena_pci_map_bar(uint64_t phys_addr, uint64_t size, const char *name)
+static void *ena_pci_map_bar(uint64_t phys_addr, uint64_t size,
+			     const char *name)
 {
 #if defined(CONFIG_LIBUKVMEM) && CONFIG_LIBUKVMEM
 	__vaddr_t vaddr = UK_PAGING_VADDR_ANY;
@@ -159,11 +160,13 @@ static void *ena_pci_map_bar(uint64_t phys_addr, uint64_t size, const char *name
 	int ret;
 
 	ret = uk_vma_map_dma(uk_vas_get_active(), &vaddr, len,
-			     UK_PAGING_PAGE_ATTR_PROT_RW,
-			     UK_VMA_MAP_POPULATE, name, paddr_aligned);
+			     UK_PAGING_PAGE_ATTR_PROT_RW, UK_VMA_MAP_POPULATE,
+			     name, paddr_aligned);
 	if (ret) {
-		ena_err("probe: failed to map BAR %s: paddr=0x%lx len=0x%lx (%d)",
-			name, (unsigned long)paddr_aligned, (unsigned long)len, ret);
+		ena_err(
+		    "probe: failed to map BAR %s: paddr=0x%lx len=0x%lx (%d)",
+		    name, (unsigned long)paddr_aligned, (unsigned long)len,
+		    ret);
 		return NULL;
 	}
 	return (void *)(vaddr + offset);
@@ -179,8 +182,10 @@ static void *ena_pci_map_bar(uint64_t phys_addr, uint64_t size, const char *name
 				 len >> UK_PAGING_PAGE_SHIFT,
 				 UK_PAGING_PAGE_ATTR_PROT_RW, 0);
 	if (ret && ret != -EEXIST) {
-		ena_err("probe: failed to map BAR %s: paddr=0x%lx len=0x%lx (%d)",
-			name, (unsigned long)paddr_aligned, (unsigned long)len, ret);
+		ena_err(
+		    "probe: failed to map BAR %s: paddr=0x%lx len=0x%lx (%d)",
+		    name, (unsigned long)paddr_aligned, (unsigned long)len,
+		    ret);
 		return NULL;
 	}
 	return (void *)(vaddr + offset);
@@ -369,7 +374,8 @@ static int ena_pci_add_dev(struct pci_device *pdev)
 	 * BAR2 pointers are set here before feature negotiation reads
 	 * them. */
 	if (bar2_phys != 0 && bar2_size != 0) {
-		edev->bar2_vaddr = ena_pci_map_bar(bar2_phys, bar2_size, "ena_bar2");
+		edev->bar2_vaddr =
+		    ena_pci_map_bar(bar2_phys, bar2_size, "ena_bar2");
 		if (edev->bar2_vaddr) {
 			edev->adapter.bar2_base =
 			    (volatile uint8_t *)edev->bar2_vaddr;

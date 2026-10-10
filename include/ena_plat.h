@@ -17,6 +17,14 @@
 #include <uk/bus/pci.h>
 #include <uk/netdev.h>
 
+/* The driver reads PCI config space with x86 port I/O on ports 0xCF8 and
+ * 0xCFC, in src/ena_pci.c and src/ena_plat.c. Ticket 658166ee81 tracks the
+ * ECAM path for other architectures. Stop an unsupported build here, so it
+ * does not fail later on an unknown function name. */
+#if !defined(CONFIG_ARCH_X86_64)
+#error "lib-ena needs x86_64 port I/O (ticket 658166ee81)"
+#endif
+
 #define ena_info(fmt, ...) uk_pr_info("ena: " fmt, ##__VA_ARGS__)
 #define ena_warn(fmt, ...) uk_pr_warn("ena: " fmt, ##__VA_ARGS__)
 #define ena_err(fmt, ...) uk_pr_err("ena: " fmt, ##__VA_ARGS__)
