@@ -15,6 +15,9 @@ jobs:
       - name: Check code style
         run: make format-check
 
+      - name: Check license headers
+        run: make license-check
+
       - name: Run unit tests
         run: make clean && make test
 

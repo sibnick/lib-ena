@@ -1,4 +1,8 @@
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
+ * Authors: Unikraft ENA Driver Maintainers
+ * Copyright (c) 2026, Unikraft ENA Contributors. All rights reserved.
+ *
  * Unit test for the idle backoff policy in
  * samples/httpreply-mc/idlebackoff.h. Runs on the host.
  *

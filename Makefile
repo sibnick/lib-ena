@@ -45,7 +45,7 @@ FORMAT_SRCS = $(shell find $(FORMAT_DIRS) \
 	\( $(FORMAT_PRUNE) \) -prune -o \
 	-type f \( -name '*.c' -o -name '*.h' \) -print | sort)
 
-.PHONY: all test sanitize test-sanitize format format-check clean
+.PHONY: all test sanitize test-sanitize format format-check license-check clean
 
 all: test
 
@@ -143,6 +143,23 @@ format:
 # Fail when a source file does not match the style. Use this in CI.
 format-check:
 	$(CLANG_FORMAT) --dry-run --Werror $(FORMAT_SRCS)
+
+# Project-owned C sources that do not carry the BSD-3-Clause SPDX header.
+# docs/conventions.md section 3 requires that header, and COPYING.md plus the
+# Kraftfile declare one license for the whole tree. A second license in the
+# library tree blocks review in the Unikraft catalog. [Ticket 4051dc9c78]
+LICENSE_BAD = $(shell grep -L "SPDX-License-Identifier: BSD-3-Clause" \
+	$(FORMAT_SRCS) 2>/dev/null)
+
+# Fail when a source file has no license header, or has another one. Use this
+# in CI next to format-check.
+license-check:
+	@if [ -n "$(LICENSE_BAD)" ]; then \
+		echo "license-check: missing or wrong SPDX header:"; \
+		for f in $(LICENSE_BAD); do echo "  $$f"; done; \
+		exit 1; \
+	fi
+	@echo "license-check: $(words $(FORMAT_SRCS)) files carry BSD-3-Clause"
 
 clean:
 	rm -rf $(BUILD)

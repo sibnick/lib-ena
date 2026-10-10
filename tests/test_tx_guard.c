@@ -1,4 +1,8 @@
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
+ * Authors: Unikraft ENA Driver Maintainers
+ * Copyright (c) 2026, Unikraft ENA Contributors. All rights reserved.
+ *
  * Micro-benchmark for the TX cross-CPU guard path. The program runs on
  * the host. It needs no EC2 instance.
  *
