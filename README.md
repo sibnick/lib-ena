@@ -116,8 +116,9 @@ Unikraft core. Each patch has a problem statement and an approach description:
 
 ## Releases and Issue Reporting
 
-The current release is `v0.1.0`. See [CHANGELOG.md](CHANGELOG.md) for what each
-release adds, the limits of this version, and how to verify a checkout.
+The current release is `v0.1.0`: <https://github.com/sibnick/lib-ena/releases/tag/v0.1.0>.
+See [CHANGELOG.md](CHANGELOG.md) for what each release adds, the limits of this
+version, and how to verify a checkout.
 
 Report defects and feature requests in the issue tracker of the public Git
 mirror: <https://github.com/sibnick/lib-ena/issues>. The `[Ticket ...]` ids that
