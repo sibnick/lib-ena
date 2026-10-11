@@ -121,6 +121,27 @@ Test connectivity to the instance:
 curl -i http://<instance-public-or-private-ip>/
 ```
 
+### Settings for your own AWS account
+
+The EC2 scripts in `scripts/` read their settings from the environment. The
+defaults are the values this project's test VPC uses, so a normal run needs no
+change. To run against your own account, set these before you start:
+
+| Variable | Meaning |
+| :-- | :-- |
+| `AWS_REGION` | Region to work in. Default `us-east-1`. |
+| `INSTANCE_TYPE` | Target instance type. Default `c6i.large`. |
+| `SMOKE_CLIENT_TYPE` | Client type for `--smoke`. Default `t3.micro`. |
+| `SUBNET_ID` | Subnet for both instances. Must be the same for both. |
+| `SG_ID` | Security group. It must allow inbound TCP 80. |
+| `UBUNTU_AMI` | AMI for the client or baseline instance. |
+| `TARGET_PRIVATE_IP`, `CLIENT_PRIVATE_IP` | Fixed private IPs the scripts use. |
+| `GATEWAY_IP`, `NETMASK` | Written into the guest network config. |
+
+Each script prints the settings it will use before it creates anything. Look for
+the `[CONFIG]` line. Credentials come from your AWS CLI configuration, never
+from these files. See `scripts/aws_env.py` for the full list and the defaults.
+
 ### Smoke check after a driver change
 
 Build the image first, then run the short path. It boots the target on
