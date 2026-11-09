@@ -9,6 +9,14 @@
         "--compile-commands-dir=build"
       ]
     }
+  },
+  "providers": {
+    "strata": {
+      "package": "@ai-sdk/openai-compatible",
+      "settings": {
+        "baseURL": "http://host.containers.internal:8080/v1"
+      }
+    }
   }
 }
 

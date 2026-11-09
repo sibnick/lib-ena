@@ -5,7 +5,8 @@ version: 0.1.0
 description: Official Unikraft HTTP reply benchmark server with native AWS ENA driver
 
 unikraft:
-  version: stable
+  source: github.com/sibnick/unikraft
+  version: feature/ena-gcp-common
 
 targets:
   - name: aws-t3-x86_64
