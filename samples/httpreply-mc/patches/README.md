@@ -1,38 +1,42 @@
-# Submodule Patches (`httpreply-mc`)
+# Submodule Fork Branches (`httpreply-mc`)
 
-This directory holds local patches for the submodules that the multi-core HTTP
-reply sample builds against. Each entry below describes the problem a patch
-solves and the approach it uses. The single-core sample keeps a smaller set in
+This sample no longer applies local patch files. Both external submodules now
+build from branches in the maintainer's forks, selected by the `Kraftfile`.
+This directory keeps the documentation of what those branches change. The
+single-core sample documents the shared groups in
 [samples/httpreply/patches/README.md](../../httpreply/patches/README.md). Read
-that file first for the groups that both samples share. Unikraft core changes
-no longer live here. They are commits on the fork branch
-`feature/ena-gcp-common` in `github.com/sibnick/unikraft`, which the sample
-`Kraftfile` selects.
+that file first for the groups that both samples share.
 
-## 1. How These Patches Work
+## 1. How the Submodules Are Selected
 
-| File | Submodule | Base commit | Size |
-| :--- | :--- | :--- | ---: |
-| `lib-lwip-ec55ae17.patch` | `.libs/lib-lwip` | lwIP `ec55ae17` | 2664 lines |
-| Unikraft core | `.unikraft/unikraft` | fork branch `feature/ena-gcp-common` | not a patch |
+| Submodule | Source | Branch |
+| :--- | :--- | :--- |
+| `.unikraft/unikraft` | `github.com/sibnick/unikraft` | `feature/ena-gcp-common` |
+| `.libs/lib-lwip` | `github.com/sibnick/lib-lwip` | `feature/ena-gcp-common` |
 
-The file name encodes the submodule base commit. `scripts/apply_patches.sh` maps
-the prefix to a submodule path, skips a patch that is already applied, applies a
-patch that fits, and stops with an error on a conflict. The build runs this
-script before compilation.
+The `Kraftfile` names both branches. `scripts/apply_patches.sh` runs before the
+build but finds no patch files, so it does nothing. Keep it in place if you need
+a temporary local patch during bring-up; use the file-name convention
+`<submodule-name>-<base-commit-sha8>.patch`.
 
-Regenerate a patch after you change a submodule checkout:
+Commit on the fork branch instead of generating a patch file.
 
-```bash
-git -C <submodule> diff > patches/<name>-$(git -C <submodule> rev-parse --short=8 HEAD).patch
-```
+## 2. lwIP Port: fork branch `feature/ena-gcp-common`
 
-## 2. `lib-lwip-ec55ae17.patch` (lwIP Port)
+The former `lib-lwip-ec55ae17.patch` is retired. The same work now lives as
+commits on `github.com/sibnick/lib-lwip` branch `feature/ena-gcp-common`. The
+branch merges this project's AWS work with the GCP port line. The GCP side
+also brought: static ARP support, the `LWIP_UKNETDEV_POLLRX` forced-polled RX
+option, per-netdev queue counts instead of one global pair, a per-queue spinlock
+when cores outnumber TX queues, a bounded TX retry with `-EBUSY`, packet-count
+returns on the poll API, mempool counts capped at 65535, per-core UDP/RAW pcb
+lists and port counters, and a compile-time assert that the state table covers
+every CPU slot.
 
 ### 2.1 Groups Shared with the Single-Core Sample
 
-These five groups are identical in both patches. Section 2 of the single-core
-file describes each problem and approach.
+These groups are identical in both samples. Section 2 of the single-core file
+describes each problem and approach.
 
 | Group | What it does |
 | :--- | :--- |
@@ -270,12 +274,13 @@ destination sits in bits 31:24, which keeps the `0xFEE` prefix valid in xAPIC
 physical destination mode; the 8259 guard uses `irq <= 15`; the `stop` driver
 op is present.
 
-## 5. Patch Hygiene
+## 5. Hygiene Notes
 
-- `lib-lwip-ec55ae17.patch` adds `src/api/sockets.c.orig`. That file is a backup
-  that the nested patch left behind. Drop it when you regenerate the patch.
+- The old `lib-lwip-ec55ae17.patch` added a stray `src/api/sockets.c.orig`
+  backup. The branch's nested `patches/0016-per-core-stack-state.patch` does
+  not create that file.
 - The hlist back-link fix, which `run_notes_heap-corruption-guard.md` places in
-  a patch file, now lives in the branch commit
+  a patch file, now lives in the core branch commit
   `lib/ukallocbbuddy: fix the hlist back-link sanity test`.
 
 ## 6. Related Records

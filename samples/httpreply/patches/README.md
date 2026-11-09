@@ -1,36 +1,32 @@
-# Submodule Patches (`httpreply`)
+# Submodule Fork Branches (`httpreply`)
 
-This directory holds local patches for the submodules that the single-core HTTP
-reply sample builds against. Each entry below describes the problem a patch
-solves and the approach it uses. The multi-core sample keeps a larger set in
+This sample no longer applies local patch files. Both external submodules now
+build from branches in the maintainer's forks, selected by the `Kraftfile`.
+This directory keeps the documentation of what those branches change. The
+multi-core sample documents its larger set in
 [samples/httpreply-mc/patches/README.md](../../httpreply-mc/patches/README.md).
-Unikraft core changes no longer live here. They are commits on the fork branch
-`feature/ena-gcp-common` in `github.com/sibnick/unikraft`, which the sample
-`Kraftfile` selects.
 
-## 1. How These Patches Work
+## 1. How the Submodules Are Selected
 
-| File | Submodule | Base commit | Size |
-| :--- | :--- | :--- | ---: |
-| `lib-lwip-ec55ae17.patch` | `.libs/lib-lwip` | lwIP `ec55ae17` | 1226 lines |
-| Unikraft core | `.unikraft/unikraft` | fork branch `feature/ena-gcp-common` | not a patch |
+| Submodule | Source | Branch |
+| :--- | :--- | :--- |
+| `.unikraft/unikraft` | `github.com/sibnick/unikraft` | `feature/ena-gcp-common` |
+| `.libs/lib-lwip` | `github.com/sibnick/lib-lwip` | `feature/ena-gcp-common` |
 
-The file name encodes the submodule base commit. `scripts/apply_patches.sh`
-maps the prefix to a submodule path, skips a patch that is already applied,
-applies a patch that fits, and stops with an error on a conflict. The build runs
-this script before compilation.
+The `Kraftfile` names both branches. `scripts/apply_patches.sh` runs before the
+build but finds no patch files, so it does nothing. Keep it in place if you need
+a temporary local patch during bring-up; use the file-name convention
+`<submodule-name>-<base-commit-sha8>.patch`.
 
-Regenerate a patch after you change a submodule checkout:
+Regenerate nothing by hand: commit on the fork branch instead.
 
-```bash
-git -C <submodule> diff > patches/<name>-$(git -C <submodule> rev-parse --short=8 HEAD).patch
-```
+## 2. lwIP Port: fork branch `feature/ena-gcp-common`
 
-## 2. `lib-lwip-ec55ae17.patch` (lwIP Port)
-
-The patch turns the lwIP port into a single-threaded stack that still offers a
-POSIX socket API and drives its own network interface. Five groups make up the
-patch.
+The former `lib-lwip-ec55ae17.patch` is retired. The same work now lives as
+commits on `github.com/sibnick/lib-lwip` branch `feature/ena-gcp-common`, which
+merges this project's AWS work with the GCP port line. The branch turns the
+lwIP port into a single-threaded stack that still offers a POSIX socket API and
+drives its own network interface. Five groups make up the work.
 
 ### 2.1 Socket API in `NO_SYS` Mode
 

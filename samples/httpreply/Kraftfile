@@ -15,7 +15,8 @@ targets:
 
 libraries:
   lwip:
-    version: stable
+    source: github.com/sibnick/lib-lwip
+    version: feature/ena-gcp-common
     kconfig:
       - CONFIG_LWIP_IPV4=y
       - CONFIG_LWIP_SOCKET=y
