@@ -5,10 +5,12 @@ version: 0.1.0
 description: Official Unikraft multi-core HTTP reply benchmark server (threaded lwIP + per-core workers) with native AWS ENA driver
 
 unikraft:
-  version: stable
+  source: github.com/sibnick/unikraft
+  version: feature/ena-gcp-common
   kconfig:
     CONFIG_OPTIMIZE_PERF: "y"
     CONFIG_OPTIMIZE_LTO: "y"
+    CONFIG_KVM_X86_LAPIC_ONESHOT: "y"
 
 targets:
   - name: aws-t3-x86_64

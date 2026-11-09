@@ -4,7 +4,9 @@
 #
 # Patch file convention (in this directory):
 #   <submodule-name>-<base-commit-sha8>.patch
-# e.g. unikraft-e31b2c44.patch was generated against .unikraft/unikraft @ e31b2c44.
+# e.g. lib-lwip-ec55ae17.patch was generated against .libs/lib-lwip @ ec55ae17.
+# Unikraft core is not patched here. The Kraftfile selects the fork branch
+# feature/ena-gcp-common in github.com/sibnick/unikraft.
 #
 # Idempotent: a patch already applied in the working tree is detected and
 # skipped, a patch that applies cleanly is applied, anything else aborts

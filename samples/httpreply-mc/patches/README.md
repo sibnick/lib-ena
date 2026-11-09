@@ -4,14 +4,17 @@ This directory holds local patches for the submodules that the multi-core HTTP
 reply sample builds against. Each entry below describes the problem a patch
 solves and the approach it uses. The single-core sample keeps a smaller set in
 [samples/httpreply/patches/README.md](../../httpreply/patches/README.md). Read
-that file first for the groups that both samples share.
+that file first for the groups that both samples share. Unikraft core changes
+no longer live here. They are commits on the fork branch
+`feature/ena-gcp-common` in `github.com/sibnick/unikraft`, which the sample
+`Kraftfile` selects.
 
 ## 1. How These Patches Work
 
 | File | Submodule | Base commit | Size |
 | :--- | :--- | :--- | ---: |
 | `lib-lwip-ec55ae17.patch` | `.libs/lib-lwip` | lwIP `ec55ae17` | 2664 lines |
-| `unikraft-e31b2c44.patch` | `.unikraft/unikraft` | unikraft `e31b2c44` | 2494 lines |
+| Unikraft core | `.unikraft/unikraft` | fork branch `feature/ena-gcp-common` | not a patch |
 
 The file name encodes the submodule base commit. `scripts/apply_patches.sh` maps
 the prefix to a submodule path, skips a patch that is already applied, applies a
@@ -106,14 +109,19 @@ latch at 1, so `epoll` reports the socket as writable forever.
 `tcp_sndbuf(pcb) > 0` and `tcp_sndqueuelen(pcb)` below the `tcp_write()` limit.
 UDP and raw sockets have no flow control, so they keep the `sendevent` flag.
 
-## 3. `unikraft-e31b2c44.patch` (Unikraft Core)
+## 3. Unikraft Core: fork branch `feature/ena-gcp-common`
+
+The former `unikraft-e31b2c44.patch` is retired. The same work now lives as
+commits on `github.com/sibnick/unikraft` branch `feature/ena-gcp-common`. The
+branch combines the earlier `feature/gcp-patches` line with this project's AWS
+work. The sections below describe what the branch carries.
 
 ### 3.1 Groups Shared with the Single-Core Sample
 
-Sections 3.1 to 3.5 of the single-core file describe these. The multi-core patch
-carries the same work: MSI-X vector allocation for xpic, forced xAPIC MMIO mode,
-8259 guards for high irq numbers, and the `link_state_get` driver operation in uknetdev.
-The multi-core version also adds an optional `stop` operation to
+Sections 3.1 to 3.5 of the single-core file describe these. The branch carries
+the same work: MSI-X vector allocation for xpic, forced xAPIC MMIO mode, 8259
+guards for high irq numbers, and the `link_state_get` driver operation in
+uknetdev. The branch also adds an optional `stop` operation to
 `struct uk_netdev_ops`.
 
 ### 3.2 SMP Bring-Up on KVM x86_64
@@ -251,30 +259,24 @@ destination placement appears in the MSI message builder (see 4.1).
   early when `auxsp` is NULL, before it dereferences the control block during core
   bring-up.
 
-## 4. Differences Between the Two Core Patches
+## 4. Migration Note: Both Core Patches Are Retired
 
-The two core patches were generated at different bases and have drifted. Check these points
-before you copy a change from one to the other.
-
-| Item | `unikraft-eb8fa236.patch` | `unikraft-e31b2c44.patch` |
-| :--- | :--- | :--- |
-| Base commit | `eb8fa236` | `e31b2c44` |
-| Allocatable irq pool | 20..222 | 20..207, which keeps irq 16 for the LAPIC timer and moves the wake IPI to vector `0xF0` |
-| MSI destination field | bits 55:48 (`<< 56`) | bits 31:24 (`<< 12`) |
-| 8259 EOI guard | `irq <= 16` | `irq <= 15` |
-| `stop` driver op | absent | present |
-
-The `<< 56` form breaks the `0xFEE` prefix in xAPIC physical destination mode, and
-the device then drops the message. The `<< 12` form is correct. Regenerate the
-single-core patch from a current base and carry this fix into it.
+The old patches `unikraft-eb8fa236.patch` (single core) and
+`unikraft-e31b2c44.patch` (multi core) were generated at different bases and
+had drifted apart. The fork branch replaces both. It carries the correct value
+for every drifted item: the allocatable irq pool is 20..207, which keeps irq 16
+for the LAPIC timer and moves the wake IPI to vector `0xF0`; the MSI
+destination sits in bits 31:24, which keeps the `0xFEE` prefix valid in xAPIC
+physical destination mode; the 8259 guard uses `irq <= 15`; the `stop` driver
+op is present.
 
 ## 5. Patch Hygiene
 
 - `lib-lwip-ec55ae17.patch` adds `src/api/sockets.c.orig`. That file is a backup
   that the nested patch left behind. Drop it when you regenerate the patch.
-- `samples/httpreply-mc/run_notes_heap-corruption-guard.md` says the hlist
-  back-link fix lives in `patches/unikraft-eb8fa236.patch`. It does not. That fix
-  is only in this directory's `unikraft-e31b2c44.patch`.
+- The hlist back-link fix, which `run_notes_heap-corruption-guard.md` places in
+  a patch file, now lives in the branch commit
+  `lib/ukallocbbuddy: fix the hlist back-link sanity test`.
 
 ## 6. Related Records
 

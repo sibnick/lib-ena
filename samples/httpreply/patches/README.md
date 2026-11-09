@@ -4,13 +4,16 @@ This directory holds local patches for the submodules that the single-core HTTP
 reply sample builds against. Each entry below describes the problem a patch
 solves and the approach it uses. The multi-core sample keeps a larger set in
 [samples/httpreply-mc/patches/README.md](../../httpreply-mc/patches/README.md).
+Unikraft core changes no longer live here. They are commits on the fork branch
+`feature/ena-gcp-common` in `github.com/sibnick/unikraft`, which the sample
+`Kraftfile` selects.
 
 ## 1. How These Patches Work
 
 | File | Submodule | Base commit | Size |
 | :--- | :--- | :--- | ---: |
 | `lib-lwip-ec55ae17.patch` | `.libs/lib-lwip` | lwIP `ec55ae17` | 1226 lines |
-| `unikraft-eb8fa236.patch` | `.unikraft/unikraft` | unikraft `eb8fa236` | 413 lines |
+| Unikraft core | `.unikraft/unikraft` | fork branch `feature/ena-gcp-common` | not a patch |
 
 The file name encodes the submodule base commit. `scripts/apply_patches.sh`
 maps the prefix to a submodule path, skips a patch that is already applied,
@@ -113,10 +116,13 @@ lwIP socket state through `get_lwip_socket_events()` and returns the masked
 result. The port registers it as the `.poll` operation, so the queue stores no
 levels of its own.
 
-## 3. `unikraft-eb8fa236.patch` (Unikraft Core)
+## 3. Unikraft Core: fork branch `feature/ena-gcp-common`
 
-This patch adds the interrupt and link-state primitives that the ENA driver and
-the lwIP port need. It touches no scheduler or SMP code.
+The former `unikraft-eb8fa236.patch` is retired. The same work now lives as
+commits on `github.com/sibnick/unikraft` branch `feature/ena-gcp-common`. The
+branch combines the earlier `feature/gcp-patches` line with this project's AWS
+work. It adds the interrupt and link-state primitives that the ENA driver and
+the lwIP port need, and carries the fixes below.
 
 ### 3.1 MSI-X Vector Allocation for xpic
 
@@ -130,14 +136,15 @@ no MSI message builder. The pool range 16..224 also overlaps the IPI vectors
 
 - `uk_intctlr_msix_alloc(lcpu, &irq, &addr, &data)` takes one irq from the pool,
   computes the hardware vector as `32 + irq`, and builds the MSI message. The
-  address is the xAPIC MMIO base `0xFEE00000` with the destination APIC ID in the
-  top byte, bits 55:48. The APIC ID comes from `uk_pcpuvar_cpu_id`, and falls
+  address is the xAPIC MMIO base `0xFEE00000` with the destination APIC ID in
+  bits 31:24. The APIC ID comes from `uk_pcpuvar_cpu_id`, and falls
   back to the vCPU index, which KVM and QEMU use as the APIC ID.
 - `uk_intctlr_msix_free(irq)` returns the irq to the pool.
 
-`include/uk/intctlr/limits.h` moves the allocatable pool to irq 20..222. That
-keeps vectors 48..51 free for IPIs and keeps the spurious vector 255 out of the
-pool. It also fixes an off-by-one in `UK_INTCTLR_ALLOCABLE_IRQ_COUNT`.
+`include/uk/intctlr/limits.h` moves the allocatable pool to irq 20..207. That
+keeps irq 16 free for the per-vCPU LAPIC one-shot timer, keeps vectors 48..51
+free for IPIs, and keeps the spurious vector 255 out of the pool. It also
+fixes an off-by-one in `UK_INTCTLR_ALLOCABLE_IRQ_COUNT`.
 `Makefile.uk` builds `msix.c` under `CONFIG_LIBUKINTCTLR_APIC`, and
 `exportsyms.uk` exports both functions.
 
