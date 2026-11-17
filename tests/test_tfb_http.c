@@ -15,6 +15,12 @@
  * compliance validator (samples/httpreply-mc/scripts/tfb_validate.sh)
  * exercise the same parser and response code on the host.
  *
+ * The exact-byte tests below pin the settled bare Content-Type
+ * literals (text/plain, application/json). The official TFB
+ * verifier regex makes the charset suffix optional, so the bare
+ * form is spec-valid. See the note in tfb_http.h. [Ticket
+ * 21214f6a58]
+ *
  * [Ticket e1e4844702] [Ticket 42d43d501d] [Ticket c3dd68d3d3]
  */
 

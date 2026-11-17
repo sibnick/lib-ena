@@ -5,7 +5,12 @@
 # Checks a running HTTP server against the TechEmpower-style rules
 # the Plan-TFB-Phase1 wiki page records:
 #   1. /plaintext and /json body bytes, exact Content-Type, and
-#      Content-Length equal to the body length.
+#      Content-Length equal to the body length. The expected
+#      literals are the bare text/plain and application/json. The
+#      official TFB verifier (toolset/test_types/verifications.py,
+#      verify_headers, checked 2026-11-18) makes the charset suffix
+#      optional, so the bare form passes its regex. [Ticket
+#      21214f6a58]
 #   2. Server and Date headers present. Date parses as RFC 1123 and
 #      sits within one minute of now.
 #   3. The /json key case is exactly "message".
