@@ -16,7 +16,7 @@ DURATION = "10s"
 THREADS = 4
 
 TARGETS = {
-    "Unikraft Multi-Core (httpreply-mc)": "http://172.31.16.153/",
+    "Unikraft Multi-Core (httpreply-mc)": "http://172.31.16.153:8080/",
     "Linux (Ubuntu 24.04 ENA)": "http://172.31.16.160/"
 }
 

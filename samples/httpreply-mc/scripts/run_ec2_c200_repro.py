@@ -44,10 +44,10 @@ apt-get install -y wrk python3
 cd /root
 python3 -m http.server 80 &
 
-echo "GATE: waiting for target http://{TARGET_PRIVATE_IP}/ ..."
+echo "GATE: waiting for target http://{TARGET_PRIVATE_IP}:8080/ ..."
 UK_OK=0
 for i in $(seq 1 120); do
-    CODE=$(curl -s -o /dev/null --max-time 5 -w "%{{http_code}}" http://{TARGET_PRIVATE_IP}/ || echo 000)
+    CODE=$(curl -s -o /dev/null --max-time 5 -w "%{{http_code}}" http://{TARGET_PRIVATE_IP}:8080/ || echo 000)
     if [ "$CODE" = "200" ]; then UK_OK=1; echo "GATE_OK tries=$i $(date)"; break; fi
     sleep 2
 done
@@ -58,22 +58,22 @@ if [ "$UK_OK" != "1" ]; then
 fi
 
 echo "WARMUP c50 10s $(date)" | tee -a /root/repro.log
-timeout --kill-after=5s 20s wrk -t4 -c50 -d10s http://{TARGET_PRIVATE_IP}/ > /root/wrk_warm_c50.txt 2>&1 || true
+timeout --kill-after=5s 20s wrk -t4 -c50 -d10s http://{TARGET_PRIVATE_IP}:8080/ > /root/wrk_warm_c50.txt 2>&1 || true
 sleep 5
 
 for r in 1 2 3; do
     echo "=== ROUND $r start $(date) ===" | tee -a /root/repro.log
-    timeout --kill-after=5s 30s wrk -t4 -c200 -d20s http://{TARGET_PRIVATE_IP}/ > /root/wrk_r${{r}}_c200.txt 2>&1 &
+    timeout --kill-after=5s 30s wrk -t4 -c200 -d20s http://{TARGET_PRIVATE_IP}:8080/ > /root/wrk_r${{r}}_c200.txt 2>&1 &
     WRK_PID=$!
     for p in 1 2 3 4 5 6; do
         sleep 3
-        R=$(curl -s -o /dev/null --max-time 15 -w "%{{http_code}} t=%{{time_total}}s" http://{TARGET_PRIVATE_IP}/ || echo "FAIL")
-        L=$(curl -s --max-time 15 -o /root/netlog_r${{r}}_p${{p}}.txt -w "%{{http_code}} bytes=%{{size_download}} t=%{{time_total}}s" http://{TARGET_PRIVATE_IP}/__log || echo "FAIL")
+        R=$(curl -s -o /dev/null --max-time 15 -w "%{{http_code}} t=%{{time_total}}s" http://{TARGET_PRIVATE_IP}:8080/ || echo "FAIL")
+        L=$(curl -s --max-time 15 -o /root/netlog_r${{r}}_p${{p}}.txt -w "%{{http_code}} bytes=%{{size_download}} t=%{{time_total}}s" http://{TARGET_PRIVATE_IP}:8080/__log || echo "FAIL")
         echo "POLL r=$r p=$p root=[$R] log=[$L] $(date +%T)" | tee -a /root/repro.log
     done
     wait $WRK_PID
     echo "WRK_END r=$r rc=$? $(date)" | tee -a /root/repro.log
-    curl -s --max-time 15 -o /root/netlog_r${{r}}_final.txt http://{TARGET_PRIVATE_IP}/__log || true
+    curl -s --max-time 15 -o /root/netlog_r${{r}}_final.txt http://{TARGET_PRIVATE_IP}:8080/__log || true
     echo "=== ROUND $r end $(date) ===" | tee -a /root/repro.log
     sleep 10
 done

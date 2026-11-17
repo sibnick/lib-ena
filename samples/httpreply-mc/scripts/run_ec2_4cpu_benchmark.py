@@ -116,10 +116,10 @@ echo "WRK_READY $(date)"
 cd /root
 python3 -m http.server 80 &
 
-echo "GATE: waiting for target http://{TARGET_PRIVATE_IP}/ ..."
+echo "GATE: waiting for target http://{TARGET_PRIVATE_IP}:8080/ ..."
 OK=0
 for i in $(seq 1 120); do
-    CODE=$(curl -s -o /dev/null --max-time 5 -w "%{{http_code}}" http://{TARGET_PRIVATE_IP}/ || echo 000)
+    CODE=$(curl -s -o /dev/null --max-time 5 -w "%{{http_code}}" http://{TARGET_PRIVATE_IP}:8080/ || echo 000)
     if [ "$CODE" = "200" ]; then OK=1; echo "GATE_OK tries=$i $(date)"; break; fi
     sleep 2
 done
@@ -130,13 +130,13 @@ if [ "$OK" != "1" ]; then
 fi
 
 echo "WARMUP c50 10s $(date)" | tee -a /root/wrk_sweep.log
-timeout --kill-after=5s 20s wrk -t{THREADS} -c50 -d10s http://{TARGET_PRIVATE_IP}/ > /root/wrk_warm.txt 2>&1 || true
+timeout --kill-after=5s 20s wrk -t{THREADS} -c50 -d10s http://{TARGET_PRIVATE_IP}:8080/ > /root/wrk_warm.txt 2>&1 || true
 sleep 5
 
 for c in {" ".join(str(c) for c in CONCS)}; do
     T0=$(date +%s)
     echo "=== STEP c=$c phase=wrk start=$T0 $(date) ===" | tee -a /root/wrk_sweep.log
-    timeout --kill-after=5s 45s wrk -t{THREADS} -c$c -d{DURATION} --latency http://{TARGET_PRIVATE_IP}/ > /root/wrk_c$c.txt 2>&1 || true
+    timeout --kill-after=5s 45s wrk -t{THREADS} -c$c -d{DURATION} --latency http://{TARGET_PRIVATE_IP}:8080/ > /root/wrk_c$c.txt 2>&1 || true
     T1=$(date +%s)
     echo "STEP_WINDOW c=$c phase=wrk start=$T0 end=$T1" >> /root/step_times.txt
     echo "=== STEP c=$c phase=wrk end=$T1 $(date) ===" | tee -a /root/wrk_sweep.log
@@ -146,7 +146,7 @@ for c in {" ".join(str(c) for c in CONCS)}; do
     if [ -n "$R" ] && [ "$R" != "0" ]; then
         T2=$(date +%s)
         echo "=== STEP c=$c phase=wrk2 rate=$R start=$T2 $(date) ===" | tee -a /root/wrk_sweep.log
-        timeout --kill-after=5s 45s $WRK2 -t{THREADS} -c$c -R $R -d{DURATION} --latency http://{TARGET_PRIVATE_IP}/ > /root/wrk2_c$c.txt 2>&1 || true
+        timeout --kill-after=5s 45s $WRK2 -t{THREADS} -c$c -R $R -d{DURATION} --latency http://{TARGET_PRIVATE_IP}:8080/ > /root/wrk2_c$c.txt 2>&1 || true
         T3=$(date +%s)
         echo "STEP_WINDOW c=$c phase=wrk2 start=$T2 end=$T3" >> /root/step_times.txt
         echo "=== STEP c=$c phase=wrk2 end=$T3 $(date) ===" | tee -a /root/wrk_sweep.log

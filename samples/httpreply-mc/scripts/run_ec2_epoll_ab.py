@@ -54,10 +54,10 @@ echo "WRK_READY $(date)"
 cd /root
 python3 -m http.server 80 &
 
-echo "GATE: waiting for target http://{TARGET_PRIVATE_IP}/ ..."
+echo "GATE: waiting for target http://{TARGET_PRIVATE_IP}:8080/ ..."
 OK=0
 for i in $(seq 1 120); do
-    CODE=$(curl -s -o /dev/null --max-time 5 -w "%{{http_code}}" http://{TARGET_PRIVATE_IP}/ || echo 000)
+    CODE=$(curl -s -o /dev/null --max-time 5 -w "%{{http_code}}" http://{TARGET_PRIVATE_IP}:8080/ || echo 000)
     if [ "$CODE" = "200" ]; then OK=1; echo "GATE_OK tries=$i $(date)"; break; fi
     sleep 2
 done
@@ -68,12 +68,12 @@ if [ "$OK" != "1" ]; then
 fi
 
 echo "WARMUP c50 10s $(date)" | tee -a /root/ab_sweep.log
-timeout --kill-after=5s 20s wrk -t{THREADS} -c50 -d10s http://{TARGET_PRIVATE_IP}/ > /root/wrk_warm.txt 2>&1 || true
+timeout --kill-after=5s 20s wrk -t{THREADS} -c50 -d10s http://{TARGET_PRIVATE_IP}:8080/ > /root/wrk_warm.txt 2>&1 || true
 sleep 5
 
 for c in {" ".join(str(c) for c in CONCS)}; do
     echo "=== STEP c=$c start $(date) ===" | tee -a /root/ab_sweep.log
-    timeout --kill-after=5s 30s wrk -t{THREADS} -c$c -d{DURATION} --latency http://{TARGET_PRIVATE_IP}/ > /root/wrk_c$c.txt 2>&1 || true
+    timeout --kill-after=5s 30s wrk -t{THREADS} -c$c -d{DURATION} --latency http://{TARGET_PRIVATE_IP}:8080/ > /root/wrk_c$c.txt 2>&1 || true
     echo "=== STEP c=$c end $(date) ===" | tee -a /root/ab_sweep.log
     sleep 5
 done

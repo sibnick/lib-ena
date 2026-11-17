@@ -32,6 +32,17 @@ menuconfig APPHTTPREPLYMC
 	default n
 	select APPHTTPREPLYMC_DEPENDENCIES
 
+config APPHTTPREPLYMC_LISTEN_PORT
+	int "TCP listen port for the HTTP server"
+	range 1 65535
+	default 8080
+	help
+	  The port every core binds its SO_REUSEPORT listener to. The
+	  TechEmpower Benchmark general requirements send all requests to
+	  a four-digit port, so the default is 8080. The legacy wrk
+	  harness and the EC2 scripts use the same value. [Ticket
+	  1478df5bd5]
+
 config APPHTTPREPLYMC_CONSOLE_STATS
 	bool "Print periodic heartbeat and stats to the console"
 	depends on APPHTTPREPLYMC

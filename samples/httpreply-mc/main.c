@@ -75,7 +75,10 @@ int uk_percore_heap_get(unsigned int i, __uptr *base, __sz *len);
 #define SO_REUSEPORT 15
 #endif
 
-#define LISTEN_PORT 80
+/* TFB general requirement #8: all requests go to a four-digit
+ * port. The Kconfig default is 8080. [Ticket 1478df5bd5]
+ */
+#define LISTEN_PORT CONFIG_APPHTTPREPLYMC_LISTEN_PORT
 #define BACKLOG 512
 #define MAX_EVENTS 256
 #define SOCK_BUF_SIZE 32768

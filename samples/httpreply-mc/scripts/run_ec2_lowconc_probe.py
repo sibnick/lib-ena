@@ -249,7 +249,7 @@ def client_user_data(args):
     stats_block = ""
     if args.stats:
         stats_block = f"""echo "NETLOG: fetching /__log from target $(date)" | tee -a /root/wrk_sweep.log
-curl -s --max-time 30 http://{TARGET_PRIVATE_IP}/__log > /root/netlog.txt || echo "NETLOG_FETCH_FAILED" > /root/netlog.txt
+curl -s --max-time 30 http://{TARGET_PRIVATE_IP}:8080/__log > /root/netlog.txt || echo "NETLOG_FETCH_FAILED" > /root/netlog.txt
 echo "NETLOG_SAVED $(wc -c < /root/netlog.txt) bytes" | tee -a /root/wrk_sweep.log
 """
     repeat = args.repeat
@@ -274,10 +274,10 @@ done
 echo "WRK_READY $(date)"
 cd /root
 python3 -m http.server 80 &
-echo "GATE: waiting for target http://{TARGET_PRIVATE_IP}/ ..."
+echo "GATE: waiting for target http://{TARGET_PRIVATE_IP}:8080/ ..."
 OK=0
 for i in $(seq 1 120); do
-    CODE=$(curl -s -o /dev/null --max-time 5 -w "%{{http_code}}" http://{TARGET_PRIVATE_IP}/ || echo 000)
+    CODE=$(curl -s -o /dev/null --max-time 5 -w "%{{http_code}}" http://{TARGET_PRIVATE_IP}:8080/ || echo 000)
     if [ "$CODE" = "200" ]; then OK=1; echo "GATE_OK tries=$i"; break; fi
     sleep 2
 done
@@ -287,13 +287,13 @@ if [ "$OK" != "1" ]; then
     exit 0
 fi
 echo "WARMUP c50 10s" | tee -a /root/wrk_sweep.log
-timeout --kill-after=5s 20s wrk -t{THREADS} -c50 -d10s http://{TARGET_PRIVATE_IP}/ > /root/wrk_warm.txt 2>&1 || true
+timeout --kill-after=5s 20s wrk -t{THREADS} -c50 -d10s http://{TARGET_PRIVATE_IP}:8080/ > /root/wrk_warm.txt 2>&1 || true
 sleep 5
 for c in {" ".join(str(c) for c in args.concurrency)}; do
     for r in $(seq 1 {repeat}); do
         T0=$(date +%s)
         echo "=== STEP c=$c{r_label} start=$T0 $(date) ===" | tee -a /root/wrk_sweep.log
-        timeout --kill-after=5s 90s wrk -t{THREADS} -c$c -d{DURATION} --latency http://{TARGET_PRIVATE_IP}/ > /root/wrk_c${{c}}{file_suffix}.txt 2>&1 || true
+        timeout --kill-after=5s 90s wrk -t{THREADS} -c$c -d{DURATION} --latency http://{TARGET_PRIVATE_IP}:8080/ > /root/wrk_c${{c}}{file_suffix}.txt 2>&1 || true
         T1=$(date +%s)
         echo "STEP_WINDOW c=$c{r_label} start=$T0 end=$T1" >> /root/step_times.txt
         echo "=== STEP c=$c{r_label} end=$T1 $(date) ===" | tee -a /root/wrk_sweep.log
@@ -435,7 +435,7 @@ def print_dry_run(args, kernel):
     )
     if args.stats:
         print(
-            f"  (on client) curl http://{TARGET_PRIVATE_IP}/__log -> /root/netlog.txt"
+            f"  (on client) curl http://{TARGET_PRIVATE_IP}:8080/__log -> /root/netlog.txt"
         )
     print(
         f"  aws ec2 get-console-output --instance-id <target> --region {AWS_REGION} --output text"
