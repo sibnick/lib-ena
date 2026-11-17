@@ -19,6 +19,7 @@ TEST11 = $(BUILD)/test_spsc
 TEST12 = $(BUILD)/test_idlebackoff
 TEST13 = $(BUILD)/test_rss_skew
 TEST14 = $(BUILD)/test_tx_guard
+TEST15 = $(BUILD)/test_tfb_http
 
 ENA_SRCS = src/ena_pci.c src/ena_com.c src/ena_plat.c
 ENA_SRCS_P2 = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena_init.c src/ena_datapath.c src/ena_tx.c src/ena_rx.c src/ena_rss.c
@@ -56,7 +57,7 @@ sanitize: test-sanitize
 test-sanitize: CFLAGS += -O0 -fsanitize=address,undefined -g
 test-sanitize: clean test
 
-test: $(TEST1) $(TEST2) $(TEST3) $(TEST4) $(TEST5) $(TEST6) $(TEST7) $(TEST8) $(TEST9) $(TEST10) $(TEST11) $(TEST12) $(TEST13) $(TEST14)
+test: $(TEST1) $(TEST2) $(TEST3) $(TEST4) $(TEST5) $(TEST6) $(TEST7) $(TEST8) $(TEST9) $(TEST10) $(TEST11) $(TEST12) $(TEST13) $(TEST14) $(TEST15)
 	./$(TEST1)
 	./$(TEST2)
 	./$(TEST3)
@@ -71,6 +72,7 @@ test: $(TEST1) $(TEST2) $(TEST3) $(TEST4) $(TEST5) $(TEST6) $(TEST7) $(TEST8) $(
 	./$(TEST12)
 	./$(TEST13)
 	./$(TEST14)
+	./$(TEST15)
 
 $(TEST1): tests/test_pci_scaffold.c tests/mock_pci.c tests/mock_pci.h $(ENA_SRCS) $(ENA_HDRS)
 	@mkdir -p $(BUILD)
@@ -133,6 +135,15 @@ $(TEST13): tests/test_rss_skew.c
 $(TEST14): tests/test_tx_guard.c src/ena_plat.c $(ENA_HDRS)
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -o $@ tests/test_tx_guard.c src/ena_plat.c
+
+# Host test and local server for the TFB-style endpoints in
+# samples/httpreply-mc/tfb_http.h. Unit mode checks exact response
+# bytes and split/pipelined parsing. Serve mode (--serve PORT) answers
+# the same code on 127.0.0.1 for samples/httpreply-mc/scripts/
+# tfb_validate.sh, because QEMU has no ENA device for the unikernel.
+$(TEST15): tests/test_tfb_http.c samples/httpreply-mc/tfb_http.h
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -Isamples/httpreply-mc -o $@ tests/test_tfb_http.c
 
 # Rewrite the C sources in place with the style in .clang-format at the repo
 # root. Aligned #define tables sit inside "clang-format off" guards, so the
