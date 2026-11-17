@@ -18,6 +18,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/epoll.h>
@@ -55,6 +56,7 @@ int uk_percore_heap_get(unsigned int i, __uptr *base, __sz *len);
 #include "netif/uknetdev.h"
 #include "lwip_percore.h"
 #include "idlebackoff.h"
+#include "tfb_http.h"
 
 #if CONFIG_APPHTTPREPLYMC_NETLOG
 #include <uk/console.h>
@@ -92,6 +94,32 @@ static const char http_response[] =
 
 static const size_t http_resp_len = sizeof(http_response) - 1;
 
+/*
+ * Per-connection state for the routed (TFB) responses.
+ *
+ * A read may end inside a request, and a TCP read may carry several
+ * pipelined requests. carry keeps the partial tail for the next
+ * read. The response queue holds one composed response per parsed
+ * request, in order, until the socket accepts them all.
+ * [Ticket e1e4844702] [Ticket 42d43d501d]
+ */
+#define MC_CONN_CARRY 512
+
+struct mc_resp {
+	struct mc_resp *next;
+	uint32_t len;
+	uint32_t off;
+	char data[];
+};
+
+struct mc_conn {
+	char carry[MC_CONN_CARRY];
+	uint16_t carry_len;
+	uint8_t close_after; /* close once the queue drains */
+	struct mc_resp *resp_head;
+	struct mc_resp *resp_tail;
+};
+
 struct worker_ctx {
 	int worker_id;
 	int epoll_fd;
@@ -99,6 +127,7 @@ struct worker_ctx {
 	int conn_count;
 	char *recv_buf;
 	uint32_t *resp_pending;
+	struct mc_conn *conns;
 	unsigned long req_count;
 	unsigned long byte_count;
 };
@@ -607,6 +636,10 @@ static void drive_core_stack(int core_id)
 
 static int send_pending_response(struct worker_ctx *w, int fd,
 				 uint32_t base_events);
+static int send_conn_responses(struct worker_ctx *w, int fd);
+static int mc_queue_response(struct worker_ctx *w, int fd,
+			     const struct tfb_request *req);
+static const char *mc_tfb_get_date(int core_id);
 
 #if CONFIG_APPHTTPREPLYMC_NETLOG
 /*
@@ -711,23 +744,64 @@ static void mc_netlog_send_response(struct worker_ctx *w, int fd)
 #endif /* CONFIG_APPHTTPREPLYMC_NETLOG */
 
 /*
- * Read one request from a connection and queue the response.
- * Returns -1 when the connection must be dropped.
+ * Read from a connection and queue the responses. Returns -1 when
+ * the connection must be dropped.
+ *
+ * The read path handles HTTP/1.1 pipelining. It parses every whole
+ * request in the buffer and queues one response each, in order. A
+ * partial tail is carried into the next read. A whole legacy "/"
+ * request alone in the buffer keeps the zero-allocation static
+ * response, so the wrk benchmark path is byte-for-byte unchanged.
+ * [Ticket e1e4844702] [Ticket 42d43d501d]
  */
 static int handle_readable(struct worker_ctx *w, int fd)
 {
-	ssize_t r = recv(fd, w->recv_buf, MC_RECVBUF_SIZE - 1, 0);
+	struct mc_conn *c = (fd < MAX_TRACKED_FDS) ? &w->conns[fd] : NULL;
+	char *buf = w->recv_buf;
+	size_t len = 0, off = 0;
+	ssize_t r;
 
-	if (r > 0) {
-		w->recv_buf[r] = '\0';
-#if CONFIG_APPHTTPREPLYMC_NETLOG
-		if (strncmp(w->recv_buf, "GET /__log", 10) == 0) {
-			mc_netlog_send_response(w, fd);
+	/* A close that waited for a queued response can fire now. */
+	if (c && c->close_after && w->resp_pending[fd] == 0 && !c->resp_head)
+		return -1;
+
+	if (c && c->carry_len) {
+		memcpy(buf, c->carry, c->carry_len);
+		len = c->carry_len;
+		c->carry_len = 0;
+	}
+
+	r = recv(fd, buf + len, MC_RECVBUF_SIZE - 1 - len, 0);
+	if (r <= 0) {
+		if (r == 0 ||
+		    (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK))
 			return -1;
+		if (c && len) {
+			memcpy(c->carry, buf, len);
+			c->carry_len = (uint16_t)len;
 		}
+		return 0;
+	}
+	len += (size_t)r;
+
+#if CONFIG_APPHTTPREPLYMC_NETLOG
+	if (len >= 10 && strncmp(buf, "GET /__log", 10) == 0) {
+		mc_netlog_send_response(w, fd);
+		return -1;
+	}
 #endif
+
+	for (;;) {
+		struct tfb_request req;
+		int consumed = tfb_parse_request(buf + off, len - off, &req);
+
+		if (consumed == 0)
+			break;
+		if (consumed < 0)
+			return -1;
+
 		w->req_count++;
-		w->byte_count += http_resp_len;
+		off += (size_t)consumed;
 #if CONFIG_APPHTTPREPLYMC_CONSOLE_STATS
 		if ((w->req_count % MC_STATS_INTERVAL) == 0)
 			printf("httpreply-mc: [stats] core %d: req=%lu "
@@ -736,22 +810,41 @@ static int handle_readable(struct worker_ctx *w, int fd)
 			       (unsigned long)w->byte_count);
 #endif
 
-		if (fd < MAX_TRACKED_FDS) {
-			w->resp_pending[fd] = (uint32_t)http_resp_len;
-			if (send_pending_response(w, fd, EPOLLIN | EPOLLRDHUP) <
-			    0)
+		if (req.route == TFB_ROUTE_LEGACY && off == len &&
+		    (fd >= MAX_TRACKED_FDS ||
+		     (w->resp_pending[fd] == 0 &&
+		      w->conns[fd].resp_head == NULL))) {
+			/* One whole legacy request: the original path. */
+			w->byte_count += http_resp_len;
+			if (fd < MAX_TRACKED_FDS) {
+				w->resp_pending[fd] = (uint32_t)http_resp_len;
+				if (send_pending_response(
+					w, fd, EPOLLIN | EPOLLRDHUP) < 0)
+					return -1;
+			} else {
+				send(fd, http_response, http_resp_len, 0);
+			}
+			if (!req.keep_alive)
 				return -1;
-		} else {
-			send(fd, http_response, http_resp_len, 0);
+			continue;
 		}
 
-		if (strstr(w->recv_buf, "Connection: close") != NULL ||
-		    strstr(w->recv_buf, "connection: close") != NULL)
+		if (mc_queue_response(w, fd, &req) < 0)
 			return -1;
+	}
+
+	if (off < len) {
+		/* A partial request: carry the tail into the next read. */
+		size_t tail = len - off;
+
+		if (!c || tail > MC_CONN_CARRY)
+			return -1;
+		memcpy(c->carry, buf + off, tail);
+		c->carry_len = (uint16_t)tail;
 		return 0;
 	}
 
-	if (r == 0 || (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK))
+	if (c && c->close_after && w->resp_pending[fd] == 0 && !c->resp_head)
 		return -1;
 	return 0;
 }
@@ -806,6 +899,171 @@ static int send_pending_response(struct worker_ctx *w, int fd,
 }
 
 /*
+ * RFC 1123 Date value for composed responses, re-rendered once per
+ * second per worker. The TFB spec allows this rate. time() reads
+ * the wall clock; posix-time serves it under nolibc.
+ */
+static char mc_tfb_date[MC_MAX_WORKERS][TFB_DATE_LEN + 1];
+static __nsec mc_tfb_date_last[MC_MAX_WORKERS];
+
+static const char *mc_tfb_get_date(int core_id)
+{
+	__nsec now = ukplat_monotonic_clock();
+
+	if (mc_tfb_date[core_id][0] == '\0' ||
+	    now - mc_tfb_date_last[core_id] >= ukarch_time_sec_to_nsec(1)) {
+		mc_tfb_date_last[core_id] = now;
+		tfb_render_date(mc_tfb_date[core_id],
+				sizeof(mc_tfb_date[core_id]),
+				(long long)time(NULL));
+	}
+	return mc_tfb_date[core_id];
+}
+
+/*
+ * Send composed responses queued on this connection, in queue
+ * order. Returns 0 when the queue drained, 1 when the socket is
+ * full, -1 on a send fault.
+ */
+static int send_conn_responses(struct worker_ctx *w, int fd)
+{
+	struct mc_conn *c = &w->conns[fd];
+
+	while (c->resp_head) {
+		struct mc_resp *r = c->resp_head;
+
+		while (r->off < r->len) {
+			ssize_t n =
+			    send(fd, r->data + r->off, r->len - r->off, 0);
+
+			if (n > 0) {
+				r->off += (uint32_t)n;
+				continue;
+			}
+
+			if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK ||
+				      errno == ENOBUFS || errno == EBUSY)) {
+				drive_core_stack(w->worker_id);
+				n = send(fd, r->data + r->off, r->len - r->off,
+					 0);
+				if (n > 0) {
+					r->off += (uint32_t)n;
+					continue;
+				}
+				return 1;
+			}
+
+			return -1;
+		}
+
+		c->resp_head = r->next;
+		if (!c->resp_head)
+			c->resp_tail = NULL;
+		free(r);
+	}
+	return 0;
+}
+
+/*
+ * Compose the response for one routed request and append it to the
+ * connection queue, then try to send it. The legacy route reuses
+ * the static response bytes. Returns -1 when the connection must
+ * be dropped.
+ */
+static int mc_queue_response(struct worker_ctx *w, int fd,
+			     const struct tfb_request *req)
+{
+	char tmp[TFB_MAX_RESP];
+	const char *date = mc_tfb_get_date(w->worker_id);
+	struct mc_conn *c;
+	struct mc_resp *r;
+	size_t off;
+	int len;
+
+	switch (req->route) {
+	case TFB_ROUTE_PLAIN:
+		len = tfb_compose_plain(tmp, sizeof(tmp), date);
+		break;
+	case TFB_ROUTE_JSON:
+		len = tfb_compose_json(tmp, sizeof(tmp), date);
+		break;
+	case TFB_ROUTE_LEGACY:
+		len = (int)http_resp_len;
+		if ((size_t)len > sizeof(tmp))
+			return -1;
+		memcpy(tmp, http_response, http_resp_len);
+		break;
+	default:
+		len = tfb_compose_404(tmp, sizeof(tmp), date);
+		break;
+	}
+	if (len < 0)
+		return -1;
+
+	w->byte_count += (unsigned long)len;
+
+	if (fd >= MAX_TRACKED_FDS) {
+		/* Untracked fd: push the small response out directly,
+		 * driving the stack while the socket is full. */
+		for (off = 0; off < (size_t)len;) {
+			ssize_t n = send(fd, tmp + off, (size_t)len - off, 0);
+
+			if (n > 0) {
+				off += (size_t)n;
+				continue;
+			}
+			if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK ||
+				      errno == ENOBUFS || errno == EBUSY)) {
+				drive_core_stack(w->worker_id);
+				continue;
+			}
+			return -1;
+		}
+		return 0;
+	}
+
+	c = &w->conns[fd];
+	r = malloc(sizeof(*r) + (size_t)len);
+	if (!r)
+		return -1;
+	r->next = NULL;
+	r->len = (uint32_t)len;
+	r->off = 0;
+	memcpy(r->data, tmp, (size_t)len);
+	if (c->resp_tail)
+		c->resp_tail->next = r;
+	else
+		c->resp_head = r;
+	c->resp_tail = r;
+
+	if (!req->keep_alive)
+		c->close_after = 1;
+
+	return send_conn_responses(w, fd);
+}
+
+/*
+ * Free queued composed responses and reset per-connection parser
+ * state. The worker owns its conns table, so no lock is needed.
+ */
+static void mc_conn_reset(struct worker_ctx *w, int fd)
+{
+	struct mc_conn *c = &w->conns[fd];
+	struct mc_resp *r = c->resp_head;
+
+	while (r) {
+		struct mc_resp *next = r->next;
+
+		free(r);
+		r = next;
+	}
+	c->resp_head = NULL;
+	c->resp_tail = NULL;
+	c->carry_len = 0;
+	c->close_after = 0;
+}
+
+/*
  * Drop a connection: clear its pending bytes, remove it from epoll,
  * and close the socket descriptor.
  */
@@ -822,8 +1080,10 @@ static void drop_connection(struct worker_ctx *w, int fd)
 	if (w->conn_count > 0)
 		w->conn_count--;
 
-	if (fd >= 0 && fd < MAX_TRACKED_FDS)
+	if (fd >= 0 && fd < MAX_TRACKED_FDS) {
 		w->resp_pending[fd] = 0;
+		mc_conn_reset(w, fd);
+	}
 
 	if (fd >= 0) {
 		epoll_ctl(w->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
@@ -1068,12 +1328,20 @@ static __noreturn void run_to_completion_worker(int core_id)
 				continue;
 			}
 
-			if (fd < MAX_TRACKED_FDS && w->resp_pending[fd] > 0) {
-				if (events[i].events & EPOLLOUT) {
-					if (send_pending_response(
-						w, fd, base_events) < 0)
-						drop_connection(w, fd);
-				}
+			if (fd < MAX_TRACKED_FDS &&
+			    (w->resp_pending[fd] > 0 ||
+			     w->conns[fd].resp_head != NULL)) {
+				int rc;
+
+				if (!(events[i].events & EPOLLOUT))
+					continue;
+				if (w->resp_pending[fd] > 0)
+					rc = send_pending_response(w, fd,
+								   base_events);
+				else
+					rc = send_conn_responses(w, fd);
+				if (rc < 0)
+					drop_connection(w, fd);
 				continue;
 			}
 
@@ -1122,6 +1390,25 @@ static __noreturn void run_to_completion_worker(int core_id)
 						 */
 						if (rc == 0 &&
 						    handle_readable(w, fd2) < 0)
+							drop_connection(w, fd2);
+					}
+				} else if (w->conns[fd2].resp_head != NULL) {
+					/* A composed response is queued but
+					 * the socket was full. Retry it, then
+					 * close or drain as the request
+					 * asked. [Ticket e1e4844702]
+					 */
+					rc = send_conn_responses(w, fd2);
+					if (rc < 0) {
+						drop_connection(w, fd2);
+					} else {
+						work = true;
+						if (rc == 0 &&
+						    w->conns[fd2].close_after)
+							drop_connection(w, fd2);
+						else if (rc == 0 &&
+							 handle_readable(
+							     w, fd2) < 0)
 							drop_connection(w, fd2);
 					}
 				}
@@ -1394,6 +1681,8 @@ int main(int argc, char **argv)
 		mc_workers[i].recv_buf = malloc(MC_RECVBUF_SIZE);
 		mc_workers[i].resp_pending =
 		    calloc(MAX_TRACKED_FDS, sizeof(uint32_t));
+		mc_workers[i].conns =
+		    calloc(MAX_TRACKED_FDS, sizeof(struct mc_conn));
 		mc_workers[i].conn_count = 0;
 		mc_workers[i].req_count = 0;
 		mc_workers[i].byte_count = 0;

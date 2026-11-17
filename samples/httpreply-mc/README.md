@@ -55,6 +55,7 @@ graph TD
 | Path | Purpose |
 | :--- | :--- |
 | `main.c` | Run-to-completion multi-worker HTTP echo server |
+| `tfb_http.h` | Parser and response builders for the TFB `/plaintext` and `/json` endpoints |
 | `spsc.h` | Standalone lock-free single-producer single-consumer ring buffer |
 | `Config.uk` | Application Kconfig options |
 | `defconfig` | Target configuration for multi-core KVM and multi-queue ENA |
@@ -404,3 +405,37 @@ load both vCPUs are halted nearly all the time, so the instance shows
 idle vCPU usage instead of a permanent 100%. All thresholds are
 `#define`s in `idlebackoff.h`; the policy is covered by a host unit
 test (`tests/test_idlebackoff.c`).
+
+## 10. TFB-Style Endpoints and the Local Validator
+
+The server routes requests by path (`tfb_http.h`, [Ticket e1e4844702]
+[Ticket 42d43d501d]):
+
+| Path | Response |
+| :--- | :--- |
+| `/` | The legacy 14-byte benchmark reply. The `wrk` harnesses keep using it unchanged. |
+| `/plaintext` | TechEmpower plaintext test: `Hello, World!` (13 bytes, no trailing newline), `Content-Type: text/plain`. |
+| `/json` | TechEmpower JSON test: `{"message":"Hello, World!"}`, `Content-Type: application/json`. The body is serialized per request. |
+| other paths | 404 with a short body. |
+
+Every composed response carries `Server: unikraft-httpreply`, a
+`Date` header (RFC 1123, re-rendered once per second), and
+`Content-Length`. Keep-alive and HTTP/1.1 pipelining work: the read
+path parses every whole request in a buffer and queues one response
+each, in order. No gzip, no logging to disk.
+
+QEMU has no ENA device, so the unikernel has no network there. Run
+the compliance validator against the host harness that shares the
+same parser code instead:
+
+```bash
+make -C ../.. build/test_tfb_http
+./../../build/test_tfb_http --serve 8080 &
+CHECK_LEGACY=1 scripts/tfb_validate.sh 127.0.0.1 8080
+kill %1
+```
+
+Point the same script at a live EC2 target with
+`scripts/tfb_validate.sh <host> 80`. Set `CHECK_LEGACY=1` only
+against this server, never against a nginx baseline. The script
+exits non-zero on any failure. [Ticket c3dd68d3d3]

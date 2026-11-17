@@ -49,6 +49,7 @@ lines 8 to 21 and builds it with the rules at lines 75 to 135.
 | `test_idlebackoff` | `tests/test_idlebackoff.c` | The idle backoff policy used by the same sample |
 | `test_rss_skew` | `tests/test_rss_skew.c` | Simulation of an RSS queue split, from ticket `ca72834ec7` |
 | `test_tx_guard` | `tests/test_tx_guard.c` | Micro-benchmark of the cost of the TX cross-CPU guard |
+| `test_tfb_http` | `tests/test_tfb_http.c` | The TFB endpoint parser and response builders shared with `samples/httpreply-mc`. `--serve PORT` answers the same code on 127.0.0.1 for `samples/httpreply-mc/scripts/tfb_validate.sh`, because QEMU has no ENA device |
 
 Most binaries print a banner per case and a summary line such as
 `ALL PHASE 7 NETDEV TESTS PASSED (25/25)`. Some older binaries print only
