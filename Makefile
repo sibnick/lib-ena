@@ -20,6 +20,7 @@ TEST12 = $(BUILD)/test_idlebackoff
 TEST13 = $(BUILD)/test_rss_skew
 TEST14 = $(BUILD)/test_tx_guard
 TEST15 = $(BUILD)/test_tfb_http
+TEST16 = $(BUILD)/test_respq
 
 ENA_SRCS = src/ena_pci.c src/ena_com.c src/ena_plat.c
 ENA_SRCS_P2 = src/ena_pci.c src/ena_com.c src/ena_admin.c src/ena_plat.c src/ena_init.c src/ena_datapath.c src/ena_tx.c src/ena_rx.c src/ena_rss.c
@@ -57,7 +58,7 @@ sanitize: test-sanitize
 test-sanitize: CFLAGS += -O0 -fsanitize=address,undefined -g
 test-sanitize: clean test
 
-test: $(TEST1) $(TEST2) $(TEST3) $(TEST4) $(TEST5) $(TEST6) $(TEST7) $(TEST8) $(TEST9) $(TEST10) $(TEST11) $(TEST12) $(TEST13) $(TEST14) $(TEST15)
+test: $(TEST1) $(TEST2) $(TEST3) $(TEST4) $(TEST5) $(TEST6) $(TEST7) $(TEST8) $(TEST9) $(TEST10) $(TEST11) $(TEST12) $(TEST13) $(TEST14) $(TEST15) $(TEST16)
 	./$(TEST1)
 	./$(TEST2)
 	./$(TEST3)
@@ -73,6 +74,7 @@ test: $(TEST1) $(TEST2) $(TEST3) $(TEST4) $(TEST5) $(TEST6) $(TEST7) $(TEST8) $(
 	./$(TEST13)
 	./$(TEST14)
 	./$(TEST15)
+	./$(TEST16)
 
 $(TEST1): tests/test_pci_scaffold.c tests/mock_pci.c tests/mock_pci.h $(ENA_SRCS) $(ENA_HDRS)
 	@mkdir -p $(BUILD)
@@ -144,6 +146,14 @@ $(TEST14): tests/test_tx_guard.c src/ena_plat.c $(ENA_HDRS)
 $(TEST15): tests/test_tfb_http.c samples/httpreply-mc/tfb_http.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -Isamples/httpreply-mc -o $@ tests/test_tfb_http.c
+
+# Host test for the bounded response queue and fixed node pool in
+# samples/httpreply-mc/tfb_respq.h. The suite runs the same queue the
+# app uses, including a threaded deep-pipeline test that checks flow
+# control, response order, and resume after drain. [Ticket 0f377016a9]
+$(TEST16): tests/test_respq.c samples/httpreply-mc/tfb_respq.h samples/httpreply-mc/tfb_http.h
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -Isamples/httpreply-mc -o $@ tests/test_respq.c -pthread
 
 # Rewrite the C sources in place with the style in .clang-format at the repo
 # root. Aligned #define tables sit inside "clang-format off" guards, so the
