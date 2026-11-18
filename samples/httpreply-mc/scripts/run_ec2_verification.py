@@ -6,8 +6,10 @@ executes the full concurrency benchmark sweep, captures console logs and diagnos
 stores results, and cleans up all cloud resources.
 
 With --smoke the script skips the wrk sweep. It boots the target, fetches
-three pages from a small check client, saves the console output, and tears
-everything down. Use that to check bring-up after a driver change.
+three pages from a small check client, curls /plaintext and /json, runs
+tfb_validate.sh against the target, records one short wrk sanity run per
+endpoint, saves the console output, and tears everything down. Use that
+to check bring-up after a driver change.
 """
 
 import os
@@ -453,13 +455,18 @@ echo "ALL_DONE $(date)" | tee -a /root/wrk_sweep.log /root/diag.txt
 
 def launch_smoke_client_instance():
     """
-    Launches a small Ubuntu instance that fetches one page from the target.
-    It writes the same markers the monitor loop reads: UK_HEALTH, GATE_FAIL,
-    ALL_DONE. No wrk runs here, so a burstable client type is enough.
+    Launches a small Ubuntu instance that checks the target endpoints.
+    It fetches the legacy page three times, curls /plaintext and /json,
+    runs the TFB compliance validator, and records one short wrk sanity
+    run per endpoint. It writes the markers the monitor loop reads:
+    UK_HEALTH, GATE_FAIL, ALL_DONE. Only sanity wrk runs here, so a
+    burstable client type is enough.
     """
     print("==================================================")
     print(f"Step 5 (smoke): Launching check client ({SMOKE_CLIENT_TYPE})...")
     print("==================================================")
+    validator_path = Path(__file__).resolve().parent / "tfb_validate.sh"
+    validator_src = validator_path.read_text()
     wait_for_ip_free(CLIENT_PRIVATE_IP)
     user_data = f"""#!/bin/bash
 set -e
@@ -494,6 +501,37 @@ for n in 1 2 3; do
     echo "GET$n $R $(date)"
     sleep 1
 done
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y wrk
+echo "WRK_READY $(date)"
+
+echo "TFB endpoint curl check $(date)"
+for ep in plaintext json; do
+    R=$(curl -s -o /root/${{ep}}_body.txt --max-time 5 -w "code=%{{http_code}} bytes=%{{size_download}} t=%{{time_total}}s" http://{TARGET_PRIVATE_IP}:8080/${{ep}} || echo FAIL)
+    echo "GET_${{ep}} $R $(date)"
+    echo "BODY_${{ep}} $(cat /root/${{ep}}_body.txt)"
+done
+
+cat > /root/tfb_validate.sh <<'TFB_VALIDATE_EOF'
+{validator_src}
+TFB_VALIDATE_EOF
+echo "TFB_VALIDATE_START $(date)"
+set +e
+bash /root/tfb_validate.sh {TARGET_PRIVATE_IP} 8080
+TFB_RC=$?
+set -e
+echo "TFB_VALIDATE_RC=$TFB_RC"
+
+echo "WRK_SANITY_START $(date)"
+set +e
+wrk -t2 -c25 -d15s --latency http://{TARGET_PRIVATE_IP}:8080/plaintext
+echo "WRK_PLAINTEXT_RC=$?"
+wrk -t2 -c25 -d15s --latency http://{TARGET_PRIVATE_IP}:8080/json
+echo "WRK_JSON_RC=$?"
+set -e
+echo "WRK_SANITY_DONE $(date)"
 
 echo "SMOKE_DONE $(date)" >> /root/diag.txt
 echo "ALL_DONE $(date)" >> /root/diag.txt
@@ -592,8 +630,9 @@ def parse_args():
     parser.add_argument(
         "--smoke",
         action="store_true",
-        help="Boot the target, fetch three pages from a small client, collect the "
-             "console, then tear down. No wrk sweep and no CSV output.")
+        help="Boot the target, fetch three pages from a small client, run the "
+             "TFB validator and one short wrk sanity run per endpoint, collect "
+             "the console, then tear down. No concurrency sweep and no CSV output.")
     return parser.parse_args()
 
 def main():
@@ -691,7 +730,7 @@ def main():
         console_poll_count = 0
         last_console = ""
         silent_polls = 0
-        monitor_budget = 600 if smoke else 2400
+        monitor_budget = 900 if smoke else 2400
         start_wait = time.time()
         while time.time() - start_wait < monitor_budget:
             try:
