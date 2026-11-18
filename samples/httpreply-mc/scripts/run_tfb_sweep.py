@@ -51,7 +51,9 @@ exits, so they can be reviewed or shell-checked without touching AWS.
 """
 
 import argparse
+import base64
 import csv
+import gzip
 import hashlib
 import json
 import re
@@ -253,7 +255,13 @@ def deviations(args, plan):
 
 def client_user_data(args, validator_src, plan, stretch):
     """Cloud-init for the wrk client. It gates on the validator, then
-    runs every point and writes the markers the monitor reads."""
+    runs every point and writes the markers the monitor reads. The
+    validator is embedded as gzip + base64 because the AWS CLI caps
+    user data at 16384 bytes and the plain validator is 13 KB.
+    """
+    validator_b64 = base64.b64encode(gzip.compress(validator_src.encode(), 9)).decode(
+        "ascii"
+    )
     points = list(plan)
     check_legacy = 1 if args.target == "unikraft" else 0
     loop_lines = []
@@ -298,9 +306,7 @@ if [ "$OK" != "1" ]; then
     exit 0
 fi
 
-cat > /root/tfb_validate.sh <<'TFB_VALIDATE_EOF'
-{validator_src}
-TFB_VALIDATE_EOF
+echo '{validator_b64}' | base64 -d | gunzip > /root/tfb_validate.sh
 echo "TFB_VALIDATE_START $(date -u)"
 set +e
 CHECK_LEGACY={check_legacy} bash /root/tfb_validate.sh {TARGET_PRIVATE_IP} 8080 > /root/tfb_validate.txt 2>&1
