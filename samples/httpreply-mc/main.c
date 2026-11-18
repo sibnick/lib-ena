@@ -38,6 +38,7 @@
 #include <uk/arch/x86_64.h>
 #include <uk/intctlr.h>
 #include <uk/print.h>
+#include <uk/netdev.h>
 #if defined(CONFIG_LIBUKBOOT_PERCORE_HEAP) && CONFIG_LIBUKBOOT_PERCORE_HEAP
 #include <uk/allocbbuddy.h>
 
@@ -474,6 +475,26 @@ unsigned long ena_netdev_txq_pkts(struct uk_netdev *dev, uint16_t qid);
 uint32_t ena_plat_msix_state(void);
 uint32_t ena_plat_msix_count_get(void);
 
+/*
+ * Return netdev 0 only when the ENA driver owns it. Every ena_* call
+ * above casts the netdev with to_enadevice(), which is unsafe on a
+ * device from another driver. Under QEMU the app runs on virtio-net
+ * (QEMU has no ENA device), so the driver name check keeps the whole
+ * stats and interrupt-rearm path quiet there. [Ticket 2212657476]
+ */
+static struct uk_netdev *mc_ena_netdev(void)
+{
+	struct uk_netdev *dev = uk_netdev_get(0);
+	const char *drv;
+
+	if (!dev)
+		return NULL;
+	drv = uk_netdev_drv_name_get(dev);
+	if (!drv || strcmp(drv, "ena") != 0)
+		return NULL;
+	return dev;
+}
+
 #if CONFIG_APPHTTPREPLYMC_CONSOLE_STATS
 static unsigned int mc_count_memp_free(void *head)
 {
@@ -509,7 +530,7 @@ static void drive_core_stack(int core_id)
 		 * it runs even when console stats are off.
 		 */
 		if (core_id == 0) {
-			struct uk_netdev *dev = uk_netdev_get(0);
+			struct uk_netdev *dev = mc_ena_netdev();
 
 			if (dev && ena_plat_msix_state() != 0 &&
 			    ena_plat_msix_count_get() == 0) {
@@ -523,7 +544,7 @@ static void drive_core_stack(int core_id)
 		unsigned int active_pcbs = 0;
 		struct tcp_pcb *p;
 		unsigned int m_pbuf = 0, m_pcb = 0, m_seg = 0;
-		struct uk_netdev *dev = uk_netdev_get(0);
+		struct uk_netdev *dev = mc_ena_netdev();
 		unsigned long rxpkts = 0, txpkts = 0;
 
 		for (p = cs->tcp_active_pcbs; p != NULL; p = p->next)
@@ -1167,10 +1188,12 @@ static inline void mc_idle_sleep(int core_id, uint64_t ns)
 	 * completion that posted while the queue was masked does not
 	 * fire an MSI later. Writing the unmask register here makes
 	 * the device signal any pending completion now, so the halt
-	 * below either does not happen or ends immediately.
+	 * below either does not happen or ends immediately. ENA only:
+	 * on any other driver the call would cast the wrong private
+	 * data. [Ticket 2212657476]
 	 */
 	{
-		struct uk_netdev *dev = uk_netdev_get(0);
+		struct uk_netdev *dev = mc_ena_netdev();
 
 		if (dev)
 			ena_netdev_rearm_cq_intr(dev, (uint16_t)core_id);
@@ -1261,7 +1284,7 @@ static __noreturn void run_to_completion_worker(int core_id)
 	 * an iteration counts as work even when it produces no epoll
 	 * event (for example a timer-driven retransmit).
 	 */
-	dev = uk_netdev_get(0);
+	dev = mc_ena_netdev();
 	ib_init(&ib, ukplat_monotonic_clock());
 	rx_prev = dev ? ena_netdev_rxq_pkts(dev, (uint16_t)core_id) : 0UL;
 	tx_prev = dev ? ena_netdev_txq_pkts(dev, (uint16_t)core_id) : 0UL;

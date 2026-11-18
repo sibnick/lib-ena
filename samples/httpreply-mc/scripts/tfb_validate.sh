@@ -18,6 +18,10 @@
 #   5. HTTP/1.1 pipelining: 100 GETs sent at once return 100
 #      well-formed responses in order.
 #   6. Unknown paths answer 404.
+#   7. Connection: close answers one response, then closes.
+#   8. A request split across two TCP segments gets one response.
+#   9. An HTTP/1.0 request gets a valid response and does not hang.
+#      [Ticket 2212657476]
 #
 # The unikernel needs the ENA device, which QEMU cannot model. Use
 # the host harness for local runs:
@@ -315,6 +319,87 @@ try:
            "got %d/10" % good)
 except OSError as exc:
     report(False, "mixed pipeline connection", str(exc))
+finally:
+    sock.close()
+
+# 5c: Connection: close. One response, then the server closes the
+# connection and sends nothing more. [Ticket 2212657476]
+sock = connect()
+try:
+    sock.sendall(b"GET /plaintext HTTP/1.1\r\nHost: v\r\n"
+                 b"Connection: close\r\n\r\n")
+    got, rest = read_response(sock, b"")
+    if got is None or (isinstance(got, tuple) and got[0] == "ERR"):
+        report(False, "Connection: close response",
+               got[1] if got else "no response")
+    else:
+        status, headers, rbody, rest = got
+        ok = status == "200" and rbody == PLAIN_BODY
+        report(ok, "Connection: close gets one correct response")
+        # After the response the server must close, with no extra bytes.
+        try:
+            more = sock.recv(4096)
+        except socket.timeout:
+            more = b"TIMEOUT"
+            report(False, "Connection: close closes the socket",
+                   "no FIN within %.0fs" % TIMEOUT)
+        except OSError:
+            more = b""
+        if more != b"TIMEOUT":
+            report(more == b"", "Connection: close closes the socket",
+                   "extra bytes: %r" % more[:20])
+        # A follow-up request on the closed connection must not
+        # produce a second response.
+        try:
+            sock.sendall(b"GET /plaintext HTTP/1.1\r\nHost: v\r\n\r\n")
+            follow = sock.recv(4096)
+        except OSError:
+            follow = b""
+        report(follow == b"", "no response after Connection: close close",
+               "got %r" % follow[:20] if follow else "clean close")
+except OSError as exc:
+    report(False, "Connection: close connection", str(exc))
+finally:
+    sock.close()
+
+# 5d: split request. The request line arrives alone, then the rest
+# 300 ms later. The response must be one complete reply, as if the
+# request had arrived in one segment. [Ticket 2212657476]
+sock = connect()
+try:
+    sock.sendall(b"GET /plaintext HTTP/1.1\r\n")
+    time.sleep(0.3)
+    sock.sendall(b"Host: v\r\n\r\n")
+    got, _ = read_response(sock, b"")
+    if got is None or (isinstance(got, tuple) and got[0] == "ERR"):
+        report(False, "split request gets one response",
+               got[1] if got else "no response")
+    else:
+        status, headers, rbody, _ = got
+        report(status == "200" and rbody == PLAIN_BODY,
+               "split request gets one response")
+except OSError as exc:
+    report(False, "split request connection", str(exc))
+finally:
+    sock.close()
+
+# 5e: HTTP/1.0 request. Must get one valid response and must not
+# hang. A 1.0 response line is acceptable; the check accepts 1.0 or
+# 1.1. [Ticket 2212657476]
+sock = connect()
+try:
+    sock.sendall(b"GET /plaintext HTTP/1.0\r\nHost: v\r\n\r\n")
+    got, _ = read_response(sock, b"")
+    if got is None or (isinstance(got, tuple) and got[0] == "ERR"):
+        report(False, "HTTP/1.0 request", got[1] if got else "no response")
+    else:
+        status, headers, rbody, _ = got
+        line_ok = status == "200"
+        report(line_ok and rbody == PLAIN_BODY and
+               headers.get("content-type") == "text/plain",
+               "HTTP/1.0 request gets a valid 200 response")
+except OSError as exc:
+    report(False, "HTTP/1.0 connection", str(exc))
 finally:
     sock.close()
 
