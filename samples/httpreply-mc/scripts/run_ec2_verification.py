@@ -370,10 +370,10 @@ cd /root
 python3 -m http.server 80 &
 echo "HTTPD_STARTED $(date)"
 
-echo "Curl gate: waiting for target http://{TARGET_PRIVATE_IP}/ ..."
+echo "Curl gate: waiting for target http://{TARGET_PRIVATE_IP}:8080/ ..."
 UK_OK=0
 for i in $(seq 1 120); do
-    CODE=$(curl -s -o /dev/null --max-time 5 -w "%{{http_code}}" http://{TARGET_PRIVATE_IP}/ || echo "000")
+    CODE=$(curl -s -o /dev/null --max-time 5 -w "%{{http_code}}" http://{TARGET_PRIVATE_IP}:8080/ || echo "000")
     if [ "$CODE" = "200" ]; then
         UK_OK=1
         echo "UK_HEALTH private=200 $(date) after $i tries"
@@ -400,13 +400,13 @@ echo "Starting wrk sweep $(date)..." > /root/wrk_sweep.log
 CONCS="10 25 50 100 200"
 STEP_N=0
 for c in $CONCS; do
-    CURL_CODE=$(curl -s -o /dev/null -w "code=%{{http_code}} t=%{{time_total}}s" --max-time 3 http://{TARGET_PRIVATE_IP}/ || echo FAIL)
+    CURL_CODE=$(curl -s -o /dev/null -w "code=%{{http_code}} t=%{{time_total}}s" --max-time 3 http://{TARGET_PRIVATE_IP}:8080/ || echo FAIL)
     echo "=== STEP s1 c=$c start (ping=$CURL_CODE) $(date) ===" | tee -a /root/wrk_sweep.log
     RC=0
     STEP_N=$((STEP_N + 1))
-    (timeout 40s tcpdump -i any -nn -c 150000 "tcp port 80 and host {TARGET_PRIVATE_IP}" > /root/cap_$STEP_N.txt 2>&1 &)
+    (timeout 40s tcpdump -i any -nn -c 150000 "tcp port 8080 and host {TARGET_PRIVATE_IP}" > /root/cap_$STEP_N.txt 2>&1 &)
     sleep 2
-    timeout --kill-after=5s 45s wrk -t2 -c$c -d30s --latency http://{TARGET_PRIVATE_IP}/ > /root/wrk_s1_c$c.txt 2>&1 || RC=$?
+    timeout --kill-after=5s 45s wrk -t2 -c$c -d30s --latency http://{TARGET_PRIVATE_IP}:8080/ > /root/wrk_s1_c$c.txt 2>&1 || RC=$?
     echo "=== STEP s1 c=$c end rc=$RC $(date) ===" | tee -a /root/wrk_sweep.log
     echo "STEP_DONE c=$c rc=$RC" >> /root/diag.txt
     if [ ! -s /root/wrk_s1_c$c.txt ]; then
@@ -471,10 +471,10 @@ cd /root
 python3 -m http.server 80 &
 echo "HTTPD_STARTED $(date)"
 
-echo "Curl gate: waiting for target http://{TARGET_PRIVATE_IP}/ ..."
+echo "Curl gate: waiting for target http://{TARGET_PRIVATE_IP}:8080/ ..."
 UK_OK=0
 for i in $(seq 1 60); do
-    CODE=$(curl -s -o /dev/null --max-time 5 -w "%{{http_code}}" http://{TARGET_PRIVATE_IP}/ || echo "000")
+    CODE=$(curl -s -o /dev/null --max-time 5 -w "%{{http_code}}" http://{TARGET_PRIVATE_IP}:8080/ || echo "000")
     if [ "$CODE" = "200" ]; then
         UK_OK=1
         echo "UK_HEALTH private=200 $(date) after $i tries"
@@ -490,7 +490,7 @@ if [ "$UK_OK" != "1" ]; then
 fi
 
 for n in 1 2 3; do
-    R=$(curl -s -o /root/body_$n.html --max-time 5 -w "code=%{{http_code}} bytes=%{{size_download}} t=%{{time_total}}s" http://{TARGET_PRIVATE_IP}/ || echo FAIL)
+    R=$(curl -s -o /root/body_$n.html --max-time 5 -w "code=%{{http_code}} bytes=%{{size_download}} t=%{{time_total}}s" http://{TARGET_PRIVATE_IP}:8080/ || echo FAIL)
     echo "GET$n $R $(date)"
     sleep 1
 done
@@ -646,7 +646,7 @@ def main():
         # The public-IP path in this VPC black-holes (stale ENI
         # associations), so it is probed once, for diagnostics only.
         # The gate is the client-side curl to the target private IP on
-        # port 80. The wrk sweep runs only after that answers 200.
+        # port 8080. The wrk sweep runs only after that answers 200.
         try:
             with urllib.request.urlopen(f"http://{target_pub_ip}/", timeout=10) as resp:
                 if resp.status == 200:
@@ -656,7 +656,7 @@ def main():
                     print(f"[INFO] Public IP path answered status {resp.status} (diagnostic).")
         except Exception:
             print("[INFO] Public IP path does not answer (expected in this VPC).")
-            print("[INFO] The gate is the client-side curl to the private IP on port 80.")
+            print("[INFO] The gate is the client-side curl to the private IP on port 8080.")
 
         if smoke:
             client_id, client_pub_ip = launch_smoke_client_instance()
@@ -809,14 +809,14 @@ def main():
                         metrics = parse_wrk_file(txt)
                         metrics["concurrency"] = c
                         metrics["target"] = "Unikraft Multi-Core (httpreply-mc) [verified]"
-                        metrics["url"] = f"http://{TARGET_PRIVATE_IP}/"
+                        metrics["url"] = f"http://{TARGET_PRIVATE_IP}:8080/"
                         benchmark_results.append(metrics)
                 except Exception as e:
                     print(f"[WARN] Could not retrieve {fname}: {e}")
                     benchmark_results.append({
                         "concurrency": c,
                         "target": "Unikraft Multi-Core (httpreply-mc) [verified]",
-                        "url": f"http://{TARGET_PRIVATE_IP}/",
+                        "url": f"http://{TARGET_PRIVATE_IP}:8080/",
                         "requests_sec": 0.0,
                         "transfer_kb_sec": 0.0,
                         "latency_avg_ms": 0.0,

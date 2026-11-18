@@ -15,6 +15,12 @@
  * compliance validator (samples/httpreply-mc/scripts/tfb_validate.sh)
  * exercise the same parser and response code on the host.
  *
+ * The exact-byte tests below pin the settled bare Content-Type
+ * literals (text/plain, application/json). The official TFB
+ * verifier regex makes the charset suffix optional, so the bare
+ * form is spec-valid. See the note in tfb_http.h. [Ticket
+ * 21214f6a58]
+ *
  * [Ticket e1e4844702] [Ticket 42d43d501d] [Ticket c3dd68d3d3]
  */
 
@@ -337,6 +343,62 @@ static int test_parse_pipelined_split(void)
 	return 0;
 }
 
+/*
+ * Edge cases for the ticket-4 validator additions: HTTP/1.0 parse,
+ * Connection: close with version 1.0, and a header split exactly at
+ * the segment boundary. [Ticket 2212657476]
+ */
+static int test_parse_http10(void)
+{
+	static const char onezero[] = "GET /plaintext HTTP/1.0\r\n"
+				      "Host: x\r\n\r\n";
+	static const char onezero_close[] = "GET /json HTTP/1.0\r\n"
+					    "Connection: close\r\n\r\n";
+	struct tfb_request r;
+	int n;
+
+	n = tfb_parse_request(onezero, strlen(onezero), &r);
+	TEST_ASSERT(n == (int)strlen(onezero));
+	TEST_ASSERT(r.route == TFB_ROUTE_PLAIN);
+	/* Same rule as 1.1: open unless the request says close. The
+	 * app answers HTTP/1.1, which RFC 7230 allows. */
+	TEST_ASSERT(r.keep_alive == 1);
+
+	n = tfb_parse_request(onezero_close, strlen(onezero_close), &r);
+	TEST_ASSERT(n == (int)strlen(onezero_close));
+	TEST_ASSERT(r.route == TFB_ROUTE_JSON);
+	TEST_ASSERT(r.keep_alive == 0);
+	return 0;
+}
+
+/* A request split between the request line and the headers must
+ * parse in two passes, like the two TCP segments the validator
+ * sends. */
+static int test_parse_two_segments(void)
+{
+	static const char seg1[] = "GET /plaintext HTTP/1.1\r\n";
+	static const char seg2[] = "Host: v\r\n\r\n";
+	char work[128];
+	struct tfb_request r;
+	size_t len;
+	int n;
+
+	/* Segment 1 alone: incomplete, no bytes consumed. */
+	TEST_ASSERT(tfb_parse_request(seg1, strlen(seg1), &r) == 0);
+
+	/* Segment 2 arrives: the whole request parses at once. */
+	memcpy(work, seg1, strlen(seg1));
+	len = strlen(seg1);
+	memcpy(work + len, seg2, strlen(seg2));
+	len += strlen(seg2);
+
+	n = tfb_parse_request(work, len, &r);
+	TEST_ASSERT(n == (int)len);
+	TEST_ASSERT(r.route == TFB_ROUTE_PLAIN);
+	TEST_ASSERT(r.keep_alive == 1);
+	return 0;
+}
+
 /* --- local server mode --- */
 
 static volatile sig_atomic_t g_stop;
@@ -348,7 +410,7 @@ static void on_signal(int sig)
 }
 
 #define SRV_MAX_CONNS 256
-#define SRV_CARRY 512
+#define SRV_CARRY 8192
 #define SRV_READBUF 8192
 
 struct srv_conn {
@@ -606,6 +668,8 @@ int main(int argc, char **argv)
 	SUBTEST(test_parse_incomplete);
 	SUBTEST(test_parse_malformed);
 	SUBTEST(test_parse_pipelined_split);
+	SUBTEST(test_parse_http10);
+	SUBTEST(test_parse_two_segments);
 
 	if (g_failures) {
 		printf("test_tfb_http: %d test(s) FAILED\n", g_failures);

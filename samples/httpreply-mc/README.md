@@ -8,7 +8,7 @@ The sample implements a shared-nothing run-to-completion architecture:
 - Each CPU core binds to an independent ENA hardware queue pair.
 - Hardware Receive Side Scaling (RSS) steers incoming TCP traffic across RX queues.
 - Each core runs an isolated polling loop with local lwIP stack state.
-- Sockets bind to port 80 with `SO_REUSEPORT` on each core.
+- Sockets bind to port 8080 with `SO_REUSEPORT` on each core. The TFB spec requires a four-digit port. [Ticket 1478df5bd5]
 - Workers transmit packets directly on their dedicated hardware TX queues.
 - There are no inter-core locks, queues, or context switches.
 
@@ -24,7 +24,7 @@ graph TD
         RX0["ENA RX Queue 0"]
         TX0["ENA TX Queue 0"]
         LWIP0["lwIP State (Core 0)"]
-        LISTEN0["Listener (Port 80, SO_REUSEPORT)"]
+        LISTEN0["Listener (Port 8080, SO_REUSEPORT)"]
         WORKER0["Worker 0 (epoll 0)"]
     end
 
@@ -32,7 +32,7 @@ graph TD
         RX1["ENA RX Queue 1"]
         TX1["ENA TX Queue 1"]
         LWIP1["lwIP State (Core 1)"]
-        LISTEN1["Listener (Port 80, SO_REUSEPORT)"]
+        LISTEN1["Listener (Port 8080, SO_REUSEPORT)"]
         WORKER1["Worker 1 (epoll 1)"]
     end
 
@@ -134,7 +134,7 @@ change. To run against your own account, set these before you start:
 | `INSTANCE_TYPE` | Target instance type. Default `c6i.large`. |
 | `SMOKE_CLIENT_TYPE` | Client type for `--smoke`. Default `t3.micro`. |
 | `SUBNET_ID` | Subnet for both instances. Must be the same for both. |
-| `SG_ID` | Security group. It must allow inbound TCP 80. |
+| `SG_ID` | Security group. It must allow inbound TCP 8080 (CONFIG_APPHTTPREPLYMC_LISTEN_PORT). |
 | `UBUNTU_AMI` | AMI for the client or baseline instance. |
 | `TARGET_PRIVATE_IP`, `CLIENT_PRIVATE_IP` | Fixed private IPs the scripts use. |
 | `GATEWAY_IP`, `NETMASK` | Written into the guest network config. |
@@ -372,7 +372,7 @@ Each worker core polls its assigned ENA RX queue. The same core processes stack 
 The AWS ENA device hashes TCP/IP 4-tuples and distributes incoming connections across hardware RX queues. Each core processes its own traffic partition.
 
 ### Per-Core Stack State and SO_REUSEPORT
-The lwIP stack runs in `NO_SYS` mode with per-core state encapsulation. Each core owns independent TCP control blocks, timers, and socket tables. Sockets bind with `SO_REUSEPORT` to accept connections on port 80 without global locks.
+The lwIP stack runs in `NO_SYS` mode with per-core state encapsulation. Each core owns independent TCP control blocks, timers, and socket tables. Sockets bind with `SO_REUSEPORT` to accept connections on port 8080 without global locks.
 
 ### Per-CPU Heap Partitions
 At boot, the heap is split into N-1 partitions, where N is the CPU max count (`CONFIG_UKPLAT_CPU_MAXCOUNT`). Each non-boot core gets one partition. The boot core keeps the remaining region as the default allocator.

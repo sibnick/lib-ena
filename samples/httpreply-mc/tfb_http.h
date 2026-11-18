@@ -18,6 +18,21 @@
  * 3. Each response is composed per request. The body buffer is
  *    reused. No headers-plus-body buffer is pre-rendered.
  * 4. Every response carries Server, Date, and Content-Length.
+ *
+ * Settled Content-Type literals: text/plain and application/json,
+ * with no charset parameter. Evidence [Ticket 21214f6a58]:
+ * 1. The official TFB verifier (FrameworkBenchmarks master, file
+ *    toolset/test_types/verifications.py, function verify_headers,
+ *    checked 2026-11-18) matches Content-Type against these full
+ *    regexes:
+ *      plaintext: ^text/plain(; ?charset=(UTF|utf)-8)?$
+ *      json:      ^application/json(; ?charset=(UTF|utf)-8)?$
+ *    The charset suffix is optional, so the bare form passes.
+ * 2. The wiki REQUIREMENT text states the bare form ("The response
+ *    content type must be set to text/plain"). Only the example
+ *    response shows a charset.
+ * 3. The bare form sends fewer bytes per response, which serves the
+ *    benchmark goal.
  */
 
 #ifndef TFB_HTTP_H

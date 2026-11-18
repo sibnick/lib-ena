@@ -21,7 +21,7 @@ if ! command -v wrk &> /dev/null; then
     exit 1
 fi
 
-URL="http://${TARGET_IP}/"
+URL="http://${TARGET_IP}:8080/"
 CONCURRENCY_LEVELS=(10 50 100 200 500)
 OUT_DIR="benchmark-results/$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$OUT_DIR"

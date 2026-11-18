@@ -280,7 +280,7 @@ def register_ami(snapshot_id):
 
 def setup_security_group():
     print("==================================================")
-    print("Step 5: Configuring Security Group for HTTP (Port 80)...")
+    print("Step 5: Configuring Security Group for HTTP (Port 8080)...")
     print("==================================================")
     # Check if security group exists
     sg_name = "unikraft-http-sg"
@@ -315,12 +315,12 @@ def setup_security_group():
         sg_id = json.loads(create_sg)["GroupId"]
         print(f"[INFO] Created security group: {sg_id}")
 
-        # Authorize HTTP (port 80) and ICMP Ping
+        # Authorize HTTP (port 8080) and ICMP Ping
         run_cmd([
             "aws", "ec2", "authorize-security-group-ingress",
             "--group-id", sg_id,
             "--protocol", "tcp",
-            "--port", "80",
+            "--port", "8080",
             "--cidr", "0.0.0.0/0",
             "--region", AWS_REGION
         ])
@@ -422,7 +422,7 @@ def main():
     print(f"Snapshot ID : {snapshot_id}")
     print(f"Elapsed Time: {total_time:.1f} seconds")
     print("\nTest your HTTP server with:")
-    print(f"  curl -i http://{public_ip}/")
+    print(f"  curl -i http://{public_ip}:8080/")
     print("==================================================")
 
 if __name__ == "__main__":
