@@ -285,15 +285,20 @@ def launch_target_instance(ami_id):
 
     print("[INFO] Waiting for target to become 'running'...")
     while True:
-        inst_desc = run_cmd([
-            "aws", "ec2", "describe-instances",
-            "--instance-ids", instance_id,
-            "--region", AWS_REGION,
-            "--output", "json"
-        ])
-        inst = json.loads(inst_desc)["Reservations"][0]["Instances"][0]
-        state = inst["State"]["Name"]
-        public_ip = inst.get("PublicIpAddress", "")
+        try:
+            inst_desc = run_cmd([
+                "aws", "ec2", "describe-instances",
+                "--instance-ids", instance_id,
+                "--region", AWS_REGION,
+                "--output", "json"
+            ])
+            inst = json.loads(inst_desc)["Reservations"][0]["Instances"][0]
+            state = inst["State"]["Name"]
+            public_ip = inst.get("PublicIpAddress", "")
+        except Exception as poll_exc:
+            print(f"[WARN] describe-instances failed ({poll_exc}); retrying in 3s")
+            time.sleep(3)
+            continue
         if state == "running" and public_ip:
             print(f"[SUCCESS] Target is RUNNING! Public IP: {public_ip}, Private IP: {TARGET_PRIVATE_IP}")
             return instance_id, public_ip
@@ -555,15 +560,20 @@ echo "ALL_DONE $(date)" >> /root/diag.txt
 
     print("[INFO] Waiting for the check client to become 'running'...")
     while True:
-        inst_desc = run_cmd([
-            "aws", "ec2", "describe-instances",
-            "--instance-ids", instance_id,
-            "--region", AWS_REGION,
-            "--output", "json"
-        ])
-        inst = json.loads(inst_desc)["Reservations"][0]["Instances"][0]
-        state = inst["State"]["Name"]
-        public_ip = inst.get("PublicIpAddress", "")
+        try:
+            inst_desc = run_cmd([
+                "aws", "ec2", "describe-instances",
+                "--instance-ids", instance_id,
+                "--region", AWS_REGION,
+                "--output", "json"
+            ])
+            inst = json.loads(inst_desc)["Reservations"][0]["Instances"][0]
+            state = inst["State"]["Name"]
+            public_ip = inst.get("PublicIpAddress", "")
+        except Exception as poll_exc:
+            print(f"[WARN] describe-instances failed ({poll_exc}); retrying in 3s")
+            time.sleep(3)
+            continue
         if state == "running" and public_ip:
             print(f"[SUCCESS] Client is RUNNING! Public IP: {public_ip}, Private IP: {CLIENT_PRIVATE_IP}")
             return instance_id, public_ip
