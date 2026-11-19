@@ -104,6 +104,11 @@ All 18 security audit findings are resolved. See [docs/security_audit.md](docs/s
 
 Benchmark measurements for the HTTP reply server on AWS EC2 `c6i.large` instances are documented in [samples/httpreply/README.md](samples/httpreply/README.md).
 
+The TFB Phase 1 methodology report, with Linux baselines for the TFB
+plaintext and JSON test types, is [docs/tfb_phase1.md](docs/tfb_phase1.md).
+Its raw data lives in the Fossil unversioned store under
+`benchmarks/2026-11-18/`.
+
 Store raw benchmark reports outside version control, for example in the Fossil unversioned store (`fossil uv`). Do not store unmeasured numbers in this repository.
 
 ## Submodule Patches
