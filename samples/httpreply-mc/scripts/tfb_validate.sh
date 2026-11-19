@@ -189,7 +189,9 @@ def check_headers(label, headers, expect_ct, expect_body):
     return ok
 
 
-def get(path, extra=b""):
+def get(path, extra=""):
+    # extra must stay a str: a bytes default would render as "b''"
+    # through %s and corrupt the header block. [Ticket 0a2a42d225]
     sock = connect()
     try:
         req = ("GET %s HTTP/1.1\r\nHost: %s\r\n%s"
