@@ -43,6 +43,9 @@ Usage examples:
       --instance-type c6i.large --workers 2 --keep-ami --stretch
   python3 scripts/run_tfb_sweep.py --target nginx \
       --instance-type c6i.large
+  python3 scripts/run_tfb_sweep.py --target unikraft \
+      --instance-type c6i.xlarge --workers 4 --only plaintext \
+      --stretch   # plaintext re-run only, plus the stretch point
 
 --print-plans DIR writes the generated cloud-init scripts to DIR and
 exits, so they can be reviewed or shell-checked without touching AWS.
@@ -206,6 +209,15 @@ def parse_args():
         help="Source revision of the kernel image. Recorded in the results.",
     )
     ap.add_argument(
+        "--only",
+        choices=["json", "plaintext", "all"],
+        default="all",
+        help="Restrict the sweep to one endpoint. The stretch "
+        "point stays a plaintext point and needs --only "
+        "plaintext. Use this for re-runs of a subset of the "
+        "plan. [Ticket 68b37524bb]",
+    )
+    ap.add_argument(
         "--print-plans",
         metavar="DIR",
         default=None,
@@ -215,9 +227,12 @@ def parse_args():
     return ap.parse_args()
 
 
-def sweep_plan(stretch):
-    plan = [("json", c) for c in JSON_CONCS]
-    plan += [("plaintext", c) for c in PLAIN_CONCS]
+def sweep_plan(only):
+    plan = []
+    if only in ("json", "all"):
+        plan += [("json", c) for c in JSON_CONCS]
+    if only in ("plaintext", "all"):
+        plan += [("plaintext", c) for c in PLAIN_CONCS]
     return plan
 
 
@@ -719,7 +734,7 @@ def compute_medians(rows, args, cpu_by_point):
 
 def main():
     args = parse_args()
-    plan = sweep_plan(args.stretch)
+    plan = sweep_plan(args.only)
     validator_src = (Path(__file__).resolve().parent / "tfb_validate.sh").read_text()
 
     if args.print_plans:

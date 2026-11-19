@@ -7,10 +7,12 @@
 #
 # Build recipe: the Kconfig merge keeps the full expanded values from
 # the previous .config, so do not copy this short file straight into
-# .config. Start from the full expanded .config and set the two
-# values this variant changes:
+# .config. Start from the full expanded .config and set the values
+# this variant changes:
 #   CONFIG_UKPLAT_CPU_MAXCOUNT=1
 #   CONFIG_LIBUKNETDEV_MAXNBQUEUES=1
+#   CONFIG_LWIP_NUM_TCPCON=8192
+#   CONFIG_LIBPOSIX_FDTAB_MAXFDS=8192
 # Then run make all. Keep lib-ena selected: the app Config.uk selects
 # it, and the ENA driver stays idle under QEMU because no ENA PCI
 # device (1d0f) is present.
@@ -47,7 +49,9 @@ CONFIG_LWIP_PERCORE=y
 CONFIG_LWIP_SOCKET=y
 CONFIG_LWIP_DHCP=y
 CONFIG_LWIP_AUTOIFACE=y
-CONFIG_LWIP_NUM_TCPCON=1024
+# Sized so a local QEMU run can hold a c=4096 connection set on one
+# core with headroom. [Ticket 68b37524bb]
+CONFIG_LWIP_NUM_TCPCON=8192
 CONFIG_LWIP_NUM_TCPLISTENERS=256
 CONFIG_LWIP_WND_SCALE=y
 CONFIG_LWIP_RCVBUF=y
@@ -56,6 +60,7 @@ CONFIG_LIBPOSIX_POLL=y
 CONFIG_LIBPOSIX_SOCKET=y
 CONFIG_LIBPOSIX_SOCKET_POLLED=y
 CONFIG_LIBPOSIX_TIME=y
+CONFIG_LIBPOSIX_FDTAB_MAXFDS=8192
 
 # virtio-net replaces ENA under QEMU.
 CONFIG_LIBVIRTIO_BUS=y
