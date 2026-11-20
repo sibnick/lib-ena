@@ -356,12 +356,16 @@ Key Kconfig options used in `defconfig`:
 | `CONFIG_LIBUKPCPUVAR` | `y` | Enables per-CPU storage variables |
 | `CONFIG_LWIP_NOTHREADS` | `y` | Runs lwIP in non-threaded NO_SYS mode |
 | `CONFIG_LWIP_PERCORE` | `y` | Isolates lwIP stack state per CPU core |
+| `CONFIG_LWIP_NUM_TCPCON` | `16384` | Sizes the lwIP connection pool. The per-core fork splits it evenly across cores, so each core owns `NUM_TCPCON / UKPLAT_CPU_MAXCOUNT` control blocks. Keep the per-core share above the per-core share of the target concurrency |
+| `CONFIG_LIBPOSIX_FDTAB_MAXFDS` | `20480` | Maximum number of file descriptors. Caps held sockets. The app sizes its fd-indexed tables from this value. Keep it above the highest target concurrency plus headroom |
 | `CONFIG_LIBUKNETDEV_MAXNBQUEUES` | `2` | Configures two hardware network queue pairs. This is the symbol that sets the active queue count. Keep it equal to `CONFIG_UKPLAT_CPU_MAXCOUNT` |
 | `CONFIG_LIBENA` | `y` | Enables native AWS ENA driver |
 | `CONFIG_LIBENA_LLQ` | `y` | Enables ENA Low Latency Queue support |
 | `CONFIG_LIBENA_MAX_QUEUES` | `8` | Maximum queue pairs supported by ENA driver. This sizes the driver ring arrays, and must stay at or above the active queue count |
 | `CONFIG_LIBENA_RSS` | `y` | Enables ENA hardware Receive Side Scaling |
 | `CONFIG_LIBENA_VERBOSE_STATS` | `n` | Prints periodic datapath counters to console |
+| `CONFIG_APPHTTPREPLYMC_CONSOLE_STATS` | `n` | Diagnostic only. Prints a per-core heartbeat and stall dumps every 2 s from the worker loop. Keep it off for measurement: the polled serial console output cost about 2x throughput at c=256 on c6i.xlarge [Ticket 8ea3578639] |
+| `CONFIG_APPHTTPREPLYMC_NETLOG` | `n` | Diagnostic only. Copies every console log byte into a ring and serves it on `/netlog`. Keep it off for measurement, with `CONSOLE_STATS` [Ticket 8ea3578639] |
 
 ## 9. Design Decisions
 

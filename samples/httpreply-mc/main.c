@@ -81,10 +81,25 @@ int uk_percore_heap_get(unsigned int i, __uptr *base, __sz *len);
  * port. The Kconfig default is 8080. [Ticket 1478df5bd5]
  */
 #define LISTEN_PORT CONFIG_APPHTTPREPLYMC_LISTEN_PORT
-#define BACKLOG 512
+/*
+ * The per-core lwIP fork caps its accept box at 1024 connections.
+ * Match it so a large connection burst is not trimmed by the
+ * backlog. [Ticket 68b37524bb]
+ */
+#define BACKLOG 1024
 #define MAX_EVENTS 256
 #define SOCK_BUF_SIZE 32768
-#define MAX_TRACKED_FDS 2048
+/*
+ * The fd-indexed tables must cover every fd the kernel can assign.
+ * Tie the count to the fd table size. [Ticket 68b37524bb]
+ */
+#define MAX_TRACKED_FDS CONFIG_LIBPOSIX_FDTAB_MAXFDS
+/*
+ * Bitmap of fds with output queued or partially sent. The retry
+ * scan walks words, not fds, so the per-iteration cost stays flat
+ * when the fd table grows. [Ticket 68b37524bb]
+ */
+#define MC_PENDING_WORDS ((MAX_TRACKED_FDS + 31) / 32)
 
 #define MC_STATS_INTERVAL 20000UL
 
@@ -132,6 +147,7 @@ struct worker_ctx {
 	int conn_count;
 	char *recv_buf;
 	uint32_t *resp_pending;
+	uint32_t *out_pending; /* bitmap: fd has queued or partial output */
 	struct mc_conn *conns;
 	struct tfb_resp_pool pool;
 	struct tfb_resp *pool_slots;
@@ -141,6 +157,33 @@ struct worker_ctx {
 
 static struct worker_ctx mc_workers[MC_MAX_WORKERS];
 static int mc_nworkers;
+
+/*
+ * Output-pending bitmap helpers. A bit means the fd has legacy
+ * response bytes or queued composed responses the send path still
+ * owes. The worker loop scans words of this bitmap to find retry
+ * candidates. A stale bit only costs one extra no-op check; the
+ * send path clears it then. [Ticket 68b37524bb]
+ */
+static inline void mc_out_bit_set(struct worker_ctx *w, int fd)
+{
+	w->out_pending[fd >> 5] |= (uint32_t)1 << (fd & 31);
+}
+
+static inline void mc_out_bit_clear(struct worker_ctx *w, int fd)
+{
+	w->out_pending[fd >> 5] &= ~((uint32_t)1 << (fd & 31));
+}
+
+static inline void mc_out_update(struct worker_ctx *w, int fd)
+{
+	if (fd < 0 || fd >= MAX_TRACKED_FDS)
+		return;
+	if (w->resp_pending[fd] > 0 || w->conns[fd].q.head != NULL)
+		mc_out_bit_set(w, fd);
+	else
+		mc_out_bit_clear(w, fd);
+}
 
 #if defined(CONFIG_LIBUKBOOT_PERCORE_HEAP) && CONFIG_LIBUKBOOT_PERCORE_HEAP
 /* Highest core index with a bound per-core allocator (cores 1..N). */
@@ -618,7 +661,20 @@ static void drive_core_stack(int core_id)
 				     p = p->next) {
 					unsigned int qlen;
 
-					if (p->nrtx == 0 && p->rtime == 0)
+					/*
+					 * A connection is healthy when it
+					 * has no retransmission pending and
+					 * its retransmission timer is not
+					 * running. This lwIP fork leaves
+					 * rtime at -1 while idle, so the
+					 * idle test must cover 0 and -1.
+					 * The old test matched only 0. It
+					 * flagged every healthy idle
+					 * connection and buried the console
+					 * in false positives. [Ticket
+					 * 8ea3578639]
+					 */
+					if (p->nrtx == 0 && p->rtime <= 0)
 						continue;
 					qlen = p->snd_queuelen;
 					printf("httpreply-mc: core %d STALL "
@@ -941,6 +997,7 @@ static int send_pending_response(struct worker_ctx *w, int fd,
 	}
 
 	w->resp_pending[fd] = pending;
+	mc_out_update(w, fd);
 
 	/*
 	 * Do not toggle EPOLLOUT here. Under load the epoll poll-chain
@@ -988,8 +1045,11 @@ static void mc_drive_stack(void *arg)
 static int send_conn_responses(struct worker_ctx *w, int fd)
 {
 	struct mc_conn *c = &w->conns[fd];
+	int rc;
 
-	return tfb_respq_send(&c->q, &w->pool, fd, mc_drive_stack, w);
+	rc = tfb_respq_send(&c->q, &w->pool, fd, mc_drive_stack, w);
+	mc_out_update(w, fd);
+	return rc;
 }
 
 /*
@@ -1096,6 +1156,7 @@ static void drop_connection(struct worker_ctx *w, int fd)
 
 	if (fd >= 0 && fd < MAX_TRACKED_FDS) {
 		w->resp_pending[fd] = 0;
+		mc_out_bit_clear(w, fd);
 		mc_conn_reset(w, fd);
 	}
 
@@ -1379,53 +1440,80 @@ static __noreturn void run_to_completion_worker(int core_id)
 		 * Retry any response that a previous send() left
 		 * partial. The EPOLLOUT path is avoided (see
 		 * send_pending_response), so drive retries from the
-		 * loop directly.
+		 * loop directly. The bitmap lists the candidate fds,
+		 * so the scan cost tracks the queued output, not the
+		 * fd table size. [Ticket 68b37524bb]
 		 */
 		{
-			int fd2;
+			uint32_t wi;
 
-			for (fd2 = 0; fd2 < MAX_TRACKED_FDS; fd2++) {
-				int rc;
+			for (wi = 0; wi < MC_PENDING_WORDS; wi++) {
+				uint32_t bits = w->out_pending[wi];
 
-				if (w->resp_pending[fd2] > 0) {
-					rc = send_pending_response(
-					    w, fd2, EPOLLIN | EPOLLRDHUP);
-					if (rc < 0) {
-						drop_connection(w, fd2);
-					} else {
-						work = true;
-						/*
-						 * The response fully went out.
-						 * The EPOLLIN guard above skips
-						 * reads while a response is
-						 * pending, and the event for
-						 * data that arrived meanwhile
-						 * may not repeat. Drain the
-						 * socket now. [Ticket
-						 * 1152cbcaca]
+				while (bits) {
+					int fd2 =
+					    (int)wi * 32 + __builtin_ctz(bits);
+					int rc;
+
+					bits &= bits - 1;
+					if (w->resp_pending[fd2] > 0) {
+						rc = send_pending_response(
+						    w, fd2,
+						    EPOLLIN | EPOLLRDHUP);
+						if (rc < 0) {
+							drop_connection(w, fd2);
+						} else {
+							work = true;
+							/*
+							 * The response fully
+							 * went out. The
+							 * EPOLLIN guard above
+							 * skips reads while a
+							 * response is
+							 * pending, and the
+							 * event for data that
+							 * arrived meanwhile
+							 * may not repeat.
+							 * Drain the socket
+							 * now. [Ticket
+							 * 1152cbcaca]
+							 */
+							if (rc == 0 &&
+							    handle_readable(
+								w, fd2) < 0)
+								drop_connection(
+								    w, fd2);
+						}
+					} else if (w->conns[fd2].q.head !=
+						   NULL) {
+						/* A composed response is
+						 * queued but the socket was
+						 * full. Retry it, then close
+						 * or drain as the request
+						 * asked. [Ticket e1e4844702]
 						 */
-						if (rc == 0 &&
-						    handle_readable(w, fd2) < 0)
+						rc =
+						    send_conn_responses(w, fd2);
+						if (rc < 0) {
 							drop_connection(w, fd2);
-					}
-				} else if (w->conns[fd2].q.head != NULL) {
-					/* A composed response is queued but
-					 * the socket was full. Retry it, then
-					 * close or drain as the request
-					 * asked. [Ticket e1e4844702]
-					 */
-					rc = send_conn_responses(w, fd2);
-					if (rc < 0) {
-						drop_connection(w, fd2);
+						} else {
+							work = true;
+							if (rc == 0 &&
+							    w->conns[fd2]
+								.close_after)
+								drop_connection(
+								    w, fd2);
+							else if (
+							    rc == 0 &&
+							    handle_readable(
+								w, fd2) < 0)
+								drop_connection(
+								    w, fd2);
+						}
 					} else {
-						work = true;
-						if (rc == 0 &&
-						    w->conns[fd2].close_after)
-							drop_connection(w, fd2);
-						else if (rc == 0 &&
-							 handle_readable(
-							     w, fd2) < 0)
-							drop_connection(w, fd2);
+						/* Stale bit: nothing is
+						 * owed on this fd. */
+						mc_out_bit_clear(w, fd2);
 					}
 				}
 			}
@@ -1697,8 +1785,17 @@ int main(int argc, char **argv)
 		mc_workers[i].recv_buf = malloc(MC_RECVBUF_SIZE);
 		mc_workers[i].resp_pending =
 		    calloc(MAX_TRACKED_FDS, sizeof(uint32_t));
+		mc_workers[i].out_pending =
+		    calloc(MC_PENDING_WORDS, sizeof(uint32_t));
 		mc_workers[i].conns =
 		    calloc(MAX_TRACKED_FDS, sizeof(struct mc_conn));
+		if (!mc_workers[i].recv_buf || !mc_workers[i].resp_pending ||
+		    !mc_workers[i].out_pending || !mc_workers[i].conns) {
+			printf("httpreply-mc: [ERR] worker %d table alloc "
+			       "failed\n",
+			       i);
+			return 1;
+		}
 		/* One fixed response-node pool per worker, sized
 		 * TFB_RESPQ_SLOTS slots. Built once at start; the
 		 * routed hot path never mallocs. [Ticket 0f377016a9] */

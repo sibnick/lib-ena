@@ -39,10 +39,12 @@
 #define TFB_RESPQ_CAP 128
 
 /* Response node count per worker. Every queued response on every
- * connection of one worker uses one slot. At the cap of 128 per
- * connection, a full pool flows control on the remaining
- * connections instead of growing the heap. */
-#define TFB_RESPQ_SLOTS 2048
+ * connection of one worker uses one slot. Sized above the per-worker
+ * share of the 16384-connection stretch target, so each connection
+ * can hold one in-flight response. At the cap of 128 per connection,
+ * a full pool flows control on the remaining connections instead of
+ * growing the heap. [Ticket 68b37524bb] */
+#define TFB_RESPQ_SLOTS 8192
 
 /* One queued response. The caller composes the bytes with the
  * helpers in tfb_http.h; push copies them into data. */
