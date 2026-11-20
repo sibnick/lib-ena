@@ -364,6 +364,8 @@ Key Kconfig options used in `defconfig`:
 | `CONFIG_LIBENA_MAX_QUEUES` | `8` | Maximum queue pairs supported by ENA driver. This sizes the driver ring arrays, and must stay at or above the active queue count |
 | `CONFIG_LIBENA_RSS` | `y` | Enables ENA hardware Receive Side Scaling |
 | `CONFIG_LIBENA_VERBOSE_STATS` | `n` | Prints periodic datapath counters to console |
+| `CONFIG_APPHTTPREPLYMC_CONSOLE_STATS` | `n` | Diagnostic only. Prints a per-core heartbeat and stall dumps every 2 s from the worker loop. Keep it off for measurement: the polled serial console output cost about 2x throughput at c=256 on c6i.xlarge [Ticket 8ea3578639] |
+| `CONFIG_APPHTTPREPLYMC_NETLOG` | `n` | Diagnostic only. Copies every console log byte into a ring and serves it on `/netlog`. Keep it off for measurement, with `CONSOLE_STATS` [Ticket 8ea3578639] |
 
 ## 9. Design Decisions
 

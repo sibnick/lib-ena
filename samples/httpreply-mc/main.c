@@ -661,7 +661,20 @@ static void drive_core_stack(int core_id)
 				     p = p->next) {
 					unsigned int qlen;
 
-					if (p->nrtx == 0 && p->rtime == 0)
+					/*
+					 * A connection is healthy when it
+					 * has no retransmission pending and
+					 * its retransmission timer is not
+					 * running. This lwIP fork leaves
+					 * rtime at -1 while idle, so the
+					 * idle test must cover 0 and -1.
+					 * The old test matched only 0. It
+					 * flagged every healthy idle
+					 * connection and buried the console
+					 * in false positives. [Ticket
+					 * 8ea3578639]
+					 */
+					if (p->nrtx == 0 && p->rtime <= 0)
 						continue;
 					qlen = p->snd_queuelen;
 					printf("httpreply-mc: core %d STALL "
