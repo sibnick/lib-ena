@@ -35,7 +35,10 @@
 #include <uk/lcpu/pm.h>
 #include <uk/pcpuvar.h>
 #include <uk/arch.h>
+#include <uk/arch/ctx.h>
+#include <uk/arch/tls.h>
 #include <uk/arch/x86_64.h>
+#include <uk/atomic.h>
 #include <uk/intctlr.h>
 #include <uk/print.h>
 #include <uk/netdev.h>
@@ -1553,39 +1556,128 @@ static __noreturn void worker_thread(void *arg)
 	run_to_completion_worker(w->worker_id);
 }
 
-static __noreturn void mc_secondary_entry(void *arg)
+/* SYSCALL entrance stub. plat/common/x86/syscall.S defines it when
+ * CONFIG_HAVE_SYSCALL is on, and plat/kvm/x86/setup.c programs it
+ * into MSR_LSTAR on the BSP only. INIT clears these MSRs on an AP.
+ * QEMU shows LSTAR as zero on vCPU 1, so the first user syscall on
+ * that CPU jumps to address 0 until this CPU programs the MSRs.
+ * Builds without the syscall shim, such as the app-elfloader kernel,
+ * need this fix. A standalone app kernel with CONFIG_HAVE_SYSCALL
+ * off never runs the SYSCALL instruction, so it builds the MSRs out.
+ * [Ticket 25834da0d9] */
+#if defined(CONFIG_HAVE_SYSCALL) && CONFIG_HAVE_SYSCALL
+extern void _ukplat_syscall(void);
+#endif /* CONFIG_HAVE_SYSCALL */
+
+/* AP entry thunk. The trampoline runs on the boot page table, which
+ * identity-maps the first 4 GiB only, while the ELF loader places the
+ * AP stack above that range. It also leaves EFER without SCE and NXE
+ * while the live page table marks data pages NX. The thunk fixes both
+ * before any stack use, then jumps to the C entry. It writes EFER
+ * through the K6-compatible MSR number that Unikraft uses
+ * (0xc0000080), then loads the BSP CR3 stored in fn.user of the
+ * target lcpu slot. [Tickets 02a56a74e4, 25834da0d9] */
+__attribute__((noinline, used)) static __noreturn void
+mc_secondary_main(void *arg);
+
+__attribute__((naked)) static __noreturn void mc_ap_entry(void *arg)
+{
+	__asm__ volatile("mov $0xc0000080, %%ecx\n\t"
+			 "rdmsr\n\t"
+			 "or $0x801, %%eax\n\t"
+			 "wrmsr\n\t"
+			 "mov %c0(%%rdi), %%rax\n\t"
+			 "mov %%rax, %%cr3\n\t"
+			 "xor %%rbp, %%rbp\n\t"
+			 "jmp mc_secondary_main\n" ::"i"(
+			     __builtin_offsetof(struct uk_lcpu, fn.user))
+			 : "memory");
+}
+
+static __noreturn void mc_secondary_main(void *arg)
 {
 	struct uk_lcpu *this_lcpu = (struct uk_lcpu *)arg;
-	struct uk_alloc *a = uk_alloc_get_default();
 	struct uk_sched *sec_s;
 	unsigned int cpu;
 	int r;
+
+	/* Program the per-CPU SYSCALL MSRs that the BSP-only setup
+	 * path leaves clear after INIT. See the note above. */
+#if defined(CONFIG_HAVE_SYSCALL) && CONFIG_HAVE_SYSCALL
+	uk_arch_x86_64_wrmsrl(UK_ARCH_X86_64_MSR_STAR,
+			      (0x08ULL << 48) | (0x08ULL << 32));
+	uk_arch_x86_64_wrmsrl(UK_ARCH_X86_64_MSR_LSTAR,
+			      (__uptr)_ukplat_syscall);
+	uk_arch_x86_64_wrmsrl(
+	    UK_ARCH_X86_64_MSR_SYSCALL_MASK,
+	    UK_ARCH_X86_64_RFLAGS_TF | UK_ARCH_X86_64_RFLAGS_DF |
+		UK_ARCH_X86_64_RFLAGS_IF | UK_ARCH_X86_64_RFLAGS_AC |
+		UK_ARCH_X86_64_RFLAGS_NT);
+#endif /* CONFIG_HAVE_SYSCALL */
 
 	r = uk_lcpu_init(this_lcpu);
 	if (unlikely(r))
 		uk_lcpu_halt();
 
-	uk_lcpu_enable_irq();
-
-	sec_s = uk_schedcoop_create(a, a, a, a);
-	if (unlikely(!sec_s))
-		uk_lcpu_halt();
-
 	/*
-	 * Publish this scheduler under the CPU that runs it. Worker i
-	 * must run here, not on the core that registered first.
-	 * [Ticket f47bdd0ed1]
+	 * The BSP created and registered this CPU's scheduler before
+	 * it released the APs. uk_sched_register() changes the global
+	 * scheduler list without a lock, so APs must not register at
+	 * the same time. [Ticket 25834da0d9]
 	 */
 	cpu = (unsigned int)uk_pcpuvar_current_get(uk_pcpuvar_cpu_idx);
-	if (cpu < MC_MAX_WORKERS)
-		mc_cpu_sched[cpu] = sec_s;
-	else
+	if (cpu >= MC_MAX_WORKERS) {
 		printf("httpreply-mc: [ERR] cpu %u is outside the worker table "
 		       "(%d)\n",
 		       cpu, MC_MAX_WORKERS);
+		uk_lcpu_halt();
+	}
+	sec_s = mc_cpu_sched[cpu];
+	if (unlikely(!sec_s)) {
+		printf("httpreply-mc: [ERR] cpu %u has no scheduler\n", cpu);
+		uk_lcpu_halt();
+	}
 
-	uk_sched_register(sec_s);
+	/*
+	 * Give this init context the same facilities uk_sys_init()
+	 * gives the BSP context: a UKTLS area and an auxiliary stack.
+	 * A posix thread created later on this scheduler asserts that
+	 * its creating context carries UKTLS. [Ticket 25834da0d9]
+	 */
+	{
+		struct uk_alloc *a = uk_alloc_get_default();
+		struct ukarch_auxspcb *auxspcb;
+		void *tls, *auxstack;
+		__uptr uktlsp, auxsp;
+
+		tls = uk_memalign(a, ukarch_tls_area_align(),
+				  ukarch_tls_area_size());
+		if (!tls)
+			uk_lcpu_halt();
+		ukarch_tls_area_init(tls);
+		uktlsp = ukarch_tls_tlsp(tls);
+		uk_lcpu_tlsp_set(uktlsp);
+
+		auxstack = uk_memalign(a, UKARCH_AUXSP_ALIGN, 0x800u);
+		if (!auxstack)
+			uk_lcpu_halt();
+		auxsp = ukarch_gen_sp(auxstack, 0x800u);
+		ukarch_auxsp_init(auxsp);
+		auxspcb = ukarch_auxsp_get_cb(auxsp);
+		if (!auxspcb)
+			uk_lcpu_halt();
+		ukarch_auxspcb_set_uktlsp(auxspcb, uktlsp);
+		uk_lcpu_set_auxsp(auxsp);
+	}
+
+	/* Bind this context as the init thread of this CPU's
+	 * scheduler. uk_sched_start() records the CPU binding. */
 	uk_sched_start(sec_s);
+
+	/* BUSY0 -> IDLE. This is the state the idle path expects. */
+	uk_dec(&this_lcpu->state);
+
+	uk_lcpu_enable_irq();
 
 	while (1)
 		uk_sched_yield();
@@ -1603,6 +1695,7 @@ static void mc_boot_secondary_cores(void)
 	int rc;
 
 	for (i = 1; i < MC_MAX_WORKERS && i < CONFIG_UKPLAT_CPU_MAXCOUNT; i++) {
+		struct uk_sched *sec_s;
 		void *stk;
 
 		if (!mc_core_has_percore_alloc(i)) {
@@ -1615,30 +1708,76 @@ static void mc_boot_secondary_cores(void)
 		stk = uk_malloc(a, 16384);
 		if (!stk)
 			continue;
+		/*
+		 * Fault in every stack page on the BSP. Paging maps
+		 * heap pages on demand. An AP takes the page fault
+		 * before it loads an IDT, which ends in a triple
+		 * fault. Writing the pages here makes them present in
+		 * the page table the AP loads. [Ticket 25834da0d9]
+		 */
+		memset(stk, 0, 16384);
+
+		/*
+		 * Create and register this AP's scheduler here, on
+		 * the BSP only, and publish it before the release.
+		 * uk_sched_register() changes the global scheduler
+		 * list without a lock, and worker i needs this
+		 * scheduler under CPU i. [Tickets f47bdd0ed1,
+		 * 25834da0d9]
+		 */
+		sec_s = uk_schedcoop_create(a, a, a, a);
+		if (unlikely(!sec_s)) {
+			printf("httpreply-mc: [ERR] schedcoop create failed "
+			       "for lcpu %u\n",
+			       (unsigned)i);
+			continue;
+		}
+		mc_cpu_sched[i] = sec_s;
+
 		ap_idx[num_aps] = i;
 		ap_sp[num_aps] = (__uptr)stk + 16384;
-		ap_entry[num_aps] = (__uptr)mc_secondary_entry;
+		ap_entry[num_aps] = (__uptr)mc_ap_entry;
 		num_aps++;
 	}
 
 	if (num_aps > 0) {
 		unsigned int started = num_aps;
-		int j;
+		unsigned int j;
+
+		/*
+		 * Hand the BSP page table base to each AP slot. The
+		 * thunk in mc_ap_entry loads it before using the
+		 * stack. [Ticket 25834da0d9]
+		 */
+		{
+			__u64 cr3;
+
+			__asm__ __volatile__("mov %%cr3, %0" : "=r"(cr3));
+			for (j = 0; j < num_aps; j++)
+				uk_pcpuvar_lval(ap_idx[j], uk_lcpus).fn.user =
+				    (void *)(__uptr)cr3;
+		}
 
 		rc = uk_lcpu_start(ap_idx, &started, ap_sp, ap_entry, 0);
 		if (rc != 0)
 			printf("httpreply-mc: [ERR] uk_lcpu_start failed: %d\n",
 			       rc);
 
-		for (j = 0; j < (int)started; j++) {
+		for (j = 0; j < started; j++) {
+			struct uk_lcpu *lcpu =
+			    &uk_pcpuvar_lval(ap_idx[j], uk_lcpus);
 			unsigned long spins;
 			int online = 0;
 
-			/* Bounded wait for the AP to come online */
+			/*
+			 * Bounded wait for the AP to come online.
+			 * uk_load_n reloads the state on every
+			 * iteration. A plain read can be hoisted out
+			 * of this spin loop. [Ticket 25834da0d9]
+			 */
 			for (spins = 0; spins < 200000000UL; spins++) {
 				if (uk_lcpu_state_is_online(
-					uk_pcpuvar_lval(ap_idx[j], uk_lcpus)
-					    .state)) {
+					uk_load_n(&lcpu->state))) {
 					online = 1;
 					break;
 				}
@@ -1651,16 +1790,11 @@ static void mc_boot_secondary_cores(void)
 				continue;
 			}
 
-			/* Wait for the AP to publish its own scheduler */
-			for (spins = 0; spins < 200000000UL; spins++) {
-				if (mc_cpu_sched[ap_idx[j]] != NULL)
-					break;
-				__asm__ __volatile__("pause");
-			}
-			if (mc_cpu_sched[ap_idx[j]] == NULL)
-				printf("httpreply-mc: [WARN] lcpu %u came "
-				       "online but published no scheduler\n",
-				       (unsigned)ap_idx[j]);
+			/*
+			 * The BSP published mc_cpu_sched[i] before the
+			 * release, so the scheduler is ready once the
+			 * CPU is online.
+			 */
 		}
 	}
 #endif
