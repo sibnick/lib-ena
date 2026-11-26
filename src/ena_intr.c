@@ -40,8 +40,10 @@ static void msix_on_fire(void *arg, uint32_t vector_id)
 /*
  * Arm the device MSI-X capability. The driver allocates one
  * unikernel vector per MSI-X vector. It targets each vector at
- * the core that polls the queue that vector reports. Core i-1
- * polls queue i-1. The driver then unmasks the capability.
+ * the core that polls the queue that vector reports.
+ * CONFIG_LIBENA_MSIX_LCPU_LIST gives that core per queue. An empty
+ * list keeps the old rule: queue q targets lcpu q % booted CPU
+ * count. The driver then unmasks the capability. [Ticket 344310cd80]
  */
 static int msix_arm_device(struct ena_adapter *adapter,
 			   const struct pci_address *bdf)
@@ -49,7 +51,12 @@ static int msix_arm_device(struct ena_adapter *adapter,
 	struct ena_msix_req req;
 	uint32_t nvec;
 	uint32_t i;
-	int ncpus;
+	uint32_t ncpus;
+	char map[384];
+	int used;
+	int room;
+	int n;
+	int tcount;
 	int ret;
 
 	nvec = adapter->num_irq_vectors;
@@ -67,15 +74,44 @@ static int msix_arm_device(struct ena_adapter *adapter,
  * count. Use one core when the count is absent.
  */
 #if defined(CONFIG_UKPLAT_CPU_MAXCOUNT) && (CONFIG_UKPLAT_CPU_MAXCOUNT > 0)
-	ncpus = (int)CONFIG_UKPLAT_CPU_MAXCOUNT;
+	ncpus = (uint32_t)CONFIG_UKPLAT_CPU_MAXCOUNT;
 #else
 	ncpus = 1;
 #endif
 	if (ncpus < 1)
 		ncpus = 1;
 
-	for (i = 0; i < nvec; i++)
-		req.lcpu[i] = (i == 0) ? 0 : (i - 1) % (uint32_t)ncpus;
+#if defined(CONFIG_LIBENA_MSIX_LCPU_LIST)
+	tcount = ena_intr_msix_targets(nvec, CONFIG_LIBENA_MSIX_LCPU_LIST,
+				       ncpus, req.lcpu);
+	if (tcount < 0) {
+		ena_warn("msix: bad lcpu list '%s' (%d), using modulo targets",
+			 CONFIG_LIBENA_MSIX_LCPU_LIST, tcount);
+		tcount = ena_intr_msix_targets(nvec, "", ncpus, req.lcpu);
+	}
+#else
+	tcount = ena_intr_msix_targets(nvec, "", ncpus, req.lcpu);
+#endif
+
+	/* Print the vector-to-lcpu map once. The AWS fact run reads
+	 * this line as placement evidence. [Ticket 344310cd80] */
+	used =
+	    snprintf(map, sizeof(map),
+		     "msix: target map (%s):", tcount > 0 ? "list" : "modulo");
+	if (used < 0)
+		used = 0;
+	room = (int)sizeof(map) - used;
+	if (room < 0)
+		room = 0;
+	for (i = 0; i < nvec && room > 16; i++) {
+		n = snprintf(map + used, room, " v%u->cpu%u", (unsigned)i,
+			     (unsigned)req.lcpu[i]);
+		if (n < 0 || n >= room)
+			break;
+		used += n;
+		room -= n;
+	}
+	ena_info("%s", map);
 
 	ret = ena_plat_msix_arm(&req);
 	if (ret)
@@ -83,6 +119,62 @@ static int msix_arm_device(struct ena_adapter *adapter,
 	return ret;
 }
 #endif /* __Unikraft__ */
+
+/*
+ * Compute the MSI-X lcpu target list. See the contract comment in
+ * include/ena_intr.h. This function is pure, so the host test suite
+ * checks it without a device. [Ticket 344310cd80]
+ */
+int ena_intr_msix_targets(uint32_t nvec, const char *lcpu_list, uint32_t ncpus,
+			  uint32_t *out_lcpu)
+{
+	uint32_t targets[ENA_MAX_MSIX_VECTORS];
+	uint32_t count = 0;
+	const char *p;
+	uint32_t q;
+	char *end;
+	unsigned long val;
+
+	if (!out_lcpu || nvec == 0 || nvec > ENA_MAX_MSIX_VECTORS)
+		return -EINVAL;
+	if (ncpus < 1)
+		ncpus = 1;
+
+	/* Vector 0 is the Admin/AENQ vector. It targets lcpu 0. */
+	out_lcpu[0] = 0;
+
+	if (!lcpu_list || lcpu_list[0] == '\0') {
+		for (q = 1; q < nvec; q++)
+			out_lcpu[q] = (q - 1) % ncpus;
+		return 0;
+	}
+
+	p = lcpu_list;
+	for (;;) {
+		while (*p == ' ' || *p == '\t')
+			p++;
+		if (*p < '0' || *p > '9')
+			return -EINVAL;
+		val = strtoul(p, &end, 10);
+		if (end == p || val >= (unsigned long)ncpus)
+			return -EINVAL;
+		if (count >= ENA_MAX_MSIX_VECTORS)
+			return -EINVAL;
+		targets[count++] = (uint32_t)val;
+		p = end;
+		while (*p == ' ' || *p == '\t')
+			p++;
+		if (*p == '\0')
+			break;
+		if (*p != ',')
+			return -EINVAL;
+		p++;
+	}
+
+	for (q = 1; q < nvec; q++)
+		out_lcpu[q] = targets[(q - 1) % count];
+	return (int)count;
+}
 
 int ena_intr_msix_init(struct ena_adapter *adapter, uint32_t num_vectors)
 {

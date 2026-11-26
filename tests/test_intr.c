@@ -347,6 +347,80 @@ static void test_intr_setup_msix(void)
 	printf("[PASS] test_intr_setup_msix passed\n");
 }
 
+static void test_intr_lcpu_targets(void)
+{
+	uint32_t out[ENA_MAX_MSIX_VECTORS];
+	uint32_t q;
+
+	printf("[TEST] Running test_intr_lcpu_targets...\n");
+
+	/* Bad arguments. */
+	assert(ena_intr_msix_targets(0, "", 4, out) == -EINVAL);
+	assert(ena_intr_msix_targets(ENA_MAX_MSIX_VECTORS + 1, "", 4, out) ==
+	       -EINVAL);
+	assert(ena_intr_msix_targets(4, "", 4, NULL) == -EINVAL);
+
+	/* Empty list keeps the modulo rule: queue q targets
+	 * lcpu q % ncpus. Vector 0 is admin and targets 0. */
+	assert(ena_intr_msix_targets(5, "", 3, out) == 0);
+	assert(out[0] == 0);
+	assert(out[1] == 0 && out[2] == 1 && out[3] == 2 && out[4] == 0);
+
+	/* ncpus below one acts as one. */
+	assert(ena_intr_msix_targets(3, "", 0, out) == 0);
+	assert(out[1] == 0 && out[2] == 0);
+
+	/* The boot scenario: 4 logical CPUs, 2 targets. Queue q
+	 * cycles over the list. [Ticket 344310cd80] */
+	assert(ena_intr_msix_targets(5, "0,1", 4, out) == 2);
+	assert(out[0] == 0);
+	assert(out[1] == 0 && out[2] == 1 && out[3] == 0 && out[4] == 1);
+
+	/* A target may skip cores: queues on lcpu 2 and 3. */
+	assert(ena_intr_msix_targets(3, "2,3", 4, out) == 2);
+	assert(out[0] == 0 && out[1] == 2 && out[2] == 3);
+
+	/* Spaces around entries are valid. */
+	assert(ena_intr_msix_targets(3, " 0 , 1 ", 4, out) == 2);
+	assert(out[1] == 0 && out[2] == 1);
+
+	/* A longer list than the queue count is valid. Extras go
+	 * unused. */
+	assert(ena_intr_msix_targets(3, "3,2,1,0", 4, out) == 4);
+	assert(out[1] == 3 && out[2] == 2);
+
+	/* Admin-only count still reports the parsed list. */
+	assert(ena_intr_msix_targets(1, "1", 4, out) == 1);
+	assert(out[0] == 0);
+
+	/* Malformed lists fail. */
+	assert(ena_intr_msix_targets(4, "0,x", 4, out) == -EINVAL);
+	assert(ena_intr_msix_targets(4, "0,,1", 4, out) == -EINVAL);
+	assert(ena_intr_msix_targets(4, "0,1,", 4, out) == -EINVAL);
+	assert(ena_intr_msix_targets(4, "-1", 4, out) == -EINVAL);
+	assert(ena_intr_msix_targets(4, "0 1", 4, out) == -EINVAL);
+	assert(ena_intr_msix_targets(4, "0x1", 4, out) == -EINVAL);
+	/* An entry must stay below ncpus. */
+	assert(ena_intr_msix_targets(4, "4", 4, out) == -EINVAL);
+	assert(ena_intr_msix_targets(4, "0,4", 4, out) == -EINVAL);
+
+	/* The modulo rule equals the pre-decoupling rule for every
+	 * vector count and CPU count. */
+	for (q = 1; q < 8; q++) {
+		uint32_t ncpus;
+
+		for (ncpus = 1; ncpus <= 4; ncpus++) {
+			uint32_t i;
+
+			assert(ena_intr_msix_targets(8, "", ncpus, out) == 0);
+			for (i = 1; i < 8; i++)
+				assert(out[i] == (i - 1) % ncpus);
+		}
+	}
+
+	printf("[PASS] test_intr_lcpu_targets passed\n");
+}
+
 int main(void)
 {
 	printf("========================================\n");
@@ -360,9 +434,10 @@ int main(void)
 	test_poll_step_engine();
 	test_intr_invalid_args();
 	test_intr_setup_msix();
+	test_intr_lcpu_targets();
 
 	printf("========================================\n");
-	printf("ALL PHASE 8 INTR TESTS PASSED (7/7)     \n");
+	printf("ALL PHASE 8 INTR TESTS PASSED (8/8)     \n");
 	printf("========================================\n");
 	return 0;
 }

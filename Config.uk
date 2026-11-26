@@ -40,6 +40,25 @@ config LIBENA_MSIX
 	  runs in software polling mode. Bisect toggle for interrupt
 	  bring-up.
 
+config LIBENA_MSIX_LCPU_LIST
+	string "lcpu target list for IO queue MSI-X vectors"
+	depends on LIBENA_MSIX
+	default ""
+	help
+	  Target the completion interrupt of each IO queue pair at one
+	  lcpu from this list. The list is a comma-separated set of
+	  lcpu numbers, for example "0,1". Queue q takes entry q. The
+	  driver cycles a list that is shorter than the negotiated
+	  queue count. Use this to keep queue interrupts on N real
+	  cores while the kernel boots 2N hyperthreads. The queue
+	  count itself comes from CONFIG_LIBENA_MAX_QUEUES and the
+	  device negotiation. Leave the value empty (default) to
+	  target queue q at lcpu q % booted CPU count, as before. The
+	  Admin/AENQ vector always targets lcpu 0. A malformed value
+	  logs a warning and falls back to the modulo rule. Entry
+	  values must stay below the booted CPU count.
+	  [Ticket 344310cd80]
+
 config LIBENA_VERBOSE_STATS
 	bool "ena: periodic per-queue datapath stats print"
 	default n
